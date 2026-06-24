@@ -1,0 +1,131 @@
+Menu="Utilities"
+Title="CI Runner Farm"
+Icon="icon-docker"
+Tag="server"
+---
+<?php
+/* CI Runner Farm settings page - plain HTML/PHP (no markdown DSL) */
+$plugin   = 'ci-runner-farm';
+$cfgfile  = "/boot/config/plugins/$plugin/config.cfg";
+$cfg      = file_exists($cfgfile) ? parse_ini_file($cfgfile) : [];
+$has_token= file_exists("/boot/config/plugins/$plugin/token");
+$csrf     = $var['csrf_token'] ?? '';
+function g($cfg,$k,$d=''){ return htmlspecialchars($cfg[$k] ?? $d, ENT_QUOTES); }
+function sel($cfg,$k,$val,$d){ return (($cfg[$k] ?? $d) === $val) ? 'selected' : ''; }
+?>
+<style>
+  .crf dl{display:grid;grid-template-columns:240px 1fr;gap:6px 12px;align-items:center;max-width:760px}
+  .crf dt{font-weight:bold}.crf dd{margin:0}
+  .crf input[type=text],.crf input[type=number],.crf input[type=password],.crf select{width:100%;max-width:34em}
+  .crf-status td,.crf-status th{padding:4px 10px;text-align:left}
+  .crf-pill{padding:1px 8px;border-radius:10px;font-size:11px;color:#fff}
+  .crf-idle{background:#3a7}.crf-busy{background:#c84}.crf-error{background:#c44}
+  .crf-starting{background:#789}.crf-exited{background:#888}
+  #crf-log{white-space:pre-wrap;font-family:monospace;font-size:12px;max-height:220px;overflow:auto;background:#1e1e1e;color:#ddd;padding:8px;border-radius:4px;margin-top:8px}
+</style>
+
+<div class="crf">
+<form method="POST" action="/update.php" target="progressFrame">
+<input type="hidden" name="#file" value="ci-runner-farm/config.cfg">
+<dl>
+  <dt>GitHub scope</dt>
+  <dd><select name="GH_SCOPE">
+    <option value="repo" <?=sel($cfg,'GH_SCOPE','repo','repo')?>>repo (per-repository)</option>
+    <option value="org"  <?=sel($cfg,'GH_SCOPE','org','repo')?>>org (organization-wide)</option>
+  </select></dd>
+
+  <dt>Org owner (org scope)</dt>
+  <dd><input type="text" name="GH_OWNER" value="<?=g($cfg,'GH_OWNER','unraid')?>"></dd>
+
+  <dt>Target repos (repo scope)</dt>
+  <dd><input type="text" name="GH_REPOS" value="<?=g($cfg,'GH_REPOS','unraid/repo-a unraid/repo-b')?>"></dd>
+
+  <dt>Runner group (org, optional)</dt>
+  <dd><input type="text" name="RUNNER_GROUP" value="<?=g($cfg,'RUNNER_GROUP')?>"></dd>
+
+  <dt>Concurrent runners</dt>
+  <dd><input type="number" name="RUNNER_COUNT" min="1" max="20" value="<?=g($cfg,'RUNNER_COUNT','4')?>"></dd>
+
+  <dt>Runner labels</dt>
+  <dd><input type="text" name="RUNNER_LABELS" value="<?=g($cfg,'RUNNER_LABELS','self-hosted,unraid,build')?>"></dd>
+
+  <dt>CPUs per runner (blank = uncapped)</dt>
+  <dd><input type="text" name="RUNNER_CPUS" value="<?=g($cfg,'RUNNER_CPUS','')?>" placeholder="blank = uncapped (scheduler balances)"></dd>
+
+  <dt>Memory per runner</dt>
+  <dd><input type="text" name="RUNNER_MEMORY" value="<?=g($cfg,'RUNNER_MEMORY','16g')?>"></dd>
+
+  <dt>Cache root (pool)</dt>
+  <dd><input type="text" name="CACHE_ROOT" value="<?=g($cfg,'CACHE_ROOT','/mnt/github-runner')?>"></dd>
+
+  <dt>Workspace tmpfs size</dt>
+  <dd><input type="text" name="WORK_TMPFS_SIZE" value="<?=g($cfg,'WORK_TMPFS_SIZE','8g')?>" placeholder="blank = bind to pool"></dd>
+
+  <dt>Runner image</dt>
+  <dd><input type="text" name="IMAGE" value="<?=g($cfg,'IMAGE','myoung34/github-runner:latest')?>"></dd>
+
+  <dt>Ephemeral</dt>
+  <dd><select name="EPHEMERAL">
+    <option value="false" <?=sel($cfg,'EPHEMERAL','false','false')?>>false (persistent, warm cache)</option>
+    <option value="true"  <?=sel($cfg,'EPHEMERAL','true','false')?>>true (clean per job)</option>
+  </select></dd>
+
+  <dt>Share host docker.sock</dt>
+  <dd><select name="SHARE_DOCKER_SOCK">
+    <option value="true"  <?=sel($cfg,'SHARE_DOCKER_SOCK','true','true')?>>true</option>
+    <option value="false" <?=sel($cfg,'SHARE_DOCKER_SOCK','false','true')?>>false</option>
+  </select></dd>
+</dl>
+<input type="submit" name="Apply" value="Apply">
+</form>
+
+<hr>
+<p><strong>GitHub token (PAT)</strong> — stored at <code>/boot/config/plugins/ci-runner-farm/token</code> (chmod 600), never in config.cfg.
+Status: <strong id="crf-tok"><?= $has_token ? 'configured &#10004;' : 'not set' ?></strong></p>
+<p>
+  <input type="password" id="crf-token" placeholder="ghp_... (repo scope; +admin:org for org)" style="width:28em">
+  <input type="button" value="Save token" onclick="crfSetToken()">
+  <input type="button" value="Clear" onclick="crfAction('clear-token')">
+</p>
+
+<hr>
+<p><strong>Fleet control</strong></p>
+<p>
+  <input type="button" value="Start" onclick="crfAction('start')">
+  <input type="button" value="Stop" onclick="crfAction('stop')">
+  <input type="button" value="Restart" onclick="crfAction('restart')">
+  <input type="button" value="Validate (no token)" onclick="crfAction('validate')">
+  &nbsp; Scale to <input type="number" id="crf-n" min="0" max="20" value="4" style="width:4em">
+  <input type="button" value="Scale" onclick="crfScale()">
+</p>
+
+<table class="crf-status" id="crf-table">
+  <thead><tr><th>Runner</th><th>State</th><th>Phase</th><th>CPU</th><th>Mem</th></tr></thead>
+  <tbody><tr><td colspan="5">loading...</td></tr></tbody>
+</table>
+<div id="crf-log"></div>
+</div>
+
+<script>
+const CRF_CSRF = "<?=$csrf?>";
+const CRF_URL  = "/plugins/ci-runner-farm/include/exec.php";
+function crfPost(p){
+  p.csrf_token = CRF_CSRF;
+  return fetch(CRF_URL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:Object.entries(p).map(([k,v])=>encodeURIComponent(k)+'='+encodeURIComponent(v)).join('&')}).then(r=>r.json());
+}
+function crfLog(o){ document.getElementById('crf-log').textContent = (o.log||JSON.stringify(o)); }
+function crfAction(a){ crfPost({action:a}).then(o=>{crfLog(o); crfRefresh();}); }
+function crfScale(){ crfPost({action:'scale',n:document.getElementById('crf-n').value}).then(o=>{crfLog(o); crfRefresh();}); }
+function crfSetToken(){ const t=document.getElementById('crf-token').value; if(!t)return;
+  crfPost({action:'set-token',token:t}).then(o=>{document.getElementById('crf-tok').innerHTML=o.ok?'configured &#10004;':'error';document.getElementById('crf-token').value='';}); }
+function crfRefresh(){
+  crfPost({action:'status-json'}).then(d=>{
+    const tb=document.querySelector('#crf-table tbody'); tb.innerHTML='';
+    if(!d.runners||!d.runners.length){ tb.innerHTML='<tr><td colspan="5">no managed runners (configured: '+(d.configured||0)+')</td></tr>'; return; }
+    d.runners.forEach(r=>{ const cls=r.state!=='running'?'crf-exited':('crf-'+r.phase);
+      tb.innerHTML+=`<tr><td>${r.name}</td><td>${r.state}</td><td><span class="crf-pill ${cls}">${r.phase}</span></td><td>${r.cpus?r.cpus+'c':'max'}</td><td>${r.mem_gb}g</td></tr>`; });
+  }).catch(()=>{});
+}
+crfRefresh(); setInterval(crfRefresh,5000);
+</script>
