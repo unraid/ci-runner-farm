@@ -42,6 +42,8 @@ IMAGE_SOURCE="builtin"                # builtin = run the locally-built image; r
 BUILTIN_IMAGE="ci-runner-farm-runner:latest"  # tag produced by the in-plugin image builder (build-image)
 IMAGE=""                              # remote image ref, used when IMAGE_SOURCE=remote (e.g. ghcr.io/org/img:tag)
 EPHEMERAL="false"                     # true => runner deregisters after each job
+RUN_AS_ROOT="false"                   # false => jobs run as non-root 'runner' (sudo+docker groups), like
+                                      # GitHub-hosted runners. true => jobs run as root (legacy).
 ACCESS_TOKEN=""                       # GitHub PAT (repo scope; +admin:org for org)
 SHARE_DOCKER_SOCK="true"              # mount host docker.sock for service containers (ignored when DIND=true)
 DIND="true"                           # docker-in-docker: each runner gets its own daemon (--privileged).
@@ -55,7 +57,12 @@ REGISTRY_SERVER=""                     # e.g. ghcr.io — registry to docker log
 REGISTRY_USERNAME=""                   # registry username (password/token stored in registry-token file)
 REGISTRY_TOKEN=""                      # registry password/token (loaded from registry-token file)
 # ---- warm caches mounted into every runner (host-subdir:container-path) -----
-CACHE_MOUNTS="pnpm-store:/root/.local/share/pnpm/store npm:/root/.npm yarn:/usr/local/share/.cache/yarn ms-playwright:/root/.cache/ms-playwright"
+# Cache mounts target the runner's home (/home/runner) so the non-root 'runner'
+# user can read/write them (it cannot even traverse /root). RUNNER_UID:RUNNER_GID
+# own the host cache dirs so the non-root runner can write (see ensure_dirs).
+RUNNER_UID="1001"                     # uid of the image's 'runner' user (myoung34/github-runner)
+RUNNER_GID="121"                      # gid of the 'runner' group
+CACHE_MOUNTS="pnpm-store:/home/runner/.local/share/pnpm/store npm:/home/runner/.npm yarn:/home/runner/.cache/yarn ms-playwright:/home/runner/.cache/ms-playwright"
 # ---- autoscaling (queue-aware): fleet floats between MIN and MAX ------------
 AUTOSCALE="false"                     # true => a daemon grows/shrinks the fleet by demand
 AUTOSCALE_MIN="2"                     # never go below this many runners
@@ -99,7 +106,7 @@ scale_down_idle() {
     [ "$(current_count)" -le "$AUTOSCALE_MIN" ] && break
     if ! runner_busy "$c"; then
       log "autoscale: removing idle $c"
-      docker stop -t 30 "$c" >/dev/null 2>&1; docker rm "$c" >/dev/null 2>&1
+      remove_runner "$c"
       removed=$((removed+1))
     fi
   done
@@ -211,8 +218,18 @@ registry_login() {
 
 ensure_dirs() {
   mkdir -p "$CACHE_ROOT/work"
-  local m
-  for m in $CACHE_MOUNTS; do [ -n "$m" ] && mkdir -p "$CACHE_ROOT/${m%%:*}"; done
+  local m dir
+  for m in $CACHE_MOUNTS; do
+    [ -n "$m" ] || continue
+    dir="$CACHE_ROOT/${m%%:*}"
+    mkdir -p "$dir"
+    # Unless runners run as root, they write caches as the non-root 'runner' user
+    # (RUNNER_UID:RUNNER_GID). Make the host cache dirs owned by it — chown only
+    # when the owner differs so this stays fast on warm caches.
+    if [ "$RUN_AS_ROOT" != "true" ] && [ "$(stat -c %u "$dir" 2>/dev/null)" != "$RUNNER_UID" ]; then
+      chown -R "$RUNNER_UID:$RUNNER_GID" "$dir" 2>/dev/null || true
+    fi
+  done
 }
 
 # Shared pull-through registry mirror so all DinD runners reuse pulled images
@@ -253,9 +270,10 @@ build_args() {
     -e LABELS="$RUNNER_LABELS"
     -e EPHEMERAL="$EPHEMERAL"
     -e DISABLE_AUTO_UPDATE="true"
+    -e RUN_AS_ROOT="$RUN_AS_ROOT"
     -e RUNNER_ALLOW_RUNASROOT="1"
     -e RUNNER_WORKDIR="/_work"
-    -e npm_config_cache="/root/.npm"
+    -e npm_config_cache="/home/runner/.npm"
   )
   # warm caches mounted into the runner, configurable via CACHE_MOUNTS
   local m
@@ -268,7 +286,15 @@ build_args() {
   if [ "$DIND" = "true" ]; then
     # each runner runs its own dockerd: isolates service-container ports and
     # makes localhost:<port> reachable from job steps (the runner IS the host).
-    ARGS+=( --privileged -e START_DOCKER_SERVICE=true )
+    #
+    # Give the inner dockerd a real-filesystem /var/lib/docker via a named
+    # volume. Without it the inner storage sits on the container's own overlayfs
+    # (overlay-on-overlay), where overlay2 cannot create whiteout device nodes —
+    # pulling images that delete files (e.g. postgres) fails with
+    # "failed to convert whiteout file ...: operation not permitted". The volume
+    # lands on the host docker storage (a real fs) and is torn down with the
+    # runner (see remove_runner).
+    ARGS+=( --privileged -e START_DOCKER_SERVICE=true -v "${name}-dind:/var/lib/docker" )
     if [ "$SHARED_IMAGE_CACHE" = "true" ]; then
       ARGS+=( --add-host "host.docker.internal:host-gateway" -v "$CACHE_ROOT/dind-daemon.json:/etc/docker/daemon.json:ro" )
     fi
@@ -316,11 +342,21 @@ cmd_start() {
   [ "$AUTOSCALE" = "true" ] && autoscale_start
 }
 
+# Tear down a runner: graceful stop, remove the container, and drop its DinD
+# storage volume (the per-runner /var/lib/docker created in build_args) so the
+# host disk is reclaimed instead of leaking a volume per retired runner.
+remove_runner() {
+  local c="$1"
+  docker stop -t 30 "$c" >/dev/null 2>&1
+  docker rm "$c" >/dev/null 2>&1
+  docker volume rm "${c}-dind" >/dev/null 2>&1 || true
+}
+
 cmd_stop() {
   autoscale_stop
   local names; names="$(managed_names)"
   [ -z "$names" ] && { log "no managed runners running"; return 0; }
-  echo "$names" | while read -r c; do [ -n "$c" ] && { log "stopping $c (graceful deregister)"; docker stop -t 30 "$c" >/dev/null 2>&1; docker rm "$c" >/dev/null 2>&1; }; done
+  echo "$names" | while read -r c; do [ -n "$c" ] && { log "stopping $c (graceful deregister)"; remove_runner "$c"; }; done
 }
 
 cmd_scale() {
@@ -335,7 +371,7 @@ cmd_scale() {
   elif [ "$target" -lt "$current" ]; then
     local i
     for i in $(seq "$current" -1 $((target+1)) ); do
-      docker stop -t 30 "${NAME_PREFIX}-${i}" >/dev/null 2>&1; docker rm "${NAME_PREFIX}-${i}" >/dev/null 2>&1 && log "removed ${NAME_PREFIX}-${i}"
+      remove_runner "${NAME_PREFIX}-${i}" && log "removed ${NAME_PREFIX}-${i}"
     done
   fi
   log "scaled to $(managed_names | wc -l) runner(s)"
@@ -418,6 +454,7 @@ cmd_validate() {
   echo "--- docker.sock reachable inside container ---"
   docker exec "$name" sh -c '[ -S /var/run/docker.sock ] && echo "yes: docker.sock present" || echo "no socket"' 2>/dev/null
   docker rm -f "$name" >/dev/null 2>&1
+  docker volume rm "${name}-dind" >/dev/null 2>&1 || true
   log "validate: OK (container removed). Provisioning mechanics verified on this host."
 }
 

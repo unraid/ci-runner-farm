@@ -99,6 +99,16 @@ _(Ephemeral)_:
 > false = persistent runner, package caches stay warm between jobs. true = fresh runner re-registered per job (cleanest state, slightly slower first run).
 :end
 
+_(Run jobs as root)_:
+: <select name="RUN_AS_ROOT">
+  <option value="false" <?=crf_sel($cfg,'RUN_AS_ROOT','false','false')?>>false (non-root 'runner', like GitHub-hosted)</option>
+  <option value="true" <?=crf_sel($cfg,'RUN_AS_ROOT','true','false')?>>true (root, legacy)</option>
+  </select>
+
+:crf_runasroot_plug:
+> false (recommended): jobs run as the non-root `runner` user with passwordless sudo, matching GitHub-hosted runners — so tests that assert non-root file permissions behave correctly. Package caches mount under /home/runner for that user. true: jobs run as root (legacy); permission-sensitive tests may behave differently and caches mounted under /home/runner won't be auto-discovered by root tooling.
+:end
+
 ### Runner image
 
 _(Image source)_:
@@ -149,7 +159,7 @@ _(Workspace tmpfs size)_:
 :end
 
 _(Cache mounts)_:
-: <input type="text" name="CACHE_MOUNTS" value="<?=crf_g($cfg,'CACHE_MOUNTS','pnpm-store:/root/.local/share/pnpm/store npm:/root/.npm yarn:/usr/local/share/.cache/yarn ms-playwright:/root/.cache/ms-playwright')?>">
+: <input type="text" name="CACHE_MOUNTS" value="<?=crf_g($cfg,'CACHE_MOUNTS','pnpm-store:/home/runner/.local/share/pnpm/store npm:/home/runner/.npm yarn:/home/runner/.cache/yarn ms-playwright:/home/runner/.cache/ms-playwright')?>">
 
 :crf_cache_mounts_plug:
 > Space-separated `host-subdir:container-path` warm caches mounted into every runner (created under the cache root). Defaults cover pnpm/npm/yarn/Playwright — edit for your stack.
