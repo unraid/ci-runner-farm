@@ -1,53 +1,58 @@
 # CI Runner Farm — Unraid plugin
 
-Manages a fleet of **GitHub Actions self-hosted *build* runners as Docker containers** on Unraid.
-Designed for the the host double-duty plan: lightweight, resource-capped build runners that
-run **alongside** the existing `another-workload` (the destructive integration workload),
-never touching it.
+Manage a fleet of **GitHub Actions self-hosted runners as Docker containers** on Unraid —
+multiple concurrent, resource-capped runners with warm shared caches, with no VM required.
 
 ## What it does
 
-- Runs **N concurrent runners**, each a container (no VM), capped with `--cpus` / `--memory`
-  so multiple builds — and the host, and the other workloads — coexist on the 28-thread a multi-core host.
-- **Warm shared caches** on the fast `fast_pool` (pnpm store, npm, yarn). Docker layer cache
-  is shared host-wide for free via the mounted `docker.sock`.
-- **Per-job workspace on tmpfs** (RAM-backed) → clean workspace each job, fast I/O, while caches stay warm.
-- **Service-container support**: the host `docker.sock` is mounted, so jobs that run
-  `docker compose up postgres` (e.g. account's integration tests: `postgres` + db-proxy)
-  work as sibling containers.
-- Web UI under **Settings → Utilities → CI Runner Farm**: configure, set the PAT, Start/Stop/
-  Restart/Scale, live status table.
+- Runs **N concurrent runners**, each a container, optionally capped with `--cpus` / `--memory`
+  so builds coexist with the host.
+- **Queue-aware autoscaling**: an optional daemon floats the fleet between a min and max by demand.
+- **Warm shared caches** on a fast pool, reused across runs.
+- **Docker-in-Docker** per runner (default) so jobs using `services:` / `docker compose` work,
+  with an optional shared pull-through registry mirror so images are pulled once.
+- Bring-your-own **runner image**: point the `IMAGE` setting at any image you build (see below).
+- Web UI under **Settings → Utilities → CI Runner Farm**: configure, set the PAT,
+  Start/Stop/Restart/Scale, live status, and an in-plugin image builder.
 
 ## Install
 
 ```
 plugin install /path/to/ci-runner-farm.plg      # or via Plugins > Install Plugin (URL/file)
 ```
-The `.plg` is self-contained (base64 payload) — no external hosting required.
-Rebuild after edits with `./build-plg.sh`.
+
+Rebuild the `.plg` after edits with `./build-plg.sh`.
 
 ## Configure
 
 1. **Settings → Utilities → CI Runner Farm**.
-2. Fill in scope (`repo` for `unraid/repo-a unraid/repo-b`, or `org`), runner count, CPU/mem caps,
-   labels, cache root.
+2. Fill in scope (`repo` or `org`), runner count, optional CPU/mem caps, labels, and cache root.
 3. **Save token**: a GitHub PAT (repo scope; add `admin:org` for org runners). Stored at
    `/boot/config/plugins/ci-runner-farm/token`, chmod 600 — never in `config.cfg`.
 4. **Validate** (no token needed) to prove provisioning on this host, then **Start**.
 
+## Runner image
+
+The plugin ships a **generic starter Dockerfile** (`default.Dockerfile`): the stock
+self-hosted runner base plus a docker-in-docker readiness wrapper. Customize it from the UI's
+**Runner image builder** (add language runtimes, browsers, build tools), Build, and the fleet
+uses the resulting tag (the `IMAGE` setting).
+
+Keep heavier or organization-specific image recipes in your own repository and point `IMAGE` at
+the image you build there.
+
 ## CLI
 
 ```
-include/runner-farm.sh {start|stop|restart|scale N|status|status-json|logs i|validate|prune-cache}
+include/runner-farm.sh {start|boot-autostart|stop|restart|scale N|status|status-json|logs i|validate|build-image|prune-cache|autoscale-*}
 ```
 
 ## Security notes
 
-- Mounting `docker.sock` gives runners root-equivalent host access. Use **only for private repos**
-  (`account`, `connect`). **Keep public `unraid/api` on GitHub-hosted** — fork-PR code must never
-  run on a socket-mounted self-hosted runner.
-- For stronger isolation later, set `EPHEMERAL=true` (clean runner per job) and/or switch to
-  rootless Docker-in-Docker instead of the shared socket.
+- Docker-in-DinD runners are `--privileged`; the shared-socket mode gives runners
+  root-equivalent host access. Use self-hosted runners **only for trusted/private repositories** —
+  fork-PR code from public repos must never run on a privileged or socket-mounted self-hosted runner.
+- For stronger isolation, set `EPHEMERAL=true` (a clean runner per job).
 
 ## Layout
 
@@ -57,15 +62,7 @@ build-plg.sh                       packages src/ -> .plg
 src/usr/local/emhttp/plugins/ci-runner-farm/
   RunnerFarm.page                  Settings page (Dynamix)
   default.cfg                      seed config
+  default.Dockerfile               generic starter runner image
   include/runner-farm.sh           provisioning/control script
   include/exec.php                 CSRF-guarded web endpoint
-```
-
-## Verified on the host (Unraid 7.3.1, a multi-core host, 125 GB)
-
-- Provisioning mechanics: cpu/mem caps, SSD-pool cache mounts, docker.sock reachable, 8 GB tmpfs `/_work`.
-- `exec.php`: valid CSRF passes, bad CSRF → 403.
-- Full UI → endpoint → script chain (validate) green.
-- Clean install via `plugin install`: files land, config seeds, script runs.
-- **Not yet tested:** live runner registration + a real concurrent build — needs a GitHub PAT.
 ```

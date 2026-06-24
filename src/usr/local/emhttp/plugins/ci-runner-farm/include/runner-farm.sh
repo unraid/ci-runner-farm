@@ -397,8 +397,28 @@ cmd_build_image() {
   return $rc
 }
 
+# Called from the plugin install step, which ALSO re-runs on every boot
+# (rc.local reinstalls all .plg). At boot this fires before the array/dockerd
+# are up, so wait for both, then bring the fleet up idempotently. The caller
+# detaches it so it never blocks install/boot. No-op until a token is configured
+# (a fresh install waits for the user); cmd_start skips existing containers and
+# (re)starts the autoscale daemon, so the fleet self-heals after a reboot.
+cmd_boot_autostart() {
+  [ -n "$ACCESS_TOKEN" ] || { log "boot-autostart: no token configured yet — skipping"; return 0; }
+  local i
+  for i in $(seq 1 150); do
+    docker info >/dev/null 2>&1 && check_cache_root >/dev/null 2>&1 && break
+    sleep 4
+  done
+  docker info >/dev/null 2>&1 || { err "boot-autostart: dockerd not ready after wait — giving up"; return 1; }
+  check_cache_root >/dev/null 2>&1 || { err "boot-autostart: cache pool not ready after wait — giving up"; return 1; }
+  log "boot-autostart: docker + cache pool ready — bringing fleet up"
+  cmd_start
+}
+
 case "${1:-status}" in
   start)        cmd_start ;;
+  boot-autostart)   cmd_boot_autostart ;;
   stop)         cmd_stop ;;
   restart)      cmd_stop; cmd_start ;;
   scale)        cmd_scale "${2:?usage: scale <N>}" ;;
@@ -413,5 +433,5 @@ case "${1:-status}" in
   autoscale-start)  autoscale_start ;;
   autoscale-stop)   autoscale_stop ;;
   autoscale-status) autoscale_status ;;
-  *) echo "usage: $0 {start|stop|restart|scale N|status|status-json|logs i|validate|build-image|prune-cache|autoscale-tick|autoscale-start|autoscale-stop|autoscale-status}"; exit 1 ;;
+  *) echo "usage: $0 {start|boot-autostart|stop|restart|scale N|status|status-json|logs i|validate|build-image|prune-cache|autoscale-tick|autoscale-start|autoscale-stop|autoscale-status}"; exit 1 ;;
 esac

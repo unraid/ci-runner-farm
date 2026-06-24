@@ -57,6 +57,10 @@ chmod 0755 "\$PLGDIR/include/runner-farm.sh"
 chmod 0644 "\$CFGDIR/config.cfg"
 [ -f "\$CFGDIR/Dockerfile" ] || cp "\$PLGDIR/default.Dockerfile" "\$CFGDIR/Dockerfile"
 ( docker pull myoung34/github-runner:latest >/dev/null 2>&1 & ) || true
+# Bring the fleet + autoscaler up. Runs on manual install AND on every boot
+# (rc.local reinstalls plugins), detached so it waits for dockerd+array without
+# blocking. No-op until a GitHub token is configured.
+( nohup "\$PLGDIR/include/runner-farm.sh" boot-autostart >>"\$CFGDIR/boot.log" 2>&1 & ) || true
 echo ""
 echo "+=============================================================+"
 echo "| ci-runner-farm ${VERSION} installed.                         "
