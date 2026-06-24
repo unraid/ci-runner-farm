@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.0.0 (2026-06-24)
+
+
+### Features
+
+* DinD mode (own dockerd per runner) to fix services: networking + port collisions ([74990ff](https://github.com/unraid/ci-runner-farm/commit/74990ff76a3dc205e973de3f9364e679a04db748))
+* fat runner image (warm caches) + graceful stop + package cache ([88f6ce0](https://github.com/unraid/ci-runner-farm/commit/88f6ce0679b72ade9cdf7d0109da4d333df58e90))
+* field tooltips + pre-scoped GitHub PAT link; harden deploys to root:root ([e320ca6](https://github.com/unraid/ci-runner-farm/commit/e320ca67c7fc5ecdcb69a7e6d36177e7e1844488))
+* generic starter runner image + bring-your-own-image ([d6bcf90](https://github.com/unraid/ci-runner-farm/commit/d6bcf9076fa34d1313886f0a23f7155e3f509754))
+* image source selector (built-in vs remote) ([193ec88](https://github.com/unraid/ci-runner-farm/commit/193ec887f819d28559fc81b677e8dc9b1c36b99e))
+* in-plugin runner image builder (editable Dockerfile + Build button) ([a996fda](https://github.com/unraid/ci-runner-farm/commit/a996fda19b280d636a1a95561906e7a36074aa62))
+* private registry docker login + configurable cache mounts ([87e62c4](https://github.com/unraid/ci-runner-farm/commit/87e62c4d4dc958871dfc008c7cb1e1b2bb0a044e))
+* public-release publishing via release-please + GitHub artifacts ([#1](https://github.com/unraid/ci-runner-farm/issues/1)) ([46eb8c1](https://github.com/unraid/ci-runner-farm/commit/46eb8c178a61c256044bea5f689622828c62be8f))
+* queue-aware autoscaler with tuning options ([f19cd16](https://github.com/unraid/ci-runner-farm/commit/f19cd16c7ab1fc04d81ccf62b5069d22a7273486))
+* **registry:** reuse GitHub PAT for GHCR login when no registry token set ([60d41db](https://github.com/unraid/ci-runner-farm/commit/60d41dbf6d5c56b872cb8db37f2b70be23ce28f4))
+* shared image cache (registry mirror) + guard CACHE_ROOT against rootfs ([5aa92d9](https://github.com/unraid/ci-runner-farm/commit/5aa92d9261d7308eae78e06eb365b1416d2b5a2c))
+* **ui:** hide remote-only fields unless Image source = Remote ([55e58c3](https://github.com/unraid/ci-runner-farm/commit/55e58c36cb02014bde2526e861e205d59d33248e))
+* **ui:** native folder picker on Cache root path field ([4253c75](https://github.com/unraid/ci-runner-farm/commit/4253c75523c6f198caab987285c60cba5d8b8570))
+
+
+### Bug Fixes
+
+* scope install extraction to plugin dir, force root perms ([bb869cc](https://github.com/unraid/ci-runner-farm/commit/bb869cc7ee266d55795c5b59ade4044a752679cf))
+* **ui:** load jquery.filetree js+css so the Cache root picker actually works ([e352946](https://github.com/unraid/ci-runner-farm/commit/e352946d43197d5ab2be8dc69585abe8642ca0ac))
+* **ui:** use Unraid native inline help (markdown form + :plug:/&gt;/:end) ([43c52b3](https://github.com/unraid/ci-runner-farm/commit/43c52b323d6ed58a6bee813eae7b24b72a1f208f))
+
+## Changelog
+
 All notable changes to this project are documented here. This file is managed
 automatically by [release-please](https://github.com/googleapis/release-please)
 from [Conventional Commit](https://www.conventionalcommits.org) messages merged
