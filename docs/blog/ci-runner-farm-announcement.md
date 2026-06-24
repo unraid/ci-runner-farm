@@ -153,7 +153,6 @@ for the full picture.
 - **Install by URL:** `https://github.com/unraid/ci-runner-farm/releases/latest/download/ci-runner-farm.plg`
   (Unraid resolves this to the newest release and keeps it updated.)
 - **Source & issues:** <https://github.com/unraid/ci-runner-farm>
-- **License:** BSD-2-Clause.
 
 Spin it up, point it at a repo, and watch your next push build on your own
 hardware.
