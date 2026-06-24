@@ -12,7 +12,7 @@ DEST="/usr/local/emhttp/plugins/${NAME}"
 cd "$(dirname "$0")"
 
 echo "[deploy] syncing $SRC -> $HOST:$DEST"
-ssh "$HOST" "mkdir -p '$DEST/include' '$DEST/images'"
+ssh "$HOST" "mkdir -p '$DEST/include'"
 scp -q "$SRC/RunnerFarm.page" "$SRC/default.cfg" "$SRC/default.Dockerfile" "$HOST:$DEST/"
 scp -q "$SRC"/include/* "$HOST:$DEST/include/"
 
