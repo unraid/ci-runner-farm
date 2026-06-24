@@ -47,10 +47,19 @@ SHARED_IMAGE_CACHE="true"             # run a shared pull-through registry mirro
                                       # reuses pulled images (postgres, etc.) instead of each pulling cold.
 MIRROR_NAME="ci-runner-mirror"        # cache persists on the pool across restarts.
 MIRROR_PORT="5000"
+# ---- autoscaling (queue-aware): fleet floats between MIN and MAX ------------
+AUTOSCALE="false"                     # true => a daemon grows/shrinks the fleet by demand
+AUTOSCALE_MIN="2"                     # never go below this many runners
+AUTOSCALE_MAX="16"                    # never go above this many
+AUTOSCALE_MIN_IDLE="2"                # keep at least this many idle (warm) runners as headroom
+AUTOSCALE_STEP="2"                    # add/remove this many per adjustment
+AUTOSCALE_INTERVAL="30"              # seconds between checks
+AUTOSCALE_IDLE_GRACE="5"             # consecutive over-idle checks before scaling down (anti-flap)
 # ----------------------------------------------------------------------------
 
 [ -f "$CFG" ] && . "$CFG"
 [ -z "$ACCESS_TOKEN" ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
+AUTOSCALE_PID="${CFGDIR}/autoscale.pid"
 
 log()  { echo "[ci-runner-farm] $*"; }
 err()  { echo "[ci-runner-farm] ERROR: $*" >&2; }
@@ -58,6 +67,85 @@ host() { hostname -s; }
 
 managed_names() {
   docker ps -a --filter "label=${MANAGED_LABEL}" --format '{{.Names}}' | sort -V
+}
+
+current_count() { managed_names | grep -c . ; }
+
+# is a runner actively running a job? (last meaningful log line)
+runner_busy() {
+  docker logs --tail 8 "$1" 2>&1 | grep -iE "Running job|Listening for Jobs|completed" | tail -1 | grep -qi "Running job"
+}
+busy_count() {
+  local b=0 c
+  for c in $(managed_names); do [ -n "$c" ] && runner_busy "$c" && b=$((b+1)); done
+  echo "$b"
+}
+
+# remove up to $1 IDLE runners (highest index first), never below MIN, never busy ones
+scale_down_idle() {
+  local want="$1" removed=0 c
+  for c in $(managed_names | sort -rV); do
+    [ "$removed" -ge "$want" ] && break
+    [ "$(current_count)" -le "$AUTOSCALE_MIN" ] && break
+    if ! runner_busy "$c"; then
+      log "autoscale: removing idle $c"
+      docker stop -t 30 "$c" >/dev/null 2>&1; docker rm "$c" >/dev/null 2>&1
+      removed=$((removed+1))
+    fi
+  done
+}
+
+# one autoscaling evaluation: keep AUTOSCALE_MIN_IDLE warm runners, within [MIN,MAX]
+autoscale_tick() {
+  [ "$AUTOSCALE" = "true" ] || return 0
+  local cur busy idle statef over target
+  cur=$(current_count); busy=$(busy_count); idle=$((cur - busy))
+  statef="${CFGDIR}/autoscale.state"; over=0
+  [ -f "$statef" ] && over=$(cat "$statef" 2>/dev/null || echo 0)
+
+  if [ "$idle" -lt "$AUTOSCALE_MIN_IDLE" ] && [ "$cur" -lt "$AUTOSCALE_MAX" ]; then
+    target=$(( cur + AUTOSCALE_STEP )); [ "$target" -gt "$AUTOSCALE_MAX" ] && target=$AUTOSCALE_MAX
+    log "autoscale: idle=$idle/$cur < buffer $AUTOSCALE_MIN_IDLE -> grow to $target"
+    cmd_scale "$target" >/dev/null; echo 0 > "$statef"
+  elif [ "$idle" -gt $(( AUTOSCALE_MIN_IDLE + AUTOSCALE_STEP )) ] && [ "$cur" -gt "$AUTOSCALE_MIN" ]; then
+    over=$(( over + 1 )); echo "$over" > "$statef"
+    if [ "$over" -ge "$AUTOSCALE_IDLE_GRACE" ]; then
+      log "autoscale: idle=$idle/$cur high for $over checks -> shrink by $AUTOSCALE_STEP"
+      scale_down_idle "$AUTOSCALE_STEP"; echo 0 > "$statef"
+    fi
+  else
+    echo 0 > "$statef"
+  fi
+}
+
+# long-running loop; re-reads config each tick so UI changes apply live
+autoscale_daemon() {
+  log "autoscale daemon up (min=$AUTOSCALE_MIN max=$AUTOSCALE_MAX buffer=$AUTOSCALE_MIN_IDLE step=$AUTOSCALE_STEP every ${AUTOSCALE_INTERVAL}s)"
+  while true; do
+    [ -f "$CFG" ] && . "$CFG"
+    [ -z "$ACCESS_TOKEN" ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
+    [ "$AUTOSCALE" = "true" ] || { log "autoscale disabled -> daemon exit"; rm -f "$AUTOSCALE_PID"; break; }
+    autoscale_tick
+    sleep "${AUTOSCALE_INTERVAL:-30}"
+  done
+}
+
+autoscale_start() {
+  [ "$AUTOSCALE" = "true" ] || return 0
+  autoscale_stop
+  nohup "$0" autoscale-daemon >>"${CFGDIR}/autoscale.log" 2>&1 &
+  echo $! > "$AUTOSCALE_PID"
+  log "autoscale daemon started (pid $(cat "$AUTOSCALE_PID"))"
+}
+autoscale_stop() {
+  [ -f "$AUTOSCALE_PID" ] && kill "$(cat "$AUTOSCALE_PID")" 2>/dev/null
+  rm -f "$AUTOSCALE_PID"
+  pkill -f "runner-farm.sh autoscale-daemon" 2>/dev/null || true
+}
+autoscale_status() {
+  if [ -f "$AUTOSCALE_PID" ] && kill -0 "$(cat "$AUTOSCALE_PID" 2>/dev/null)" 2>/dev/null; then
+    echo "running (pid $(cat "$AUTOSCALE_PID"))"
+  else echo "stopped"; fi
 }
 
 repo_for_index() {
@@ -175,12 +263,17 @@ cmd_start() {
   check_cache_root || return 1
   ensure_dirs
   ensure_mirror
+  # with autoscaling on, start the floor (MIN) and let the daemon grow to demand
+  local startn="$RUNNER_COUNT"
+  [ "$AUTOSCALE" = "true" ] && startn="$AUTOSCALE_MIN"
   local i
-  for i in $(seq 1 "$RUNNER_COUNT"); do start_one "$i"; done
+  for i in $(seq 1 "$startn"); do start_one "$i"; done
   log "fleet up: $(managed_names | wc -l) runner(s)"
+  [ "$AUTOSCALE" = "true" ] && autoscale_start
 }
 
 cmd_stop() {
+  autoscale_stop
   local names; names="$(managed_names)"
   [ -z "$names" ] && { log "no managed runners running"; return 0; }
   echo "$names" | while read -r c; do [ -n "$c" ] && { log "stopping $c (graceful deregister)"; docker stop -t 30 "$c" >/dev/null 2>&1; docker rm "$c" >/dev/null 2>&1; }; done
@@ -247,7 +340,8 @@ cmd_status_json() {
     first=0
   done
   out+="]"
-  echo "{\"count\":$(echo "$names" | grep -c . ),\"configured\":${RUNNER_COUNT},\"token\":$([ -n "$ACCESS_TOKEN" ] && echo true || echo false),\"runners\":${out}}"
+  local as="off"; [ "$AUTOSCALE" = "true" ] && as="$(autoscale_status)"
+  echo "{\"count\":$(echo "$names" | grep -c . ),\"configured\":${RUNNER_COUNT},\"token\":$([ -n "$ACCESS_TOKEN" ] && echo true || echo false),\"autoscale\":\"${as} [${AUTOSCALE_MIN}-${AUTOSCALE_MAX}, buffer ${AUTOSCALE_MIN_IDLE}]\",\"runners\":${out}}"
 }
 
 cmd_logs() { docker logs --tail "${2:-100}" -f "${NAME_PREFIX}-${1:-1}"; }
@@ -311,8 +405,13 @@ case "${1:-status}" in
   status)       cmd_status ;;
   status-json)  cmd_status_json ;;
   logs)         cmd_logs "${2:-1}" "${3:-100}" ;;
-  validate)     cmd_validate ;;
-  build-image)  cmd_build_image ;;
-  prune-cache)  cmd_prune_cache ;;
-  *) echo "usage: $0 {start|stop|restart|scale N|status|status-json|logs i|validate|build-image|prune-cache}"; exit 1 ;;
+  validate)         cmd_validate ;;
+  build-image)      cmd_build_image ;;
+  prune-cache)      cmd_prune_cache ;;
+  autoscale-daemon) autoscale_daemon ;;
+  autoscale-tick)   autoscale_tick ;;
+  autoscale-start)  autoscale_start ;;
+  autoscale-stop)   autoscale_stop ;;
+  autoscale-status) autoscale_status ;;
+  *) echo "usage: $0 {start|stop|restart|scale N|status|status-json|logs i|validate|build-image|prune-cache|autoscale-tick|autoscale-start|autoscale-stop|autoscale-status}"; exit 1 ;;
 esac

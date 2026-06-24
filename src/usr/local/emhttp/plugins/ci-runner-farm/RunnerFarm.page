@@ -138,6 +138,58 @@ _(Share host docker.sock)_:
 > Mount the host Docker socket so jobs can start service containers (e.g. postgres for integration tests). PRIVATE repos only — never expose this to public/fork-PR code (root-equivalent host access).
 :end
 
+_(Autoscaling)_:
+: <select name="AUTOSCALE">
+  <option value="false" <?=crf_sel($cfg,'AUTOSCALE','false','false')?>>off (fixed at Concurrent runners)</option>
+  <option value="true" <?=crf_sel($cfg,'AUTOSCALE','true','false')?>>on (fleet floats by demand)</option>
+  </select>
+
+:crf_autoscale_plug:
+> When on, a daemon grows/shrinks the fleet by demand instead of using a fixed count. It keeps a warm idle buffer: when idle runners drop below the buffer (jobs are consuming them) it adds runners; when too many sit idle it removes them. Bounded by Min/Max, with grace to avoid flapping. Only ever removes idle runners, never a runner mid-job.
+:end
+
+_(Autoscale: min runners)_:
+: <input type="number" name="AUTOSCALE_MIN" min="0" max="40" value="<?=crf_g($cfg,'AUTOSCALE_MIN','2')?>">
+
+:crf_asmin_plug:
+> The floor — the fleet never drops below this, even fully idle. Keeps a couple warm so the first jobs never wait.
+:end
+
+_(Autoscale: max runners)_:
+: <input type="number" name="AUTOSCALE_MAX" min="1" max="40" value="<?=crf_g($cfg,'AUTOSCALE_MAX','16')?>">
+
+:crf_asmax_plug:
+> The ceiling — the fleet never grows past this. Set it to the most the box can run alongside the other workloads (the host: ~16 leaves CPU/RAM headroom).
+:end
+
+_(Autoscale: warm idle buffer)_:
+: <input type="number" name="AUTOSCALE_MIN_IDLE" min="1" max="20" value="<?=crf_g($cfg,'AUTOSCALE_MIN_IDLE','2')?>">
+
+:crf_asbuf_plug:
+> Keep at least this many idle runners ready. When idle drops below it, scale up — so a burst of jobs finds warm runners instead of queueing. Higher = more headroom but more idle containers.
+:end
+
+_(Autoscale: step)_:
+: <input type="number" name="AUTOSCALE_STEP" min="1" max="10" value="<?=crf_g($cfg,'AUTOSCALE_STEP','2')?>">
+
+:crf_asstep_plug:
+> How many runners to add or remove per adjustment.
+:end
+
+_(Autoscale: check interval (s))_:
+: <input type="number" name="AUTOSCALE_INTERVAL" min="10" max="600" value="<?=crf_g($cfg,'AUTOSCALE_INTERVAL','30')?>">
+
+:crf_asint_plug:
+> Seconds between demand checks. Lower = more responsive, more churn.
+:end
+
+_(Autoscale: scale-down grace)_:
+: <input type="number" name="AUTOSCALE_IDLE_GRACE" min="1" max="60" value="<?=crf_g($cfg,'AUTOSCALE_IDLE_GRACE','5')?>">
+
+:crf_asgrace_plug:
+> How many consecutive over-idle checks before removing runners. Scale-up is immediate; scale-down waits this long to avoid flapping during brief lulls.
+:end
+
 &nbsp;
 : <input type="submit" name="Apply" value="_(Apply)_">
 
