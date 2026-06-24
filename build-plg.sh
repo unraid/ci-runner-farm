@@ -1,34 +1,84 @@
 #!/bin/bash
 # Assemble a self-contained Unraid .plg from src/. The plugin file tree is
 # tarred, base64-encoded, and embedded inline, so the .plg installs with no
-# external hosting (ideal for direct install via `installplg`).
+# external file hosting — Community Applications (or `installplg`) only ever
+# fetches the single .plg, which carries everything it needs.
+#
+# Versioning (mirrors the other Unraid plugins we publish via release-please):
+#   INTERNAL_VERSION  SemVer source of truth (from .release-please-manifest.json),
+#                     e.g. 0.1.0. Becomes the <pluginVersion> entity and the
+#                     vX.Y.Z release tag. Defaults to the VERSION file, then 0.0.0.
+#   BUILD_NUMBER      Monotonic build counter (CI passes $GITHUB_RUN_NUMBER).
+#                     Defaults to 0 for local dev builds.
+#   DATE              YYYY.MM.DD.HHMM build stamp. Defaults to now (UTC).
+#   REPO              owner/name on GitHub, used for pluginURL + support URL.
+#
+# The Unraid plugin-manager <version> ("external" version) is
+#   YYYY.MM.DD.HHMM.BUILD-INTERNAL  e.g. 2026.06.24.1530.42-0.1.0
+# which sorts chronologically in the plugin manager while still pinning the
+# SemVer release it was cut from. pluginURL points at the GitHub release asset
+# so Unraid's "check for updates" always resolves the newest published .plg.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 NAME="ci-runner-farm"
-VERSION="$(date +%Y.%m.%d.%H%M)"
 OUT="${NAME}.plg"
+REPO="${REPO:-unraid/ci-runner-farm}"
+
+# Internal SemVer: explicit env wins, else the VERSION file, else 0.0.0 (dev).
+INTERNAL_VERSION="${INTERNAL_VERSION:-$( [ -f VERSION ] && tr -d '[:space:]' < VERSION || echo '0.0.0' )}"
+INTERNAL_VERSION="${INTERNAL_VERSION:-0.0.0}"
+BUILD_NUMBER="${BUILD_NUMBER:-${GITHUB_RUN_NUMBER:-0}}"
+DATE="${DATE:-$(date -u +%Y.%m.%d.%H%M)}"
+
+# Validate the pieces so a bad release input fails the build, not the install.
+[[ "$DATE" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]{4}$ ]] || { echo "DATE must be YYYY.MM.DD.HHMM: $DATE" >&2; exit 1; }
+[[ "$BUILD_NUMBER" =~ ^[0-9]+$ ]] || { echo "BUILD_NUMBER must be numeric: $BUILD_NUMBER" >&2; exit 1; }
+[[ "$INTERNAL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "INTERNAL_VERSION must be SemVer: $INTERNAL_VERSION" >&2; exit 1; }
+
+VERSION="${DATE}.${BUILD_NUMBER}-${INTERNAL_VERSION}"
+RELEASE_TAG="v${INTERNAL_VERSION}"
+PLUGIN_URL="https://github.com/${REPO}/releases/latest/download/${NAME}.plg"
+SUPPORT_URL="https://github.com/${REPO}/issues"
+
+# Changelog body for the <CHANGES> block: pull the newest CHANGELOG.md section
+# if present, else a generic line. Kept plain so the plugin manager renders it.
+changes="- Containerized GitHub Actions runner farm for Unraid."
+if [ -f CHANGELOG.md ]; then
+  section="$(awk '/^## /{n++; if(n==2) exit} n==1 && !/^## /' CHANGELOG.md | sed '/^[[:space:]]*$/d')"
+  [ -n "$section" ] && changes="$section"
+fi
 
 # Package ONLY the plugin dir contents (never /usr or a root '.' entry that
-# could clobber system-dir perms/ownership on extract), and bake root:root
-# ownership into the archive so even a raw extract lands as root.
-PAYLOAD="$(tar -cz --uid 0 --gid 0 --uname root --gname root -C "src/usr/local/emhttp/plugins/${NAME}" . | base64)"
+# could clobber system-dir perms/ownership on extract). No owner flags here so
+# the build is portable across GNU tar (CI) and BSD tar (macOS); the install
+# step extracts with --no-same-owner and chowns root:root, so archive ownership
+# is irrelevant either way.
+PAYLOAD="$(tar -cz -C "src/usr/local/emhttp/plugins/${NAME}" . | base64)"
 
 cat > "$OUT" <<PLG
 <?xml version='1.0' standalone='yes'?>
 <!DOCTYPE PLUGIN [
-<!ENTITY name    "${NAME}">
-<!ENTITY author  "Lime Technology">
-<!ENTITY version "${VERSION}">
-<!ENTITY plgdir  "/usr/local/emhttp/plugins/&name;">
-<!ENTITY cfgdir  "/boot/config/plugins/&name;">
+<!ENTITY name          "${NAME}">
+<!ENTITY author        "Lime Technology">
+<!ENTITY version       "${VERSION}">
+<!ENTITY pluginVersion "${INTERNAL_VERSION}">
+<!ENTITY releaseTag    "${RELEASE_TAG}">
+<!ENTITY pluginURL     "${PLUGIN_URL}">
+<!ENTITY plgdir        "/usr/local/emhttp/plugins/&name;">
+<!ENTITY cfgdir        "/boot/config/plugins/&name;">
 ]>
-<PLUGIN name="&name;" author="&author;" version="&version;" min="6.12.0">
+<PLUGIN name="&name;"
+        author="&author;"
+        version="&version;"
+        pluginURL="&pluginURL;"
+        min="6.12.0"
+        support="${SUPPORT_URL}"
+        icon="docker">
 
 <CHANGES>
 ### &version;
-- Containerized GitHub Actions build-runner farm for Unraid.
-- Multiple concurrent runners (no VM), resource-capped, warm shared caches on a fast pool, host docker.sock for service containers.
+${changes}
 </CHANGES>
 
 <!-- base64 payload of the plugin file tree -->
@@ -83,4 +133,4 @@ echo "ci-runner-farm removed. Config + token left in /boot/config/plugins/${NAME
 </PLUGIN>
 PLG
 
-echo "built $OUT (version $VERSION, payload $(echo "$PAYLOAD" | wc -c) b64 bytes)"
+echo "built $OUT (version $VERSION, tag $RELEASE_TAG, payload $(echo "$PAYLOAD" | wc -c | tr -d ' ') b64 bytes)"

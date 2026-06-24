@@ -1,4 +1,10 @@
-name: Package Plugin
+name: Build Plugin
+
+# PR / branch CI: build the self-contained .plg from src/, validate the XML,
+# and confirm the embedded payload matches the source tree. Publishing happens
+# separately via release-please (.github/workflows/release-please.yml), which
+# regenerates the .plg on the release PR and uploads it as a GitHub Release
+# asset that Community Applications installs from.
 
 on:
   pull_request:
@@ -15,8 +21,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  package:
-    name: Package and publish plugin
+  build:
+    name: Build and validate plugin
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -24,53 +30,35 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Build plugin archive and .plg manifest
+      - name: Build .plg from src/
         env:
-          # Public base the published files are served from (org secret, e.g.
-          # https://REDACTED). Falls back for fork PRs where org
-          # secrets are not injected. "/ci-runner-farm" prefix is appended below.
-          PREVIEW_BUCKET_BASE_URL: ${{ secrets.CLOUDFLARE_PREVIEW_BUCKET_BASE_URL }}
-          # Optional salt to make the hashed publish dir unguessable. Empty when
-          # unset -> slug = sha256(id)[:40] (still non-enumerable), matching core-plugins.
-          HASH_SALT: ${{ secrets.CLOUDFLARE_PLUGIN_HASH_SALT }}
+          REPO: ${{ github.repository }}
+          BUILD_NUMBER: ${{ github.run_number }}
         run: |
-          base="${PREVIEW_BUCKET_BASE_URL:-https://REDACTED}"
-          base="${base%/}/ci-runner-farm"
-          echo "Using BASE_URL=${base}"
-          chmod +x scripts/build-plugin-archives.sh
-          BASE_URL="${base}" scripts/build-plugin-archives.sh
+          set -euo pipefail
+          chmod +x build-plg.sh
+          ./build-plg.sh
 
-      - name: Upload plugin artifacts (CI)
-        if: ${{ hashFiles('plugin/deploy/**') != '' }}
+      - name: Validate .plg XML and embedded payload
+        run: |
+          set -euo pipefail
+          plg="ci-runner-farm.plg"
+          python3 -c "import xml.etree.ElementTree as ET; ET.parse('$plg')"
+          python3 - "$plg" > /tmp/payload.b64 <<'PY'
+          import re, sys
+          m = re.search(r'payload\.b64.*?<!\[CDATA\[(.*?)\]\]>', open(sys.argv[1]).read(), re.S)
+          if not m:
+              sys.exit("payload.b64 CDATA block not found in PLG")
+          sys.stdout.write(m.group(1).strip())
+          PY
+          rm -rf /tmp/plgtree && mkdir -p /tmp/plgtree
+          base64 -d /tmp/payload.b64 | tar -xz -C /tmp/plgtree
+          diff -r /tmp/plgtree src/usr/local/emhttp/plugins/ci-runner-farm
+          echo "Plugin built and validated."
+
+      - name: Upload built .plg (CI artifact)
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: ci-runner-farm-archives
-          path: plugin/deploy/**
+          name: ci-runner-farm-plg
+          path: ci-runner-farm.plg
           if-no-files-found: error
-
-      # Publish to Cloudflare R2 on pushes to main only (not PRs).
-      # Org-level secrets available to private repos (no per-repo setup):
-      #   CLOUDFLARE_S3_ACCESS_KEY_ID / CLOUDFLARE_S3_SECRET_ACCESS_KEY  (Private and internal repos)
-      #   CLOUDFLARE_S3_URL                                              (All repos)  - S3 endpoint
-      #   CLOUDFLARE_PREVIEW_BUCKET_NAME                                 (All repos)  - target bucket
-      - name: Publish to Cloudflare R2
-        if: ${{ github.event_name != 'pull_request' && hashFiles('plugin/deploy/**') != '' }}
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_S3_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_S3_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-          AWS_EC2_METADATA_DISABLED: true
-          AWS_SHARED_CREDENTIALS_FILE: /dev/null
-          AWS_CONFIG_FILE: /dev/null
-          CF_BUCKET: ${{ secrets.CLOUDFLARE_PREVIEW_BUCKET_NAME }}
-          CF_ENDPOINT: ${{ secrets.CLOUDFLARE_S3_URL }}
-        run: |
-          : "${CF_BUCKET:?CLOUDFLARE_PREVIEW_BUCKET_NAME secret is required}"
-          : "${CF_ENDPOINT:?CLOUDFLARE_S3_URL secret is required}"
-
-          aws s3 sync plugin/deploy/ "s3://${CF_BUCKET}/ci-runner-farm/" \
-            --endpoint-url "${CF_ENDPOINT}" \
-            --checksum-algorithm CRC32 \
-            --no-guess-mime-type \
-            --content-encoding none \
-            --acl public-read
