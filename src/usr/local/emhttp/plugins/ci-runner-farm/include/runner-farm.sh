@@ -388,6 +388,7 @@ cmd_scale() {
   local current; current="$(managed_names | wc -l)"
   if [ "$target" -gt "$current" ]; then
     [ -z "$ACCESS_TOKEN" ] && { err "no token configured"; return 1; }
+    check_cache_root || return 1
     local i
     for i in $(seq 1 "$target"); do
       docker ps -a --format '{{.Names}}' | grep -qx "${NAME_PREFIX}-${i}" || start_one "$i"
@@ -454,6 +455,7 @@ cmd_logs() { docker logs --tail "${2:-100}" -f "${NAME_PREFIX}-${1:-1}"; }
 cmd_validate() {
   # Prove the provisioning mechanics WITHOUT a GitHub token: launch the image
   # with an inert entrypoint, verify mounts/limits, then tear it down.
+  check_cache_root || return 1
   ensure_dirs
   registry_login
   local name="${NAME_PREFIX}-validate"
