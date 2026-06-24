@@ -14,6 +14,7 @@
         version="&version;"
         pluginURL="&pluginURL;"
         min="6.12.0"
+        launch="Settings/RunnerFarm"
         support="https://github.com/unraid/ci-runner-farm/issues"
         icon="docker">
 
