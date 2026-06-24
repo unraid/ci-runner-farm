@@ -4,94 +4,135 @@ Icon="icon-docker"
 Tag="server"
 ---
 <?php
-/* CI Runner Farm settings page - plain HTML/PHP (no markdown DSL) */
+/* CI Runner Farm settings page - native Unraid markdown form + inline help */
 $plugin   = 'ci-runner-farm';
 $cfgfile  = "/boot/config/plugins/$plugin/config.cfg";
 $cfg      = file_exists($cfgfile) ? parse_ini_file($cfgfile) : [];
 $has_token= file_exists("/boot/config/plugins/$plugin/token");
 $csrf     = $var['csrf_token'] ?? '';
-// GitHub pre-scoped PAT creation link (classic token, scopes match configured runner scope)
 $patScope = (($cfg['GH_SCOPE'] ?? 'repo') === 'org') ? 'repo,admin:org' : 'repo';
 $patUrl   = 'https://github.com/settings/tokens/new?description=Unraid+CI+Runner+Farm&scopes='.$patScope;
-function g($cfg,$k,$d=''){ return htmlspecialchars($cfg[$k] ?? $d, ENT_QUOTES); }
-function sel($cfg,$k,$val,$d){ return (($cfg[$k] ?? $d) === $val) ? 'selected' : ''; }
+if (!function_exists('crf_g'))   { function crf_g($cfg,$k,$d=''){ return htmlspecialchars($cfg[$k] ?? $d, ENT_QUOTES); } }
+if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d){ return (($cfg[$k] ?? $d) === $val) ? 'selected' : ''; } }
 ?>
-<style>
-  .crf dl{display:grid;grid-template-columns:260px 1fr;gap:6px 12px;align-items:center;max-width:780px}
-  .crf dt{font-weight:bold}
-  .crf dt[title]{cursor:help;border-bottom:1px dotted #888;display:inline}
-  .crf dt[title]:after{content:" \24D8";color:#888;font-weight:normal;font-size:11px}
-  .crf dd{margin:0}
-  .crf input[type=text],.crf input[type=number],.crf input[type=password],.crf select{width:100%;max-width:34em}
-  .crf-status td,.crf-status th{padding:4px 10px;text-align:left}
-  .crf-pill{padding:1px 8px;border-radius:10px;font-size:11px;color:#fff}
-  .crf-idle{background:#3a7}.crf-busy{background:#c84}.crf-error{background:#c44}
-  .crf-starting{background:#789}.crf-exited{background:#888}
-  #crf-log{white-space:pre-wrap;font-family:monospace;font-size:12px;max-height:220px;overflow:auto;background:#1e1e1e;color:#ddd;padding:8px;border-radius:4px;margin-top:8px}
-</style>
 
-<div class="crf">
-<form method="POST" action="/update.php" target="progressFrame">
+<form markdown="1" name="ci_runner_farm" method="POST" action="/update.php" target="progressFrame">
 <input type="hidden" name="#file" value="ci-runner-farm/config.cfg">
-<dl>
-  <dt title="repo = register runners on specific repositories. org = one shared pool available to every repo in the org (recommended when you have more than one repo).">GitHub scope</dt>
-  <dd><select name="GH_SCOPE">
-    <option value="repo" <?=sel($cfg,'GH_SCOPE','repo','repo')?>>repo (per-repository)</option>
-    <option value="org"  <?=sel($cfg,'GH_SCOPE','org','repo')?>>org (organization-wide)</option>
-  </select></dd>
 
-  <dt title="GitHub organization name. Used only when scope = org (e.g. unraid).">Org owner (org scope)</dt>
-  <dd><input type="text" name="GH_OWNER" value="<?=g($cfg,'GH_OWNER','unraid')?>"></dd>
+_(GitHub scope)_:
+: <select name="GH_SCOPE">
+  <option value="repo" <?=crf_sel($cfg,'GH_SCOPE','repo','repo')?>>repo (per-repository)</option>
+  <option value="org" <?=crf_sel($cfg,'GH_SCOPE','org','repo')?>>org (organization-wide)</option>
+  </select>
 
-  <dt title="Space-separated owner/repo list, used when scope = repo. Runners are spread across these repos round-robin.">Target repos (repo scope)</dt>
-  <dd><input type="text" name="GH_REPOS" value="<?=g($cfg,'GH_REPOS','unraid/repo-a unraid/repo-b')?>"></dd>
+:crf_scope_plug:
+> repo = register runners on specific repositories.
+>
+> org = one shared pool available to every repo in the org (recommended when you have more than one repo).
+:end
 
-  <dt title="Optional runner group (org scope) to restrict which repos may use the pool — e.g. exclude public repos so fork PRs never run here.">Runner group (org, optional)</dt>
-  <dd><input type="text" name="RUNNER_GROUP" value="<?=g($cfg,'RUNNER_GROUP')?>"></dd>
+_(Org owner)_:
+: <input type="text" name="GH_OWNER" value="<?=crf_g($cfg,'GH_OWNER','unraid')?>">
 
-  <dt title="How many runner containers to launch. Each runs one job at a time, so this equals your max number of concurrent builds.">Concurrent runners</dt>
-  <dd><input type="number" name="RUNNER_COUNT" min="1" max="20" value="<?=g($cfg,'RUNNER_COUNT','4')?>"></dd>
+:crf_owner_plug:
+> GitHub organization name. Used only when scope is org (e.g. unraid).
+:end
 
-  <dt title="Comma-separated labels that workflows target with runs-on. e.g. self-hosted,unraid,build.">Runner labels</dt>
-  <dd><input type="text" name="RUNNER_LABELS" value="<?=g($cfg,'RUNNER_LABELS','self-hosted,unraid,build')?>"></dd>
+_(Target repos)_:
+: <input type="text" name="GH_REPOS" value="<?=crf_g($cfg,'GH_REPOS','unraid/repo-a unraid/repo-b')?>">
 
-  <dt title="Hard CPU cap per runner. Blank = uncapped; the Linux scheduler time-shares CPU fairly across all runners, so leaving this blank lets a lone build use the whole box.">CPUs per runner (blank = uncapped)</dt>
-  <dd><input type="text" name="RUNNER_CPUS" value="<?=g($cfg,'RUNNER_CPUS','')?>" placeholder="blank = uncapped (scheduler balances)"></dd>
+:crf_repos_plug:
+> Space-separated owner/repo list, used when scope is repo. Runners are spread across these repos round-robin.
+:end
 
-  <dt title="Hard memory cap per runner, e.g. 16g. Kept capped because memory is not time-shared like CPU — an uncapped leak could OOM the host or the other workloads.">Memory per runner</dt>
-  <dd><input type="text" name="RUNNER_MEMORY" value="<?=g($cfg,'RUNNER_MEMORY','16g')?>"></dd>
+_(Runner group)_:
+: <input type="text" name="RUNNER_GROUP" value="<?=crf_g($cfg,'RUNNER_GROUP')?>">
 
-  <dt title="Pool path for warm shared caches (pnpm/npm/yarn) and, if tmpfs is off, the bind workspaces. Use a fast pool — default is the github-runner pool.">Cache root (pool)</dt>
-  <dd><input type="text" name="CACHE_ROOT" value="<?=g($cfg,'CACHE_ROOT','/mnt/github-runner')?>"></dd>
+:crf_group_plug:
+> Optional runner group (org scope) to restrict which repos may use the pool — e.g. exclude public repos so fork PRs never run here.
+:end
 
-  <dt title="Size of the RAM-backed per-job workspace, e.g. 8g — gives a clean, fast workspace each job while caches stay warm. Blank = bind the workspace to the pool instead of RAM.">Workspace tmpfs size</dt>
-  <dd><input type="text" name="WORK_TMPFS_SIZE" value="<?=g($cfg,'WORK_TMPFS_SIZE','8g')?>" placeholder="blank = bind to pool"></dd>
+_(Concurrent runners)_:
+: <input type="number" name="RUNNER_COUNT" min="1" max="20" value="<?=crf_g($cfg,'RUNNER_COUNT','4')?>">
 
-  <dt title="Docker image used for each runner. Default: myoung34/github-runner:latest.">Runner image</dt>
-  <dd><input type="text" name="IMAGE" value="<?=g($cfg,'IMAGE','myoung34/github-runner:latest')?>"></dd>
+:crf_count_plug:
+> How many runner containers to launch. Each runs one job at a time, so this equals your maximum number of concurrent builds.
+:end
 
-  <dt title="false = persistent runner, package caches stay warm between jobs. true = fresh runner re-registered per job (cleanest state, slightly slower first run).">Ephemeral</dt>
-  <dd><select name="EPHEMERAL">
-    <option value="false" <?=sel($cfg,'EPHEMERAL','false','false')?>>false (persistent, warm cache)</option>
-    <option value="true"  <?=sel($cfg,'EPHEMERAL','true','false')?>>true (clean per job)</option>
-  </select></dd>
+_(Runner labels)_:
+: <input type="text" name="RUNNER_LABELS" value="<?=crf_g($cfg,'RUNNER_LABELS','self-hosted,unraid,build')?>">
 
-  <dt title="Mount the host Docker socket so jobs can start service containers (e.g. postgres for integration tests). PRIVATE repos only — never expose this to public/fork-PR code (root-equivalent host access).">Share host docker.sock</dt>
-  <dd><select name="SHARE_DOCKER_SOCK">
-    <option value="true"  <?=sel($cfg,'SHARE_DOCKER_SOCK','true','true')?>>true</option>
-    <option value="false" <?=sel($cfg,'SHARE_DOCKER_SOCK','false','true')?>>false</option>
-  </select></dd>
-</dl>
-<input type="submit" name="Apply" value="Apply">
-<span style="color:#888"> &nbsp;Hover the dotted labels for help.</span>
+:crf_labels_plug:
+> Comma-separated labels that workflows target with runs-on, e.g. self-hosted,unraid,build.
+:end
+
+_(CPUs per runner)_:
+: <input type="text" name="RUNNER_CPUS" value="<?=crf_g($cfg,'RUNNER_CPUS','')?>" placeholder="blank = uncapped">
+
+:crf_cpus_plug:
+> Hard CPU cap per runner. Leave blank for uncapped — the Linux scheduler time-shares CPU fairly across all runners, so a lone build can use the whole box.
+:end
+
+_(Memory per runner)_:
+: <input type="text" name="RUNNER_MEMORY" value="<?=crf_g($cfg,'RUNNER_MEMORY','16g')?>">
+
+:crf_mem_plug:
+> Hard memory cap per runner, e.g. 16g. Kept capped because memory is not time-shared like CPU — an uncapped leak could OOM the host or the other workloads.
+:end
+
+_(Cache root)_:
+: <input type="text" name="CACHE_ROOT" value="<?=crf_g($cfg,'CACHE_ROOT','/mnt/github-runner')?>">
+
+:crf_cache_plug:
+> Pool path for warm shared caches (pnpm/npm/yarn) and, if tmpfs is off, the bind workspaces. Use a fast pool — default is the github-runner pool.
+:end
+
+_(Workspace tmpfs size)_:
+: <input type="text" name="WORK_TMPFS_SIZE" value="<?=crf_g($cfg,'WORK_TMPFS_SIZE','8g')?>" placeholder="blank = bind to pool">
+
+:crf_tmpfs_plug:
+> Size of the RAM-backed per-job workspace, e.g. 8g — a clean, fast workspace each job while caches stay warm. Blank binds the workspace to the pool instead of RAM.
+:end
+
+_(Runner image)_:
+: <input type="text" name="IMAGE" value="<?=crf_g($cfg,'IMAGE','myoung34/github-runner:latest')?>">
+
+:crf_image_plug:
+> Docker image used for each runner. Default: myoung34/github-runner:latest.
+:end
+
+_(Ephemeral)_:
+: <select name="EPHEMERAL">
+  <option value="false" <?=crf_sel($cfg,'EPHEMERAL','false','false')?>>false (persistent, warm cache)</option>
+  <option value="true" <?=crf_sel($cfg,'EPHEMERAL','true','false')?>>true (clean per job)</option>
+  </select>
+
+:crf_ephemeral_plug:
+> false = persistent runner, package caches stay warm between jobs. true = fresh runner re-registered per job (cleanest state, slightly slower first run).
+:end
+
+_(Share host docker.sock)_:
+: <select name="SHARE_DOCKER_SOCK">
+  <option value="true" <?=crf_sel($cfg,'SHARE_DOCKER_SOCK','true','true')?>>true</option>
+  <option value="false" <?=crf_sel($cfg,'SHARE_DOCKER_SOCK','false','true')?>>false</option>
+  </select>
+
+:crf_sock_plug:
+> Mount the host Docker socket so jobs can start service containers (e.g. postgres for integration tests). PRIVATE repos only — never expose this to public/fork-PR code (root-equivalent host access).
+:end
+
+&nbsp;
+: <input type="submit" name="Apply" value="_(Apply)_">
+
 </form>
 
 <hr>
+<div>
 <p><strong>GitHub token (PAT)</strong> &nbsp;<a href="<?=$patUrl?>" target="_blank" rel="noopener">Create a pre-scoped PAT on GitHub &#8599;</a><br>
 Stored at <code>/boot/config/plugins/ci-runner-farm/token</code> (chmod 600), never in config.cfg.
 Status: <strong id="crf-tok"><?= $has_token ? 'configured &#10004;' : 'not set' ?></strong></p>
 <p>
-  <input type="password" id="crf-token" placeholder="ghp_... (scopes pre-filled by the link above)" style="width:28em">
+  <input type="password" id="crf-token" placeholder="ghp_... (scopes pre-filled by the link)" style="width:28em">
   <input type="button" value="Save token" onclick="crfSetToken()">
   <input type="button" value="Clear" onclick="crfAction('clear-token')">
 </p>
@@ -99,20 +140,27 @@ Status: <strong id="crf-tok"><?= $has_token ? 'configured &#10004;' : 'not set' 
 <hr>
 <p><strong>Fleet control</strong></p>
 <p>
-  <input type="button" value="Start" onclick="crfAction('start')" title="Launch the configured number of runner containers.">
-  <input type="button" value="Stop" onclick="crfAction('stop')" title="Stop and remove all managed runner containers.">
-  <input type="button" value="Restart" onclick="crfAction('restart')" title="Stop then start the whole fleet.">
-  <input type="button" value="Validate (no token)" onclick="crfAction('validate')" title="Dry-run: launch one inert container to prove mounts/limits on this host, then remove it. No GitHub token needed.">
+  <input type="button" value="Start" onclick="crfAction('start')">
+  <input type="button" value="Stop" onclick="crfAction('stop')">
+  <input type="button" value="Restart" onclick="crfAction('restart')">
+  <input type="button" value="Validate (no token)" onclick="crfAction('validate')">
   &nbsp; Scale to <input type="number" id="crf-n" min="0" max="20" value="4" style="width:4em">
-  <input type="button" value="Scale" onclick="crfScale()" title="Grow or shrink the running fleet to this many runners.">
+  <input type="button" value="Scale" onclick="crfScale()">
 </p>
 
-<table class="crf-status" id="crf-table">
+<table class="crf-status" id="crf-table" style="text-align:left">
   <thead><tr><th>Runner</th><th>State</th><th>Phase</th><th>CPU</th><th>Mem</th></tr></thead>
   <tbody><tr><td colspan="5">loading...</td></tr></tbody>
 </table>
-<div id="crf-log"></div>
+<div id="crf-log" style="white-space:pre-wrap;font-family:monospace;font-size:12px;max-height:220px;overflow:auto;background:#1e1e1e;color:#ddd;padding:8px;border-radius:4px;margin-top:8px"></div>
 </div>
+
+<style>
+  .crf-status td,.crf-status th{padding:4px 10px}
+  .crf-pill{padding:1px 8px;border-radius:10px;font-size:11px;color:#fff}
+  .crf-idle{background:#3a7}.crf-busy{background:#c84}.crf-error{background:#c44}
+  .crf-starting{background:#789}.crf-exited{background:#888}
+</style>
 
 <script>
 const CRF_CSRF = "<?=$csrf?>";
@@ -132,7 +180,7 @@ function crfRefresh(){
     const tb=document.querySelector('#crf-table tbody'); tb.innerHTML='';
     if(!d.runners||!d.runners.length){ tb.innerHTML='<tr><td colspan="5">no managed runners (configured: '+(d.configured||0)+')</td></tr>'; return; }
     d.runners.forEach(r=>{ const cls=r.state!=='running'?'crf-exited':('crf-'+r.phase);
-      tb.innerHTML+=`<tr><td>${r.name}</td><td>${r.state}</td><td><span class="crf-pill ${cls}">${r.phase}</span></td><td>${r.cpus?r.cpus+'c':'max'}</td><td>${r.mem_gb}g</td></tr>`; });
+      tb.innerHTML+='<tr><td>'+r.name+'</td><td>'+r.state+'</td><td><span class="crf-pill '+cls+'">'+r.phase+'</span></td><td>'+(r.cpus?r.cpus+'c':'max')+'</td><td>'+r.mem_gb+'g</td></tr>'; });
   }).catch(()=>{});
 }
 crfRefresh(); setInterval(crfRefresh,5000);
