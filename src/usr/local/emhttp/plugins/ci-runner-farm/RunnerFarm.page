@@ -12,6 +12,9 @@ $has_token= file_exists("/boot/config/plugins/$plugin/token");
 $csrf     = $var['csrf_token'] ?? '';
 $patScope = (($cfg['GH_SCOPE'] ?? 'repo') === 'org') ? 'repo,admin:org' : 'repo';
 $patUrl   = 'https://github.com/settings/tokens/new?description=Unraid+CI+Runner+Farm&scopes='.$patScope;
+$dfFile   = "/boot/config/plugins/$plugin/Dockerfile";
+if (!is_file($dfFile)) $dfFile = "/usr/local/emhttp/plugins/$plugin/default.Dockerfile";
+$dockerfile = is_file($dfFile) ? file_get_contents($dfFile) : '';
 if (!function_exists('crf_g'))   { function crf_g($cfg,$k,$d=''){ return htmlspecialchars($cfg[$k] ?? $d, ENT_QUOTES); } }
 if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d){ return (($cfg[$k] ?? $d) === $val) ? 'selected' : ''; } }
 ?>
@@ -155,6 +158,15 @@ Status: <strong id="crf-tok"><?= $has_token ? 'configured &#10004;' : 'not set' 
   <tbody><tr><td colspan="5">loading...</td></tr></tbody>
 </table>
 <div id="crf-log" style="white-space:pre-wrap;font-family:monospace;font-size:12px;max-height:220px;overflow:auto;background:#1e1e1e;color:#ddd;padding:8px;border-radius:4px;margin-top:8px"></div>
+
+<hr>
+<p><strong>Runner image builder</strong> &mdash; edit the Dockerfile for the runner image (add apt packages, tools, browsers), Save, then Build. It's tagged as the configured image (<code><?=crf_g($cfg,'IMAGE','ci-runner-farm-runner:latest')?></code>); restart the fleet to use a new build. Build output streams to the log above.</p>
+<textarea id="crf-dockerfile" rows="14" spellcheck="false" style="width:100%;font-family:monospace;font-size:12px"><?=htmlspecialchars($dockerfile, ENT_QUOTES)?></textarea>
+<p>
+  <input type="button" value="Save Dockerfile" onclick="crfSaveDf()">
+  <input type="button" value="Build image" onclick="crfBuild()">
+  <span id="crf-build-status" style="color:#888"></span>
+</p>
 </div>
 
 <style>
@@ -186,6 +198,9 @@ function crfRefresh(){
   }).catch(()=>{});
 }
 crfRefresh(); setInterval(crfRefresh,5000);
+function crfSaveDf(cb){ crfPost({action:'save-dockerfile',dockerfile:document.getElementById('crf-dockerfile').value}).then(o=>{ document.getElementById('crf-build-status').textContent = o.ok?'saved':('error: '+(o.error||'')); if(typeof cb==='function') cb(); }); }
+function crfBuild(){ document.getElementById('crf-build-status').textContent='saving + building...'; crfSaveDf(function(){ crfPost({action:'build-image'}).then(()=>crfPollBuild()); }); }
+function crfPollBuild(){ crfPost({action:'build-log'}).then(d=>{ document.getElementById('crf-log').textContent=d.log||''; if(d.running){ document.getElementById('crf-build-status').textContent='building...'; setTimeout(crfPollBuild,2000);} else { document.getElementById('crf-build-status').textContent='build finished — restart the fleet to use it'; } }); }
 // Native Unraid folder picker on the Cache root path field
 if (window.jQuery) jQuery(function($){ if ($.fn.fileTreeAttach) $("#CACHE_ROOT").fileTreeAttach(); });
 </script>

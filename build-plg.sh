@@ -55,6 +55,7 @@ find "\$PLGDIR" -type f -exec chmod 0644 {} +
 chmod 0755 "\$PLGDIR/include/runner-farm.sh"
 [ -f "\$CFGDIR/config.cfg" ] || cp "\$PLGDIR/default.cfg" "\$CFGDIR/config.cfg"
 chmod 0644 "\$CFGDIR/config.cfg"
+[ -f "\$CFGDIR/Dockerfile" ] || cp "\$PLGDIR/default.Dockerfile" "\$CFGDIR/Dockerfile"
 ( docker pull myoung34/github-runner:latest >/dev/null 2>&1 & ) || true
 echo ""
 echo "+=============================================================+"

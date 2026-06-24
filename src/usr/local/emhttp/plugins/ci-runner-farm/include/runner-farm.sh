@@ -228,6 +228,25 @@ cmd_validate() {
 
 cmd_prune_cache() { rm -rf "${CACHE_ROOT:?}/"* && log "cache cleared: $CACHE_ROOT"; }
 
+cmd_build_image() {
+  # Build the runner image from the editable Dockerfile. Uses a CLEAN temp
+  # context (only the Dockerfile) so the token/config never enter the build.
+  local df="$CFGDIR/Dockerfile"
+  [ -f "$df" ] || df="/usr/local/emhttp/plugins/$PLUGIN/default.Dockerfile"
+  [ -f "$df" ] || { err "no Dockerfile found"; return 1; }
+  local ctx; ctx="$(mktemp -d)"
+  cp "$df" "$ctx/Dockerfile"
+  log "building image '$IMAGE' from $df"
+  docker build -t "$IMAGE" "$ctx"; local rc=$?
+  rm -rf "$ctx"
+  if [ $rc -eq 0 ]; then
+    log "build complete: $IMAGE — restart the fleet to use it"
+  else
+    err "build failed (rc=$rc)"
+  fi
+  return $rc
+}
+
 case "${1:-status}" in
   start)        cmd_start ;;
   stop)         cmd_stop ;;
@@ -237,6 +256,7 @@ case "${1:-status}" in
   status-json)  cmd_status_json ;;
   logs)         cmd_logs "${2:-1}" "${3:-100}" ;;
   validate)     cmd_validate ;;
+  build-image)  cmd_build_image ;;
   prune-cache)  cmd_prune_cache ;;
-  *) echo "usage: $0 {start|stop|restart|scale N|status|status-json|logs i|validate|prune-cache}"; exit 1 ;;
+  *) echo "usage: $0 {start|stop|restart|scale N|status|status-json|logs i|validate|build-image|prune-cache}"; exit 1 ;;
 esac

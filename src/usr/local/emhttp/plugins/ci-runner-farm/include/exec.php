@@ -52,6 +52,34 @@ switch ($action) {
     echo json_encode(['ok' => true, 'action' => 'clear-token']);
     break;
 
+  case 'get-dockerfile':
+    $df = "$CFGDIR/Dockerfile";
+    if (!is_file($df)) $df = "/usr/local/emhttp/plugins/$PLUGIN/default.Dockerfile";
+    echo json_encode(['ok' => true, 'dockerfile' => is_file($df) ? file_get_contents($df) : '']);
+    break;
+
+  case 'save-dockerfile':
+    $content = $_REQUEST['dockerfile'] ?? '';
+    if (trim($content) === '') { echo json_encode(['ok'=>false,'error'=>'empty']); break; }
+    @mkdir($CFGDIR, 0755, true);
+    file_put_contents("$CFGDIR/Dockerfile", $content);
+    echo json_encode(['ok' => true, 'action' => 'save-dockerfile']);
+    break;
+
+  case 'build-image':
+    // launch the build in the background; UI polls 'build-log'
+    $log = "$CFGDIR/build.log";
+    exec('nohup ' . escapeshellarg($SCRIPT) . ' build-image > ' . escapeshellarg($log) . ' 2>&1 &');
+    echo json_encode(['ok' => true, 'action' => 'build-image']);
+    break;
+
+  case 'build-log':
+    $log = "$CFGDIR/build.log";
+    $txt = is_file($log) ? shell_exec('tail -n 100 ' . escapeshellarg($log)) : '';
+    $running = trim(shell_exec("pgrep -f 'runner-farm.sh build-image' >/dev/null 2>&1 && echo 1 || echo 0")) === '1';
+    echo json_encode(['ok' => true, 'running' => $running, 'log' => $txt]);
+    break;
+
   default:
     http_response_code(400);
     echo json_encode(['ok' => false, 'error' => 'unknown action']);
