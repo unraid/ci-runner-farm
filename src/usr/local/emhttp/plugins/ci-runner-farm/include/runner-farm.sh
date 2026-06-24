@@ -172,24 +172,40 @@ repo_for_index() {
   echo "${arr[$(( (idx-1) % n ))]}"
 }
 
-# Guard: refuse to use a CACHE_ROOT that lands on the root filesystem (rootfs/
-# tmpfs/overlay). That path looks fine but is RAM-backed and lost on reboot —
-# every cache/mount the plugin creates derives from CACHE_ROOT, so this catches
-# the whole class of "wrong pool" mistakes in one place.
-check_cache_root() {
+# Inspect CACHE_ROOT and describe any problem that would break the fleet (empty
+# output = OK). Split out from check_cache_root so the settings page can surface
+# the SAME problems live, before the user clicks Start. Two classes:
+#   - root filesystem (rootfs/tmpfs/overlay): RAM-backed, lost on reboot.
+#   - FUSE user share (/mnt/user, fuse.shfs) while DinD is on: each runner's
+#     Docker data root lands here, and overlay2 cannot run on FUSE, so buildx
+#     and 'services:' jobs die with "mount overlay ... invalid argument".
+cache_root_problem() {
   local line fstype target
   line=$(df -PT "$CACHE_ROOT" 2>/dev/null | awk 'NR==2')
   fstype=$(echo "$line" | awk '{print $2}')
   target=$(echo "$line" | awk '{print $NF}')
   case "$fstype" in
     rootfs|tmpfs|overlay|"")
-      err "CACHE_ROOT ($CACHE_ROOT) is on '${fstype:-unknown}' ($target) — the root filesystem, not a pool/share."
-      err "Caches would fill RAM and vanish on reboot. Point CACHE_ROOT at a real pool/share"
-      err "(e.g. /mnt/user/<share> or a dataset /mnt/<pool>/<dataset>) in the plugin, then restart."
-      return 1 ;;
+      echo "CACHE_ROOT ($CACHE_ROOT) is on '${fstype:-unknown}' — the root filesystem, not a pool. Caches would fill RAM and vanish on reboot. Point it at a pool dataset, e.g. /mnt/<pool>/github-runner."
+      return ;;
   esac
-  [ "$target" = "/" ] && { err "CACHE_ROOT ($CACHE_ROOT) resolves to '/'. Point it at a pool/share."; return 1; }
-  return 0
+  [ "$target" = "/" ] && { echo "CACHE_ROOT ($CACHE_ROOT) resolves to '/'. Point it at a pool dataset, e.g. /mnt/<pool>/github-runner."; return; }
+  if [ "$DIND" = "true" ]; then
+    case "$fstype" in
+      fuse.shfs|fuse*)
+        echo "CACHE_ROOT ($CACHE_ROOT) is a /mnt/user share (FUSE/$fstype). With Docker-in-Docker on, each runner's Docker data root lives here and overlay2 cannot run on FUSE — buildx and 'services:' jobs fail with \"mount overlay ... invalid argument\". Point CACHE_ROOT at a pool dataset (e.g. /mnt/<pool>/github-runner), not /mnt/user/..."
+        return ;;
+    esac
+  fi
+}
+
+# Hard guard before provisioning (start/scale/validate/boot): print the problem
+# and fail. cache_root_problem() carries the detail and remediation.
+check_cache_root() {
+  local p; p="$(cache_root_problem)"
+  [ -z "$p" ] && return 0
+  err "$p"
+  return 1
 }
 
 # docker login on the HOST so it can pull a private runner IMAGE (e.g. a private
@@ -230,6 +246,7 @@ ensure_dirs() {
       chown -R "$RUNNER_UID:$RUNNER_GID" "$dir" 2>/dev/null || true
     fi
   done
+  write_dind_config
 }
 
 # Shared pull-through registry mirror so all DinD runners reuse pulled images
@@ -246,9 +263,18 @@ ensure_mirror() {
       -e REGISTRY_PROXY_REMOTEURL="https://registry-1.docker.io" \
       registry:2 >/dev/null 2>&1 || err "could not start $MIRROR_NAME"
   fi
-  # daemon.json each runner's dockerd uses to reach the mirror via the host gateway
-  printf '{"registry-mirrors":["http://host.docker.internal:%s"],"insecure-registries":["host.docker.internal:%s"]}\n' \
-    "$MIRROR_PORT" "$MIRROR_PORT" > "$CACHE_ROOT/dind-daemon.json"
+}
+
+# daemon.json the inner dockerd of each DinD runner uses. Pins
+# storage-driver=overlay2 — on a pool-backed data root the auto-detector may
+# pick the zfs/btrfs driver and fail to start a fresh daemon, whereas overlay2
+# runs on any of them (this matches how the Unraid host's own docker is set up).
+# Adds the shared pull-through mirror when that's enabled.
+write_dind_config() {
+  [ "$DIND" = "true" ] || return 0
+  local mirror=""
+  [ "$SHARED_IMAGE_CACHE" = "true" ] && mirror=$(printf ',"registry-mirrors":["http://host.docker.internal:%s"],"insecure-registries":["host.docker.internal:%s"]' "$MIRROR_PORT" "$MIRROR_PORT")
+  printf '{"storage-driver":"overlay2"%s}\n' "$mirror" > "$CACHE_ROOT/dind-daemon.json"
 }
 
 # resolve the image to run: the locally-built image (builtin) or a remote ref.
@@ -286,18 +312,16 @@ build_args() {
   if [ "$DIND" = "true" ]; then
     # each runner runs its own dockerd: isolates service-container ports and
     # makes localhost:<port> reachable from job steps (the runner IS the host).
-    #
-    # Give the inner dockerd a real-filesystem /var/lib/docker via a named
-    # volume. Without it the inner storage sits on the container's own overlayfs
-    # (overlay-on-overlay), where overlay2 cannot create whiteout device nodes —
-    # pulling images that delete files (e.g. postgres) fails with
-    # "failed to convert whiteout file ...: operation not permitted". The volume
-    # lands on the host docker storage (a real fs) and is torn down with the
-    # runner (see remove_runner).
-    ARGS+=( --privileged -e START_DOCKER_SERVICE=true -v "${name}-dind:/var/lib/docker" )
-    if [ "$SHARED_IMAGE_CACHE" = "true" ]; then
-      ARGS+=( --add-host "host.docker.internal:host-gateway" -v "$CACHE_ROOT/dind-daemon.json:/etc/docker/daemon.json:ro" )
-    fi
+    ARGS+=( --privileged -e START_DOCKER_SERVICE=true )
+    # Give the inner dockerd a real-filesystem data root. Without this it writes
+    # /var/lib/docker onto the runner's overlay rootfs, so overlay2 (and buildx's
+    # BuildKit) stack overlay-on-overlay and fail with "mount overlay ...
+    # invalid argument". CACHE_ROOT must be a pool, not FUSE (check_cache_root).
+    mkdir -p "$CACHE_ROOT/docker/$name"
+    ARGS+=( -v "$CACHE_ROOT/docker/$name:/var/lib/docker" )
+    # inner daemon.json: storage-driver + optional pull-through mirror
+    ARGS+=( -v "$CACHE_ROOT/dind-daemon.json:/etc/docker/daemon.json:ro" )
+    [ "$SHARED_IMAGE_CACHE" = "true" ] && ARGS+=( --add-host "host.docker.internal:host-gateway" )
   elif [ "$SHARE_DOCKER_SOCK" = "true" ]; then
     ARGS+=( -v /var/run/docker.sock:/var/run/docker.sock )
   fi
@@ -343,13 +367,13 @@ cmd_start() {
 }
 
 # Tear down a runner: graceful stop, remove the container, and drop its DinD
-# storage volume (the per-runner /var/lib/docker created in build_args) so the
-# host disk is reclaimed instead of leaking a volume per retired runner.
+# data root (the per-runner /var/lib/docker bind dir created in build_args) so
+# the pool is reclaimed instead of leaking a tree per retired runner.
 remove_runner() {
   local c="$1"
   docker stop -t 30 "$c" >/dev/null 2>&1
   docker rm "$c" >/dev/null 2>&1
-  docker volume rm "${c}-dind" >/dev/null 2>&1 || true
+  rm -rf "$CACHE_ROOT/docker/$c" 2>/dev/null || true
 }
 
 cmd_stop() {
@@ -421,7 +445,8 @@ cmd_status_json() {
   done
   out+="]"
   local as="off"; [ "$AUTOSCALE" = "true" ] && as="$(autoscale_status)"
-  echo "{\"count\":$(echo "$names" | grep -c . ),\"configured\":${RUNNER_COUNT},\"token\":$([ -n "$ACCESS_TOKEN" ] && echo true || echo false),\"autoscale\":\"${as} [${AUTOSCALE_MIN}-${AUTOSCALE_MAX}, buffer ${AUTOSCALE_MIN_IDLE}]\",\"runners\":${out}}"
+  local warn; warn="$(cache_root_problem | json_escape)"
+  echo "{\"count\":$(echo "$names" | grep -c . ),\"configured\":${RUNNER_COUNT},\"token\":$([ -n "$ACCESS_TOKEN" ] && echo true || echo false),\"autoscale\":\"${as} [${AUTOSCALE_MIN}-${AUTOSCALE_MAX}, buffer ${AUTOSCALE_MIN_IDLE}]\",\"warning\":\"${warn}\",\"runners\":${out}}"
 }
 
 cmd_logs() { docker logs --tail "${2:-100}" -f "${NAME_PREFIX}-${1:-1}"; }
@@ -454,7 +479,7 @@ cmd_validate() {
   echo "--- docker.sock reachable inside container ---"
   docker exec "$name" sh -c '[ -S /var/run/docker.sock ] && echo "yes: docker.sock present" || echo "no socket"' 2>/dev/null
   docker rm -f "$name" >/dev/null 2>&1
-  docker volume rm "${name}-dind" >/dev/null 2>&1 || true
+  rm -rf "$CACHE_ROOT/docker/$name" 2>/dev/null || true
   log "validate: OK (container removed). Provisioning mechanics verified on this host."
 }
 
