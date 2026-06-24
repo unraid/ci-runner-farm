@@ -81,10 +81,10 @@ _(Memory per runner)_:
 :end
 
 _(Cache root)_:
-: <input type="text" name="CACHE_ROOT" value="<?=crf_g($cfg,'CACHE_ROOT','/mnt/github-runner')?>">
+: <input type="text" id="CACHE_ROOT" name="CACHE_ROOT" autocomplete="off" spellcheck="false" value="<?=crf_g($cfg,'CACHE_ROOT','/mnt/github-runner')?>" data-pickroot="/mnt" data-pickfolders="true" data-pickfilter="HIDE_FILES_FILTER" placeholder="/mnt/github-runner">
 
 :crf_cache_plug:
-> Pool path for warm shared caches (pnpm/npm/yarn) and, if tmpfs is off, the bind workspaces. Use a fast pool — default is the github-runner pool.
+> Pool path for warm shared caches (pnpm/npm/yarn) and, if tmpfs is off, the bind workspaces. Click the field to browse and pick a folder. Use a fast pool — default is the github-runner pool.
 :end
 
 _(Workspace tmpfs size)_:
@@ -184,4 +184,6 @@ function crfRefresh(){
   }).catch(()=>{});
 }
 crfRefresh(); setInterval(crfRefresh,5000);
+// Native Unraid folder picker on the Cache root path field
+if (window.jQuery) jQuery(function($){ if ($.fn.fileTreeAttach) $("#CACHE_ROOT").fileTreeAttach(); });
 </script>
