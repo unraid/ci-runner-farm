@@ -43,6 +43,10 @@ ACCESS_TOKEN=""                       # GitHub PAT (repo scope; +admin:org for o
 SHARE_DOCKER_SOCK="true"              # mount host docker.sock for service containers (ignored when DIND=true)
 DIND="true"                           # docker-in-docker: each runner gets its own daemon (--privileged).
                                       # Fixes GitHub Actions services: networking + 'port already allocated' collisions.
+SHARED_IMAGE_CACHE="true"             # run a shared pull-through registry mirror so every DinD runner
+                                      # reuses pulled images (postgres, etc.) instead of each pulling cold.
+MIRROR_NAME="ci-runner-mirror"        # cache persists on the pool across restarts.
+MIRROR_PORT="5000"
 # ----------------------------------------------------------------------------
 
 [ -f "$CFG" ] && . "$CFG"
@@ -63,8 +67,47 @@ repo_for_index() {
   echo "${arr[$(( (idx-1) % n ))]}"
 }
 
+# Guard: refuse to use a CACHE_ROOT that lands on the root filesystem (rootfs/
+# tmpfs/overlay). That path looks fine but is RAM-backed and lost on reboot —
+# every cache/mount the plugin creates derives from CACHE_ROOT, so this catches
+# the whole class of "wrong pool" mistakes in one place.
+check_cache_root() {
+  local line fstype target
+  line=$(df -PT "$CACHE_ROOT" 2>/dev/null | awk 'NR==2')
+  fstype=$(echo "$line" | awk '{print $2}')
+  target=$(echo "$line" | awk '{print $NF}')
+  case "$fstype" in
+    rootfs|tmpfs|overlay|"")
+      err "CACHE_ROOT ($CACHE_ROOT) is on '${fstype:-unknown}' ($target) — the root filesystem, not a pool/share."
+      err "Caches would fill RAM and vanish on reboot. Point CACHE_ROOT at a real pool/share"
+      err "(e.g. /mnt/user/<share> or a dataset /mnt/<pool>/<dataset>) in the plugin, then restart."
+      return 1 ;;
+  esac
+  [ "$target" = "/" ] && { err "CACHE_ROOT ($CACHE_ROOT) resolves to '/'. Point it at a pool/share."; return 1; }
+  return 0
+}
+
 ensure_dirs() {
   mkdir -p "$CACHE_ROOT/pnpm-store" "$CACHE_ROOT/npm" "$CACHE_ROOT/yarn" "$CACHE_ROOT/ms-playwright" "$CACHE_ROOT/work"
+}
+
+# Shared pull-through registry mirror so all DinD runners reuse pulled images
+# (docker.io) from one cache on the pool instead of each pulling cold.
+ensure_mirror() {
+  [ "$SHARED_IMAGE_CACHE" = "true" ] && [ "$DIND" = "true" ] || return 0
+  mkdir -p "$CACHE_ROOT/registry-mirror"
+  if ! docker ps --format '{{.Names}}' | grep -qx "$MIRROR_NAME"; then
+    docker rm -f "$MIRROR_NAME" >/dev/null 2>&1
+    log "starting shared image cache ($MIRROR_NAME) on :$MIRROR_PORT"
+    docker run -d --restart=unless-stopped --name "$MIRROR_NAME" \
+      -p "${MIRROR_PORT}:5000" \
+      -v "$CACHE_ROOT/registry-mirror:/var/lib/registry" \
+      -e REGISTRY_PROXY_REMOTEURL="https://registry-1.docker.io" \
+      registry:2 >/dev/null 2>&1 || err "could not start $MIRROR_NAME"
+  fi
+  # daemon.json each runner's dockerd uses to reach the mirror via the host gateway
+  printf '{"registry-mirrors":["http://host.docker.internal:%s"],"insecure-registries":["host.docker.internal:%s"]}\n' \
+    "$MIRROR_PORT" "$MIRROR_PORT" > "$CACHE_ROOT/dind-daemon.json"
 }
 
 # build the docker run argv for one runner. $1=index, $2=name-override(optional)
@@ -95,6 +138,9 @@ build_args() {
     # each runner runs its own dockerd: isolates service-container ports and
     # makes localhost:<port> reachable from job steps (the runner IS the host).
     ARGS+=( --privileged -e START_DOCKER_SERVICE=true )
+    if [ "$SHARED_IMAGE_CACHE" = "true" ]; then
+      ARGS+=( --add-host "host.docker.internal:host-gateway" -v "$CACHE_ROOT/dind-daemon.json:/etc/docker/daemon.json:ro" )
+    fi
   elif [ "$SHARE_DOCKER_SOCK" = "true" ]; then
     ARGS+=( -v /var/run/docker.sock:/var/run/docker.sock )
   fi
@@ -126,7 +172,9 @@ start_one() {
 
 cmd_start() {
   [ -z "$ACCESS_TOKEN" ] && { err "no GitHub token configured (set it in the web UI). Use 'validate' to test provisioning without one."; return 1; }
+  check_cache_root || return 1
   ensure_dirs
+  ensure_mirror
   local i
   for i in $(seq 1 "$RUNNER_COUNT"); do start_one "$i"; done
   log "fleet up: $(managed_names | wc -l) runner(s)"
