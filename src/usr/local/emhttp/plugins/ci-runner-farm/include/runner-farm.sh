@@ -40,7 +40,9 @@ WORK_TMPFS_SIZE="8g"                  # empty => bind workdir to pool instead of
 IMAGE="ci-runner-farm-runner:latest"
 EPHEMERAL="false"                     # true => runner deregisters after each job
 ACCESS_TOKEN=""                       # GitHub PAT (repo scope; +admin:org for org)
-SHARE_DOCKER_SOCK="true"              # mount host docker.sock for service containers
+SHARE_DOCKER_SOCK="true"              # mount host docker.sock for service containers (ignored when DIND=true)
+DIND="true"                           # docker-in-docker: each runner gets its own daemon (--privileged).
+                                      # Fixes GitHub Actions services: networking + 'port already allocated' collisions.
 # ----------------------------------------------------------------------------
 
 [ -f "$CFG" ] && . "$CFG"
@@ -89,7 +91,13 @@ build_args() {
   [ -n "$RUNNER_CPUS" ]   && ARGS+=( --cpus="$RUNNER_CPUS" )
   [ -n "$RUNNER_MEMORY" ] && ARGS+=( --memory="$RUNNER_MEMORY" )
   [ -n "$ACCESS_TOKEN" ] && ARGS+=( -e ACCESS_TOKEN="$ACCESS_TOKEN" )
-  [ "$SHARE_DOCKER_SOCK" = "true" ] && ARGS+=( -v /var/run/docker.sock:/var/run/docker.sock )
+  if [ "$DIND" = "true" ]; then
+    # each runner runs its own dockerd: isolates service-container ports and
+    # makes localhost:<port> reachable from job steps (the runner IS the host).
+    ARGS+=( --privileged -e START_DOCKER_SERVICE=true )
+  elif [ "$SHARE_DOCKER_SOCK" = "true" ]; then
+    ARGS+=( -v /var/run/docker.sock:/var/run/docker.sock )
+  fi
   if [ -n "$WORK_TMPFS_SIZE" ]; then
     ARGS+=( --tmpfs "/_work:rw,exec,size=${WORK_TMPFS_SIZE}" )
   else

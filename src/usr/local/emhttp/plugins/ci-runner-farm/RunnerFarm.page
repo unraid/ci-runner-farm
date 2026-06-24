@@ -116,6 +116,18 @@ _(Ephemeral)_:
 > false = persistent runner, package caches stay warm between jobs. true = fresh runner re-registered per job (cleanest state, slightly slower first run).
 :end
 
+_(Docker-in-docker mode)_:
+: <select name="DIND">
+  <option value="true" <?=crf_sel($cfg,'DIND','true','true')?>>true (own daemon per runner, privileged)</option>
+  <option value="false" <?=crf_sel($cfg,'DIND','false','true')?>>false (use host docker.sock)</option>
+  </select>
+
+:crf_dind_plug:
+> Docker-in-docker: each runner runs its own Docker daemon (requires --privileged).
+>
+> Fixes GitHub Actions services: networking (localhost:port becomes reachable from job steps) and "port already allocated" collisions between parallel jobs. Recommended when workflows use services: or service containers.
+:end
+
 _(Share host docker.sock)_:
 : <select name="SHARE_DOCKER_SOCK">
   <option value="true" <?=crf_sel($cfg,'SHARE_DOCKER_SOCK','true','true')?>>true</option>
