@@ -10,8 +10,9 @@ VERSION="$(date +%Y.%m.%d.%H%M)"
 OUT="${NAME}.plg"
 
 # Package ONLY the plugin dir contents (never /usr or a root '.' entry that
-# could clobber system-dir perms/ownership on extract).
-PAYLOAD="$(tar -cz -C "src/usr/local/emhttp/plugins/${NAME}" . | base64)"
+# could clobber system-dir perms/ownership on extract), and bake root:root
+# ownership into the archive so even a raw extract lands as root.
+PAYLOAD="$(tar -cz --uid 0 --gid 0 --uname root --gname root -C "src/usr/local/emhttp/plugins/${NAME}" . | base64)"
 
 cat > "$OUT" <<PLG
 <?xml version='1.0' standalone='yes'?>
