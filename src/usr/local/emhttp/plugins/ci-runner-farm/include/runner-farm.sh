@@ -37,7 +37,7 @@ RUNNER_CPUS=""                        # per-runner CPU cap; empty = uncapped (CF
 RUNNER_MEMORY="16g"                   # per-runner memory cap (kept: memory isn't time-shared like CPU)
 CACHE_ROOT="/mnt/github-runner"
 WORK_TMPFS_SIZE="8g"                  # empty => bind workdir to pool instead of RAM
-IMAGE="myoung34/github-runner:latest"
+IMAGE="ci-runner-farm-runner:latest"
 EPHEMERAL="false"                     # true => runner deregisters after each job
 ACCESS_TOKEN=""                       # GitHub PAT (repo scope; +admin:org for org)
 SHARE_DOCKER_SOCK="true"              # mount host docker.sock for service containers
@@ -62,7 +62,7 @@ repo_for_index() {
 }
 
 ensure_dirs() {
-  mkdir -p "$CACHE_ROOT/pnpm-store" "$CACHE_ROOT/npm" "$CACHE_ROOT/yarn" "$CACHE_ROOT/work"
+  mkdir -p "$CACHE_ROOT/pnpm-store" "$CACHE_ROOT/npm" "$CACHE_ROOT/yarn" "$CACHE_ROOT/ms-playwright" "$CACHE_ROOT/work"
 }
 
 # build the docker run argv for one runner. $1=index, $2=name-override(optional)
@@ -84,6 +84,7 @@ build_args() {
     -v "$CACHE_ROOT/pnpm-store:/root/.local/share/pnpm/store"
     -v "$CACHE_ROOT/npm:/root/.npm"
     -v "$CACHE_ROOT/yarn:/usr/local/share/.cache/yarn"
+    -v "$CACHE_ROOT/ms-playwright:/root/.cache/ms-playwright"
   )
   [ -n "$RUNNER_CPUS" ]   && ARGS+=( --cpus="$RUNNER_CPUS" )
   [ -n "$RUNNER_MEMORY" ] && ARGS+=( --memory="$RUNNER_MEMORY" )
@@ -126,7 +127,7 @@ cmd_start() {
 cmd_stop() {
   local names; names="$(managed_names)"
   [ -z "$names" ] && { log "no managed runners running"; return 0; }
-  echo "$names" | while read -r c; do [ -n "$c" ] && { log "removing $c"; docker rm -f "$c" >/dev/null 2>&1; }; done
+  echo "$names" | while read -r c; do [ -n "$c" ] && { log "stopping $c (graceful deregister)"; docker stop -t 30 "$c" >/dev/null 2>&1; docker rm "$c" >/dev/null 2>&1; }; done
 }
 
 cmd_scale() {
@@ -141,7 +142,7 @@ cmd_scale() {
   elif [ "$target" -lt "$current" ]; then
     local i
     for i in $(seq "$current" -1 $((target+1)) ); do
-      docker rm -f "${NAME_PREFIX}-${i}" >/dev/null 2>&1 && log "removed ${NAME_PREFIX}-${i}"
+      docker stop -t 30 "${NAME_PREFIX}-${i}" >/dev/null 2>&1; docker rm "${NAME_PREFIX}-${i}" >/dev/null 2>&1 && log "removed ${NAME_PREFIX}-${i}"
     done
   fi
   log "scaled to $(managed_names | wc -l) runner(s)"
