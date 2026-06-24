@@ -9,7 +9,9 @@ NAME="ci-runner-farm"
 VERSION="$(date +%Y.%m.%d)"
 OUT="${NAME}.plg"
 
-PAYLOAD="$(cd src && tar -cz . | base64)"
+# Package ONLY the plugin dir contents (never /usr or a root '.' entry that
+# could clobber system-dir perms/ownership on extract).
+PAYLOAD="$(tar -cz -C "src/usr/local/emhttp/plugins/${NAME}" . | base64)"
 
 cat > "$OUT" <<PLG
 <?xml version='1.0' standalone='yes'?>
@@ -41,11 +43,17 @@ ${PAYLOAD}
 set -e
 PLGDIR="/usr/local/emhttp/plugins/${NAME}"
 CFGDIR="/boot/config/plugins/${NAME}"
-mkdir -p "\$CFGDIR"
-base64 -d "\$CFGDIR/payload.b64" | tar -xz -C /
+mkdir -p "\$CFGDIR" "\$PLGDIR"
+# Extract ONLY into the plugin dir; --no-same-owner forces root ownership;
+# --no-overwrite-dir leaves existing dir metadata alone. System dirs untouched.
+base64 -d "\$CFGDIR/payload.b64" | tar -xz --no-same-owner --no-overwrite-dir -C "\$PLGDIR"
 rm -f "\$CFGDIR/payload.b64"
-chmod +x "\$PLGDIR/include/runner-farm.sh"
+chown -R root:root "\$PLGDIR"
+find "\$PLGDIR" -type d -exec chmod 0755 {} +
+find "\$PLGDIR" -type f -exec chmod 0644 {} +
+chmod 0755 "\$PLGDIR/include/runner-farm.sh"
 [ -f "\$CFGDIR/config.cfg" ] || cp "\$PLGDIR/default.cfg" "\$CFGDIR/config.cfg"
+chmod 0644 "\$CFGDIR/config.cfg"
 ( docker pull myoung34/github-runner:latest >/dev/null 2>&1 & ) || true
 echo ""
 echo "+=============================================================+"
