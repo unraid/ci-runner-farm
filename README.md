@@ -40,7 +40,8 @@ uses the resulting tag (the `IMAGE` setting).
 
 Keep heavier or organization-specific image recipes in your own repository and point `IMAGE` at
 the image you build there. To pull a **private** image, set the registry server + username and save
-a registry token in the UI — the host runs `docker login` before provisioning runners.
+a registry token in the UI — the host runs `docker login` before provisioning runners. For
+`ghcr.io`, leaving the registry token blank reuses the GitHub PAT (it must have `read:packages`).
 
 The warm caches mounted into every runner are configurable via `CACHE_MOUNTS`
 (`host-subdir:container-path`, space-separated); defaults cover pnpm/npm/yarn/Playwright.

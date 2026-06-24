@@ -110,7 +110,7 @@ _(Registry server)_:
 : <input type="text" name="REGISTRY_SERVER" value="<?=crf_g($cfg,'REGISTRY_SERVER','')?>" placeholder="blank = none, e.g. ghcr.io">
 
 :crf_registry_server_plug:
-> Private registry to `docker login` so the host can pull a private runner image (the Runner image above). Blank disables it. Set the username below and the password/token with "Save registry token".
+> Private registry to `docker login` so the host can pull a private runner image (the Runner image above). Blank disables it. Set the username below and the password/token with "Save registry token". For `ghcr.io`, if you leave the registry token blank the GitHub PAT is reused automatically (the PAT must have the `read:packages` scope), and the username defaults to the org/owner.
 :end
 
 _(Registry username)_:

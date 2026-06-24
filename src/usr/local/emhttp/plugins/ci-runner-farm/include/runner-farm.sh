@@ -186,11 +186,22 @@ check_cache_root() {
 # docker login on the HOST so it can pull a private runner IMAGE (e.g. a private
 # GHCR image). No-op unless server+username+token are all configured.
 registry_login() {
-  [ -n "$REGISTRY_SERVER" ] && [ -n "$REGISTRY_USERNAME" ] && [ -n "$REGISTRY_TOKEN" ] || return 0
-  if printf '%s' "$REGISTRY_TOKEN" | docker login "$REGISTRY_SERVER" -u "$REGISTRY_USERNAME" --password-stdin >/dev/null 2>&1; then
-    log "registry: logged in to $REGISTRY_SERVER as $REGISTRY_USERNAME"
+  [ -n "$REGISTRY_SERVER" ] || return 0
+  local user="$REGISTRY_USERNAME" pass="$REGISTRY_TOKEN"
+  # GHCR fallback: reuse the GitHub PAT (ACCESS_TOKEN) when no dedicated registry
+  # token is set, so a private GHCR image pulls without configuring a second
+  # token. Requires the PAT to carry the read:packages scope. Username can be
+  # anything for GHCR PAT auth; default to the org/owner.
+  if [ -z "$pass" ]; then
+    case "$REGISTRY_SERVER" in
+      ghcr.io|*.ghcr.io) pass="$ACCESS_TOKEN"; [ -z "$user" ] && user="$GH_OWNER" ;;
+    esac
+  fi
+  [ -n "$user" ] && [ -n "$pass" ] || return 0
+  if printf '%s' "$pass" | docker login "$REGISTRY_SERVER" -u "$user" --password-stdin >/dev/null 2>&1; then
+    log "registry: logged in to $REGISTRY_SERVER as $user"
   else
-    err "registry: docker login to $REGISTRY_SERVER failed (check server/username/token)"
+    err "registry: docker login to $REGISTRY_SERVER failed (check server/username/token; GHCR needs read:packages on the PAT)"
     return 1
   fi
 }
