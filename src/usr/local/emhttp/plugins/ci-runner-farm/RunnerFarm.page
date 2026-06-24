@@ -148,7 +148,9 @@ _(Cache root)_:
 : <input type="text" id="CACHE_ROOT" name="CACHE_ROOT" autocomplete="off" spellcheck="false" value="<?=crf_g($cfg,'CACHE_ROOT','/mnt/github-runner')?>" data-pickroot="/mnt" data-pickfolders="true" data-pickfilter="HIDE_FILES_FILTER" placeholder="/mnt/github-runner">
 
 :crf_cache_plug:
-> Pool path for warm shared caches (pnpm/npm/yarn) and, if tmpfs is off, the bind workspaces. Click the field to browse and pick a folder. Use a fast pool — default is the github-runner pool.
+> Pool path for warm shared caches (pnpm/npm/yarn), each Docker-in-Docker runner's Docker data root, and (if tmpfs is off) the bind workspaces. Click the field to browse and pick a folder.
+>
+> **Use a real pool dataset (e.g. `/mnt/<pool>/github-runner`), not a `/mnt/user/...` user share.** User shares are FUSE (fuse.shfs), and with Docker-in-Docker on, overlay2 cannot run on FUSE — so `buildx` and `services:` jobs fail with `mount overlay ... invalid argument`. The fleet status below warns you if this path is unsafe.
 :end
 
 _(Workspace tmpfs size)_:
@@ -177,6 +179,8 @@ _(Docker-in-docker mode)_:
 > Docker-in-docker: each runner runs its own Docker daemon (requires --privileged).
 >
 > Fixes GitHub Actions services: networking (localhost:port becomes reachable from job steps) and "port already allocated" collisions between parallel jobs. Recommended when workflows use services: or service containers.
+>
+> Each runner's `/var/lib/docker` is stored under **Cache root**, so when this is on, Cache root **must** be a real pool dataset (not a `/mnt/user` FUSE share) or `docker build`/`buildx`/`services:` will fail with overlay mount errors.
 :end
 
 _(Share host docker.sock)_:
@@ -268,6 +272,7 @@ Status: <strong id="crf-tok"><?= $has_token ? 'configured &#10004;' : 'not set' 
 </div>
 
 <hr>
+<div id="crf-warn" style="display:none;margin:8px 0;padding:10px 12px;border-radius:4px;background:#fdecea;color:#7a1c14;border:1px solid #f5c2bd;font-size:13px;line-height:1.4"></div>
 <p><strong>Fleet control</strong></p>
 <p>
   <input type="button" value="Start" onclick="crfAction('start')">
@@ -337,6 +342,8 @@ function crfImgSrc(){
 crfImgSrc();
 function crfRefresh(){
   crfPost({action:'status-json'}).then(d=>{
+    const warn=document.getElementById('crf-warn');
+    if(warn){ if(d.warning){ warn.textContent='⚠ '+d.warning; warn.style.display='block'; } else { warn.textContent=''; warn.style.display='none'; } }
     const tb=document.querySelector('#crf-table tbody'); tb.innerHTML='';
     if(!d.runners||!d.runners.length){ tb.innerHTML='<tr><td colspan="5">no managed runners (configured: '+(d.configured||0)+')</td></tr>'; return; }
     d.runners.forEach(r=>{ const cls=r.state!=='running'?'crf-exited':('crf-'+r.phase);
