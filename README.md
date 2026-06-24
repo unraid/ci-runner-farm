@@ -39,7 +39,11 @@ self-hosted runner base plus a docker-in-docker readiness wrapper. Customize it 
 uses the resulting tag (the `IMAGE` setting).
 
 Keep heavier or organization-specific image recipes in your own repository and point `IMAGE` at
-the image you build there.
+the image you build there. To pull a **private** image, set the registry server + username and save
+a registry token in the UI — the host runs `docker login` before provisioning runners.
+
+The warm caches mounted into every runner are configurable via `CACHE_MOUNTS`
+(`host-subdir:container-path`, space-separated); defaults cover pnpm/npm/yarn/Playwright.
 
 ## CLI
 

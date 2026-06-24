@@ -52,6 +52,20 @@ switch ($action) {
     echo json_encode(['ok' => true, 'action' => 'clear-token']);
     break;
 
+  case 'set-registry-token':
+    $tok = trim($_REQUEST['token'] ?? '');
+    if ($tok === '') { echo json_encode(['ok'=>false,'error'=>'empty']); break; }
+    @mkdir($CFGDIR, 0755, true);
+    file_put_contents("$CFGDIR/registry-token", $tok);
+    chmod("$CFGDIR/registry-token", 0600);
+    echo json_encode(['ok' => true, 'action' => 'set-registry-token']);
+    break;
+
+  case 'clear-registry-token':
+    @unlink("$CFGDIR/registry-token");
+    echo json_encode(['ok' => true, 'action' => 'clear-registry-token']);
+    break;
+
   case 'get-dockerfile':
     $df = "$CFGDIR/Dockerfile";
     if (!is_file($df)) $df = "/usr/local/emhttp/plugins/$PLUGIN/default.Dockerfile";

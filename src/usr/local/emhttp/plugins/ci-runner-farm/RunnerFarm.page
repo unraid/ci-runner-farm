@@ -103,7 +103,28 @@ _(Runner image)_:
 : <input type="text" name="IMAGE" value="<?=crf_g($cfg,'IMAGE','myoung34/github-runner:latest')?>">
 
 :crf_image_plug:
-> Docker image used for each runner. Default: myoung34/github-runner:latest.
+> Docker image used for each runner. Default: myoung34/github-runner:latest. For a private image (e.g. a private GHCR image), also fill in the registry fields below.
+:end
+
+_(Registry server)_:
+: <input type="text" name="REGISTRY_SERVER" value="<?=crf_g($cfg,'REGISTRY_SERVER','')?>" placeholder="blank = none, e.g. ghcr.io">
+
+:crf_registry_server_plug:
+> Private registry to `docker login` so the host can pull a private runner image (the Runner image above). Blank disables it. Set the username below and the password/token with "Save registry token".
+:end
+
+_(Registry username)_:
+: <input type="text" name="REGISTRY_USERNAME" value="<?=crf_g($cfg,'REGISTRY_USERNAME','')?>">
+
+:crf_registry_user_plug:
+> Username for the private registry (e.g. your GitHub username for ghcr.io).
+:end
+
+_(Cache mounts)_:
+: <input type="text" name="CACHE_MOUNTS" value="<?=crf_g($cfg,'CACHE_MOUNTS','pnpm-store:/root/.local/share/pnpm/store npm:/root/.npm yarn:/usr/local/share/.cache/yarn ms-playwright:/root/.cache/ms-playwright')?>">
+
+:crf_cache_mounts_plug:
+> Space-separated `host-subdir:container-path` warm caches mounted into every runner (created under the cache root). Defaults cover pnpm/npm/yarn/Playwright — edit for your stack.
 :end
 
 _(Ephemeral)_:
@@ -205,6 +226,12 @@ Status: <strong id="crf-tok"><?= $has_token ? 'configured &#10004;' : 'not set' 
   <input type="button" value="Save token" onclick="crfSetToken()">
   <input type="button" value="Clear" onclick="crfAction('clear-token')">
 </p>
+<p><strong>Registry token</strong> &mdash; password/token for the private registry above (e.g. a GitHub PAT with <code>read:packages</code> for ghcr.io). Stored at <code>registry-token</code> (chmod 600), never in config. <span id="crf-regtok"></span></p>
+<p>
+  <input type="password" id="crf-registry-token" placeholder="registry password / token" style="width:28em">
+  <input type="button" value="Save registry token" onclick="crfSetRegistryToken()">
+  <input type="button" value="Clear" onclick="crfAction('clear-registry-token')">
+</p>
 
 <hr>
 <p><strong>Fleet control</strong></p>
@@ -253,6 +280,8 @@ function crfAction(a){ crfPost({action:a}).then(o=>{crfLog(o); crfRefresh();}); 
 function crfScale(){ crfPost({action:'scale',n:document.getElementById('crf-n').value}).then(o=>{crfLog(o); crfRefresh();}); }
 function crfSetToken(){ const t=document.getElementById('crf-token').value; if(!t)return;
   crfPost({action:'set-token',token:t}).then(o=>{document.getElementById('crf-tok').innerHTML=o.ok?'configured &#10004;':'error';document.getElementById('crf-token').value='';}); }
+function crfSetRegistryToken(){ const t=document.getElementById('crf-registry-token').value; if(!t)return;
+  crfPost({action:'set-registry-token',token:t}).then(o=>{document.getElementById('crf-regtok').innerHTML=o.ok?'configured &#10004;':'error';document.getElementById('crf-registry-token').value='';}); }
 function crfRefresh(){
   crfPost({action:'status-json'}).then(d=>{
     const tb=document.querySelector('#crf-table tbody'); tb.innerHTML='';

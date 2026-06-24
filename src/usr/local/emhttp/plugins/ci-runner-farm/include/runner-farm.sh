@@ -23,6 +23,7 @@ PLUGIN="ci-runner-farm"
 CFGDIR="/boot/config/plugins/${PLUGIN}"
 CFG="${CFGDIR}/config.cfg"
 TOKEN_FILE="${CFGDIR}/token"
+REGISTRY_TOKEN_FILE="${CFGDIR}/registry-token"
 MANAGED_LABEL="net.unraid.ci-runner-farm.managed=true"
 NAME_PREFIX="ci-runner"
 
@@ -47,6 +48,12 @@ SHARED_IMAGE_CACHE="true"             # run a shared pull-through registry mirro
                                       # reuses pulled images (postgres, etc.) instead of each pulling cold.
 MIRROR_NAME="ci-runner-mirror"        # cache persists on the pool across restarts.
 MIRROR_PORT="5000"
+# ---- private registry auth: docker login so the host can pull a private IMAGE
+REGISTRY_SERVER=""                     # e.g. ghcr.io — registry to docker login (empty = skip)
+REGISTRY_USERNAME=""                   # registry username (password/token stored in registry-token file)
+REGISTRY_TOKEN=""                      # registry password/token (loaded from registry-token file)
+# ---- warm caches mounted into every runner (host-subdir:container-path) -----
+CACHE_MOUNTS="pnpm-store:/root/.local/share/pnpm/store npm:/root/.npm yarn:/usr/local/share/.cache/yarn ms-playwright:/root/.cache/ms-playwright"
 # ---- autoscaling (queue-aware): fleet floats between MIN and MAX ------------
 AUTOSCALE="false"                     # true => a daemon grows/shrinks the fleet by demand
 AUTOSCALE_MIN="2"                     # never go below this many runners
@@ -59,6 +66,7 @@ AUTOSCALE_IDLE_GRACE="5"             # consecutive over-idle checks before scali
 
 [ -f "$CFG" ] && . "$CFG"
 [ -z "$ACCESS_TOKEN" ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
+[ -z "$REGISTRY_TOKEN" ] && [ -f "$REGISTRY_TOKEN_FILE" ] && REGISTRY_TOKEN="$(cat "$REGISTRY_TOKEN_FILE" 2>/dev/null)"
 AUTOSCALE_PID="${CFGDIR}/autoscale.pid"
 
 log()  { echo "[ci-runner-farm] $*"; }
@@ -175,8 +183,22 @@ check_cache_root() {
   return 0
 }
 
+# docker login on the HOST so it can pull a private runner IMAGE (e.g. a private
+# GHCR image). No-op unless server+username+token are all configured.
+registry_login() {
+  [ -n "$REGISTRY_SERVER" ] && [ -n "$REGISTRY_USERNAME" ] && [ -n "$REGISTRY_TOKEN" ] || return 0
+  if printf '%s' "$REGISTRY_TOKEN" | docker login "$REGISTRY_SERVER" -u "$REGISTRY_USERNAME" --password-stdin >/dev/null 2>&1; then
+    log "registry: logged in to $REGISTRY_SERVER as $REGISTRY_USERNAME"
+  else
+    err "registry: docker login to $REGISTRY_SERVER failed (check server/username/token)"
+    return 1
+  fi
+}
+
 ensure_dirs() {
-  mkdir -p "$CACHE_ROOT/pnpm-store" "$CACHE_ROOT/npm" "$CACHE_ROOT/yarn" "$CACHE_ROOT/ms-playwright" "$CACHE_ROOT/work"
+  mkdir -p "$CACHE_ROOT/work"
+  local m
+  for m in $CACHE_MOUNTS; do [ -n "$m" ] && mkdir -p "$CACHE_ROOT/${m%%:*}"; done
 }
 
 # Shared pull-through registry mirror so all DinD runners reuse pulled images
@@ -214,11 +236,12 @@ build_args() {
     -e RUNNER_ALLOW_RUNASROOT="1"
     -e RUNNER_WORKDIR="/_work"
     -e npm_config_cache="/root/.npm"
-    -v "$CACHE_ROOT/pnpm-store:/root/.local/share/pnpm/store"
-    -v "$CACHE_ROOT/npm:/root/.npm"
-    -v "$CACHE_ROOT/yarn:/usr/local/share/.cache/yarn"
-    -v "$CACHE_ROOT/ms-playwright:/root/.cache/ms-playwright"
   )
+  # warm caches mounted into the runner, configurable via CACHE_MOUNTS
+  local m
+  for m in $CACHE_MOUNTS; do
+    [ -n "$m" ] && ARGS+=( -v "$CACHE_ROOT/${m%%:*}:${m#*:}" )
+  done
   [ -n "$RUNNER_CPUS" ]   && ARGS+=( --cpus="$RUNNER_CPUS" )
   [ -n "$RUNNER_MEMORY" ] && ARGS+=( --memory="$RUNNER_MEMORY" )
   [ -n "$ACCESS_TOKEN" ] && ARGS+=( -e ACCESS_TOKEN="$ACCESS_TOKEN" )
@@ -263,6 +286,7 @@ cmd_start() {
   check_cache_root || return 1
   ensure_dirs
   ensure_mirror
+  registry_login
   # with autoscaling on, start the floor (MIN) and let the daemon grow to demand
   local startn="$RUNNER_COUNT"
   [ "$AUTOSCALE" = "true" ] && startn="$AUTOSCALE_MIN"
@@ -280,7 +304,7 @@ cmd_stop() {
 }
 
 cmd_scale() {
-  local target="$1"; ensure_dirs
+  local target="$1"; ensure_dirs; registry_login
   local current; current="$(managed_names | wc -l)"
   if [ "$target" -gt "$current" ]; then
     [ -z "$ACCESS_TOKEN" ] && { err "no token configured"; return 1; }
@@ -350,6 +374,7 @@ cmd_validate() {
   # Prove the provisioning mechanics WITHOUT a GitHub token: launch the image
   # with an inert entrypoint, verify mounts/limits, then tear it down.
   ensure_dirs
+  registry_login
   local name="${NAME_PREFIX}-validate"
   docker rm -f "$name" >/dev/null 2>&1
   build_args 99 "$name"
