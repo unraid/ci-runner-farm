@@ -38,7 +38,9 @@ RUNNER_CPUS=""                        # per-runner CPU cap; empty = uncapped (CF
 RUNNER_MEMORY="16g"                   # per-runner memory cap (kept: memory isn't time-shared like CPU)
 CACHE_ROOT="/mnt/github-runner"
 WORK_TMPFS_SIZE="8g"                  # empty => bind workdir to pool instead of RAM
-IMAGE="ci-runner-farm-runner:latest"
+IMAGE_SOURCE="builtin"                # builtin = run the locally-built image; remote = pull IMAGE from a registry
+BUILTIN_IMAGE="ci-runner-farm-runner:latest"  # tag produced by the in-plugin image builder (build-image)
+IMAGE=""                              # remote image ref, used when IMAGE_SOURCE=remote (e.g. ghcr.io/org/img:tag)
 EPHEMERAL="false"                     # true => runner deregisters after each job
 ACCESS_TOKEN=""                       # GitHub PAT (repo scope; +admin:org for org)
 SHARE_DOCKER_SOCK="true"              # mount host docker.sock for service containers (ignored when DIND=true)
@@ -186,6 +188,7 @@ check_cache_root() {
 # docker login on the HOST so it can pull a private runner IMAGE (e.g. a private
 # GHCR image). No-op unless server+username+token are all configured.
 registry_login() {
+  [ "$IMAGE_SOURCE" = "remote" ] || return 0
   [ -n "$REGISTRY_SERVER" ] || return 0
   local user="$REGISTRY_USERNAME" pass="$REGISTRY_TOKEN"
   # GHCR fallback: reuse the GitHub PAT (ACCESS_TOKEN) when no dedicated registry
@@ -229,6 +232,12 @@ ensure_mirror() {
   # daemon.json each runner's dockerd uses to reach the mirror via the host gateway
   printf '{"registry-mirrors":["http://host.docker.internal:%s"],"insecure-registries":["host.docker.internal:%s"]}\n' \
     "$MIRROR_PORT" "$MIRROR_PORT" > "$CACHE_ROOT/dind-daemon.json"
+}
+
+# resolve the image to run: the locally-built image (builtin) or a remote ref.
+# Falls back to the built-in image if remote is selected but no IMAGE is set.
+effective_image() {
+  if [ "$IMAGE_SOURCE" = "remote" ] && [ -n "$IMAGE" ]; then echo "$IMAGE"; else echo "$BUILTIN_IMAGE"; fi
 }
 
 # build the docker run argv for one runner. $1=index, $2=name-override(optional)
@@ -279,7 +288,7 @@ build_args() {
     local repo; repo="$(repo_for_index "$idx")"
     ARGS+=( -e RUNNER_SCOPE="repo" -e REPO_URL="https://github.com/${repo}" )
   fi
-  ARGS+=( "$IMAGE" )
+  ARGS+=( "$(effective_image)" )
 }
 
 start_one() {
@@ -354,7 +363,7 @@ cmd_status() {
     local st; st="$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)"
     local cpus mem; cpus="$(docker inspect -f '{{.HostConfig.NanoCpus}}' "$c" 2>/dev/null)"
     mem="$(docker inspect -f '{{.HostConfig.Memory}}' "$c" 2>/dev/null)"
-    printf "%-22s %-10s %-8s %-10s %s\n" "$c" "$st" "$(runner_phase "$c")" "$((cpus/1000000000))c/$((mem/1024/1024/1024))g" "$IMAGE"
+    printf "%-22s %-10s %-8s %-10s %s\n" "$c" "$st" "$(runner_phase "$c")" "$((cpus/1000000000))c/$((mem/1024/1024/1024))g" "$(effective_image)"
   done
 }
 
@@ -390,9 +399,9 @@ cmd_validate() {
   docker rm -f "$name" >/dev/null 2>&1
   build_args 99 "$name"
   # swap real entrypoint for an inert sleep so no registration is attempted
-  local injected=(); local a
+  local injected=(); local a; local eimg; eimg="$(effective_image)"
   for a in "${ARGS[@]}"; do
-    [ "$a" = "$IMAGE" ] && injected+=( --entrypoint /bin/sh "$IMAGE" -c "sleep 30" ) || injected+=( "$a" )
+    [ "$a" = "$eimg" ] && injected+=( --entrypoint /bin/sh "$eimg" -c "sleep 30" ) || injected+=( "$a" )
   done
   log "validate: launching inert container to verify mounts/limits..."
   local errf; errf="$(mktemp /tmp/crf-validate.XXXXXX)"
@@ -422,11 +431,11 @@ cmd_build_image() {
   [ -f "$df" ] || { err "no Dockerfile found"; return 1; }
   local ctx; ctx="$(mktemp -d)"
   cp "$df" "$ctx/Dockerfile"
-  log "building image '$IMAGE' from $df"
-  docker build -t "$IMAGE" "$ctx"; local rc=$?
+  log "building image '$BUILTIN_IMAGE' from $df"
+  docker build -t "$BUILTIN_IMAGE" "$ctx"; local rc=$?
   rm -rf "$ctx"
   if [ $rc -eq 0 ]; then
-    log "build complete: $IMAGE — restart the fleet to use it"
+    log "build complete: $BUILTIN_IMAGE — set Image source to Built-in and restart the fleet to use it"
   else
     err "build failed (rc=$rc)"
   fi

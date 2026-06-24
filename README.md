@@ -33,15 +33,17 @@ Rebuild the `.plg` after edits with `./build-plg.sh`.
 
 ## Runner image
 
-The plugin ships a **generic starter Dockerfile** (`default.Dockerfile`): the stock
-self-hosted runner base plus a docker-in-docker readiness wrapper. Customize it from the UI's
-**Runner image builder** (add language runtimes, browsers, build tools), Build, and the fleet
-uses the resulting tag (the `IMAGE` setting).
+**Image source** (UI select) picks where the runner image comes from:
 
-Keep heavier or organization-specific image recipes in your own repository and point `IMAGE` at
-the image you build there. To pull a **private** image, set the registry server + username and save
-a registry token in the UI — the host runs `docker login` before provisioning runners. For
-`ghcr.io`, leaving the registry token blank reuses the GitHub PAT (it must have `read:packages`).
+- **Built-in** (default) — run the image you build with the in-plugin **Runner image builder**,
+  tagged `ci-runner-farm-runner:latest`. The plugin ships a generic starter `default.Dockerfile`
+  (stock runner base + a docker-in-docker readiness wrapper); customize it (add language runtimes,
+  browsers, build tools), Build, and restart. No registry needed.
+- **Remote** — pull the image named in **Remote image** (`IMAGE`) from a registry, e.g.
+  `ghcr.io/org/ci-runner-image:latest`. Keep heavier or org-specific recipes in their own repo and
+  point here. For a **private** image, set the registry server + username and save a registry token;
+  the host runs `docker login` before provisioning. For `ghcr.io`, leaving the registry token blank
+  reuses the GitHub PAT (it must have `read:packages`).
 
 The warm caches mounted into every runner are configurable via `CACHE_MOUNTS`
 (`host-subdir:container-path`, space-separated); defaults cover pnpm/npm/yarn/Playwright.

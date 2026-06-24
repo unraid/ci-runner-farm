@@ -99,11 +99,21 @@ _(Workspace tmpfs size)_:
 > Size of the RAM-backed per-job workspace, e.g. 8g — a clean, fast workspace each job while caches stay warm. Blank binds the workspace to the pool instead of RAM.
 :end
 
-_(Runner image)_:
-: <input type="text" name="IMAGE" value="<?=crf_g($cfg,'IMAGE','myoung34/github-runner:latest')?>">
+_(Image source)_:
+: <select name="IMAGE_SOURCE">
+  <option value="builtin" <?=crf_sel($cfg,'IMAGE_SOURCE','builtin','builtin')?>>Built-in (build locally)</option>
+  <option value="remote" <?=crf_sel($cfg,'IMAGE_SOURCE','remote','builtin')?>>Remote registry image</option>
+  </select>
+
+:crf_imgsrc_plug:
+> **Built-in** (default): run the image you build with the Runner image builder below &mdash; no registry needed. **Remote**: pull the image named in "Remote image" from a registry (fill in the registry fields too).
+:end
+
+_(Remote image)_:
+: <input type="text" name="IMAGE" value="<?=crf_g($cfg,'IMAGE','')?>" placeholder="ghcr.io/org/image:tag">
 
 :crf_image_plug:
-> Docker image used for each runner. Default: myoung34/github-runner:latest. For a private image (e.g. a private GHCR image), also fill in the registry fields below.
+> Used only when Image source = **Remote**. Full image ref to pull, e.g. `ghcr.io/org/ci-runner-image:latest`. For a private image, also set the registry fields below.
 :end
 
 _(Registry server)_:
@@ -251,7 +261,7 @@ Status: <strong id="crf-tok"><?= $has_token ? 'configured &#10004;' : 'not set' 
 <div id="crf-log" style="white-space:pre-wrap;font-family:monospace;font-size:12px;max-height:220px;overflow:auto;background:#1e1e1e;color:#ddd;padding:8px;border-radius:4px;margin-top:8px"></div>
 
 <hr>
-<p><strong>Runner image builder</strong> &mdash; edit the Dockerfile for the runner image (add apt packages, tools, browsers), Save, then Build. It's tagged as the configured image (<code><?=crf_g($cfg,'IMAGE','ci-runner-farm-runner:latest')?></code>); restart the fleet to use a new build. Build output streams to the log above.</p>
+<p><strong>Runner image builder</strong> &mdash; edit the Dockerfile for the built-in runner image (add apt packages, tools, browsers), Save, then Build. It's tagged <code>ci-runner-farm-runner:latest</code>; set <em>Image source</em> to <strong>Built-in</strong> and restart the fleet to use a new build. Build output streams to the log above.</p>
 <textarea id="crf-dockerfile" rows="14" spellcheck="false" style="width:100%;font-family:monospace;font-size:12px"><?=htmlspecialchars($dockerfile, ENT_QUOTES)?></textarea>
 <p>
   <input type="button" value="Save Dockerfile" onclick="crfSaveDf()">
