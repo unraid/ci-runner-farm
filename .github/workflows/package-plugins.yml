@@ -1,0 +1,76 @@
+name: Package Plugin
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  package:
+    name: Package and publish plugin
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+
+      - name: Build plugin archive and .plg manifest
+        env:
+          # Public base the published files are served from (org secret, e.g.
+          # https://REDACTED). Falls back for fork PRs where org
+          # secrets are not injected. "/ci-runner-farm" prefix is appended below.
+          PREVIEW_BUCKET_BASE_URL: ${{ secrets.CLOUDFLARE_PREVIEW_BUCKET_BASE_URL }}
+          # Optional salt to make the hashed publish dir unguessable. Empty when
+          # unset -> slug = sha256(id)[:40] (still non-enumerable), matching core-plugins.
+          HASH_SALT: ${{ secrets.CLOUDFLARE_PLUGIN_HASH_SALT }}
+        run: |
+          base="${PREVIEW_BUCKET_BASE_URL:-https://REDACTED}"
+          base="${base%/}/ci-runner-farm"
+          echo "Using BASE_URL=${base}"
+          chmod +x scripts/build-plugin-archives.sh
+          BASE_URL="${base}" scripts/build-plugin-archives.sh
+
+      - name: Upload plugin artifacts (CI)
+        if: ${{ hashFiles('plugin/deploy/**') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ci-runner-farm-archives
+          path: plugin/deploy/**
+          if-no-files-found: error
+
+      # Publish to Cloudflare R2 on pushes to main only (not PRs).
+      # Org-level secrets available to private repos (no per-repo setup):
+      #   CLOUDFLARE_S3_ACCESS_KEY_ID / CLOUDFLARE_S3_SECRET_ACCESS_KEY  (Private and internal repos)
+      #   CLOUDFLARE_S3_URL                                              (All repos)  - S3 endpoint
+      #   CLOUDFLARE_PREVIEW_BUCKET_NAME                                 (All repos)  - target bucket
+      - name: Publish to Cloudflare R2
+        if: ${{ github.event_name != 'pull_request' && hashFiles('plugin/deploy/**') != '' }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_S3_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_EC2_METADATA_DISABLED: true
+          AWS_SHARED_CREDENTIALS_FILE: /dev/null
+          AWS_CONFIG_FILE: /dev/null
+          CF_BUCKET: ${{ secrets.CLOUDFLARE_PREVIEW_BUCKET_NAME }}
+          CF_ENDPOINT: ${{ secrets.CLOUDFLARE_S3_URL }}
+        run: |
+          : "${CF_BUCKET:?CLOUDFLARE_PREVIEW_BUCKET_NAME secret is required}"
+          : "${CF_ENDPOINT:?CLOUDFLARE_S3_URL secret is required}"
+
+          aws s3 sync plugin/deploy/ "s3://${CF_BUCKET}/ci-runner-farm/" \
+            --endpoint-url "${CF_ENDPOINT}" \
+            --checksum-algorithm CRC32 \
+            --no-guess-mime-type \
+            --content-encoding none \
+            --acl public-read
