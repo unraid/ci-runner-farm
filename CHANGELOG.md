@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.1.0](https://github.com/unraid/ci-runner-farm/compare/v1.0.0...v1.1.0) (2026-06-24)
+
+
+### Features
+
+* proper Plugins-page name + icon link to settings ([#8](https://github.com/unraid/ci-runner-farm/issues/8)) ([7f71781](https://github.com/unraid/ci-runner-farm/commit/7f71781fdd4b91a0277246c541e621d1991d8806))
+* run jobs as non-root by default with GitHub-hosted storage parity ([#5](https://github.com/unraid/ci-runner-farm/issues/5)) ([159384e](https://github.com/unraid/ci-runner-farm/commit/159384e4dce37efb739703ed7eb13441f35aa4b1))
+
+
+### Bug Fixes
+
+* **dind:** real-FS Docker data root for runners + FUSE cache-root guard/warning ([#7](https://github.com/unraid/ci-runner-farm/issues/7)) ([1f06c8e](https://github.com/unraid/ci-runner-farm/commit/1f06c8e508d0c537b16e08a91bf773beeb61b9c3))
+* **ui:** keep the fleet log panel visible when empty ([#4](https://github.com/unraid/ci-runner-farm/issues/4)) ([79e032d](https://github.com/unraid/ci-runner-farm/commit/79e032d13bf92a2bd30ca4e1c49b9d1417d522a3))
+
 ## 1.0.0 (2026-06-24)
 
 
