@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 NAME="ci-runner-farm"
-VERSION="$(date +%Y.%m.%d)"
+VERSION="$(date +%Y.%m.%d.%H%M)"
 OUT="${NAME}.plg"
 
 # Package ONLY the plugin dir contents (never /usr or a root '.' entry that
