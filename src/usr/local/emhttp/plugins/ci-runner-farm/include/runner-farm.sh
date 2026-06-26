@@ -71,12 +71,19 @@ AUTOSCALE_MIN_IDLE="2"                # keep at least this many idle (warm) runn
 AUTOSCALE_STEP="2"                    # add/remove this many per adjustment
 AUTOSCALE_INTERVAL="30"              # seconds between checks
 AUTOSCALE_IDLE_GRACE="5"             # consecutive over-idle checks before scaling down (anti-flap)
+# ---- image auto-update: keep the runner image current, roll the fleet --------
+IMAGE_AUTOUPDATE="false"             # true => a daemon periodically pulls the runner image and,
+                                     # when the digest moves, recreates runners on the new image.
+IMAGE_AUTOUPDATE_INTERVAL="1800"     # seconds between update checks (default 30 min)
+IMAGE_DRAIN_TIMEOUT="3600"           # max seconds to wait for a busy runner to finish its job
+                                     # before leaving it on the old image this cycle (0 = wait forever)
 # ----------------------------------------------------------------------------
 
 [ -f "$CFG" ] && . "$CFG"
 [ -z "$ACCESS_TOKEN" ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
 [ -z "$REGISTRY_TOKEN" ] && [ -f "$REGISTRY_TOKEN_FILE" ] && REGISTRY_TOKEN="$(cat "$REGISTRY_TOKEN_FILE" 2>/dev/null)"
 AUTOSCALE_PID="${CFGDIR}/autoscale.pid"
+IMAGEUPDATE_PID="${CFGDIR}/imageupdate.pid"
 
 log()  { echo "[ci-runner-farm] $*"; }
 err()  { echo "[ci-runner-farm] ERROR: $*" >&2; }
@@ -162,6 +169,118 @@ autoscale_stop() {
 autoscale_status() {
   if [ -f "$AUTOSCALE_PID" ] && kill -0 "$(cat "$AUTOSCALE_PID" 2>/dev/null)" 2>/dev/null; then
     echo "running (pid $(cat "$AUTOSCALE_PID"))"
+  else echo "stopped"; fi
+}
+
+# ---- image auto-update -----------------------------------------------------
+# Keep the runner image current without operator intervention: a daemon pulls
+# the configured image on a schedule and, when its digest moves, recreates each
+# runner on the new image — draining (waiting for the current job to finish)
+# first so no build is interrupted. Also refreshes the shared pull-through
+# mirror image in place. Lifecycle mirrors the autoscale daemon: started by
+# cmd_start when IMAGE_AUTOUPDATE=true, self-exits when the flag is turned off.
+
+image_id() { docker image inspect --format '{{.Id}}' "$1" 2>/dev/null; }
+
+# Pull the runner image (when it's a pullable remote ref) and the mirror image.
+# Returns 0 iff the RUNNER image digest moved (that's what triggers a roll; the
+# mirror is refreshed in place and never rolls the fleet), 1 otherwise. Uses a
+# return code, not stdout, so the log() lines below don't pollute the signal. A
+# builtin image is locally built and has no upstream to pull — rebuild it via
+# build-image instead.
+imageupdate_pull() {
+  local changed=1 before after img
+  img="$(effective_image)"
+  if [ "$IMAGE_SOURCE" = "remote" ] && [ -n "$IMAGE" ]; then
+    registry_login
+    before="$(image_id "$img")"
+    docker pull "$img" >/dev/null 2>&1
+    after="$(image_id "$img")"
+    if [ -n "$after" ] && [ "$before" != "$after" ]; then
+      changed=0; log "image-update: $img ${before:-none} -> $after"
+    fi
+  else
+    log "image-update: image source is builtin ($img) — nothing to pull; rebuild via build-image to update"
+  fi
+  # keep the shared pull-through mirror image current too (recreate in place if it moved)
+  if [ "$SHARED_IMAGE_CACHE" = "true" ] && [ "$DIND" = "true" ]; then
+    before="$(image_id registry:2)"
+    docker pull registry:2 >/dev/null 2>&1
+    after="$(image_id registry:2)"
+    if [ -n "$after" ] && [ "$before" != "$after" ]; then
+      log "image-update: mirror image registry:2 changed -> recreating $MIRROR_NAME"
+      docker rm -f "$MIRROR_NAME" >/dev/null 2>&1; ensure_mirror
+    fi
+  fi
+  return $changed
+}
+
+# Drain one runner (wait for its current job to finish), then recreate it on the
+# freshly-pulled image. Never interrupts a running job. If it stays busy past
+# IMAGE_DRAIN_TIMEOUT, leave it on the old image — the next cycle retries.
+drain_and_recreate() {
+  local c="$1" waited=0 idx limit
+  limit="${IMAGE_DRAIN_TIMEOUT:-3600}"
+  while runner_busy "$c"; do
+    if [ "$limit" -gt 0 ] && [ "$waited" -ge "$limit" ]; then
+      log "image-update: $c still busy after ${limit}s — leaving on old image this cycle"
+      return 1
+    fi
+    sleep 15; waited=$((waited+15))
+  done
+  idx="$(docker inspect -f '{{ index .Config.Labels "net.unraid.ci-runner-farm.index" }}' "$c" 2>/dev/null)"
+  [ -z "$idx" ] && idx="${c##*-}"
+  log "image-update: $c idle -> recreating on new image"
+  remove_runner "$c"
+  start_one "$idx"
+}
+
+# Roll the whole fleet onto the new image, one runner at a time so capacity stays
+# up while each drains. Re-reads managed_names each loop (recreated names persist).
+imageupdate_rollover() {
+  local c
+  for c in $(managed_names); do
+    [ -n "$c" ] && drain_and_recreate "$c"
+  done
+  log "image-update: rollover complete ($(managed_names | wc -l) runner(s) on $(effective_image))"
+}
+
+# one update evaluation: pull, and roll only if the runner image actually changed
+imageupdate_tick() {
+  [ "$IMAGE_AUTOUPDATE" = "true" ] || return 0
+  imageupdate_pull || return 0   # nonzero = image unchanged this cycle
+  log "image-update: new runner image detected -> draining + recreating fleet"
+  imageupdate_rollover
+}
+
+# long-running loop; re-reads config each tick so UI changes apply live
+imageupdate_daemon() {
+  log "image-update daemon up (every ${IMAGE_AUTOUPDATE_INTERVAL}s, drain-timeout ${IMAGE_DRAIN_TIMEOUT}s)"
+  while true; do
+    [ -f "$CFG" ] && . "$CFG"
+    [ -z "$ACCESS_TOKEN" ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
+    [ -z "$REGISTRY_TOKEN" ] && [ -f "$REGISTRY_TOKEN_FILE" ] && REGISTRY_TOKEN="$(cat "$REGISTRY_TOKEN_FILE" 2>/dev/null)"
+    [ "$IMAGE_AUTOUPDATE" = "true" ] || { log "image auto-update disabled -> daemon exit"; rm -f "$IMAGEUPDATE_PID"; break; }
+    imageupdate_tick
+    sleep "${IMAGE_AUTOUPDATE_INTERVAL:-1800}"
+  done
+}
+
+imageupdate_start() {
+  [ "$IMAGE_AUTOUPDATE" = "true" ] || return 0
+  imageupdate_stop
+  nohup "$0" imageupdate-daemon >>"${CFGDIR}/imageupdate.log" 2>&1 &
+  echo $! > "$IMAGEUPDATE_PID"
+  log "image-update daemon started (pid $(cat "$IMAGEUPDATE_PID"))"
+}
+imageupdate_stop() {
+  [ -f "$IMAGEUPDATE_PID" ] && kill "$(cat "$IMAGEUPDATE_PID")" 2>/dev/null
+  rm -f "$IMAGEUPDATE_PID"
+  pkill -f "runner-farm.sh imageupdate-daemon" 2>/dev/null || true
+}
+imageupdate_status() {
+  if [ -f "$IMAGEUPDATE_PID" ] && kill -0 "$(cat "$IMAGEUPDATE_PID" 2>/dev/null)" 2>/dev/null; then
+    echo "running (pid $(cat "$IMAGEUPDATE_PID"))"
   else echo "stopped"; fi
 }
 
@@ -364,6 +483,7 @@ cmd_start() {
   for i in $(seq 1 "$startn"); do start_one "$i"; done
   log "fleet up: $(managed_names | wc -l) runner(s)"
   [ "$AUTOSCALE" = "true" ] && autoscale_start
+  [ "$IMAGE_AUTOUPDATE" = "true" ] && imageupdate_start
 }
 
 # Tear down a runner: graceful stop, remove the container, and drop its DinD
@@ -378,6 +498,7 @@ remove_runner() {
 
 cmd_stop() {
   autoscale_stop
+  imageupdate_stop
   local names; names="$(managed_names)"
   [ -z "$names" ] && { log "no managed runners running"; return 0; }
   echo "$names" | while read -r c; do [ -n "$c" ] && { log "stopping $c (graceful deregister)"; remove_runner "$c"; }; done
@@ -446,8 +567,9 @@ cmd_status_json() {
   done
   out+="]"
   local as="off"; [ "$AUTOSCALE" = "true" ] && as="$(autoscale_status)"
+  local iu="off"; [ "$IMAGE_AUTOUPDATE" = "true" ] && iu="$(imageupdate_status) (every $((IMAGE_AUTOUPDATE_INTERVAL/60))m)"
   local warn; warn="$(cache_root_problem | json_escape)"
-  echo "{\"count\":$(echo "$names" | grep -c . ),\"configured\":${RUNNER_COUNT},\"token\":$([ -n "$ACCESS_TOKEN" ] && echo true || echo false),\"autoscale\":\"${as} [${AUTOSCALE_MIN}-${AUTOSCALE_MAX}, buffer ${AUTOSCALE_MIN_IDLE}]\",\"warning\":\"${warn}\",\"runners\":${out}}"
+  echo "{\"count\":$(echo "$names" | grep -c . ),\"configured\":${RUNNER_COUNT},\"token\":$([ -n "$ACCESS_TOKEN" ] && echo true || echo false),\"autoscale\":\"${as} [${AUTOSCALE_MIN}-${AUTOSCALE_MAX}, buffer ${AUTOSCALE_MIN_IDLE}]\",\"image_autoupdate\":\"$(echo "$iu" | json_escape)\",\"warning\":\"${warn}\",\"runners\":${out}}"
 }
 
 cmd_logs() { docker logs --tail "${2:-100}" -f "${NAME_PREFIX}-${1:-1}"; }
@@ -542,5 +664,10 @@ case "${1:-status}" in
   autoscale-start)  autoscale_start ;;
   autoscale-stop)   autoscale_stop ;;
   autoscale-status) autoscale_status ;;
-  *) echo "usage: $0 {start|boot-autostart|stop|restart|scale N|status|status-json|logs i|validate|build-image|prune-cache|autoscale-tick|autoscale-start|autoscale-stop|autoscale-status}"; exit 1 ;;
+  imageupdate-daemon) imageupdate_daemon ;;
+  imageupdate-tick)   imageupdate_tick ;;
+  imageupdate-start)  imageupdate_start ;;
+  imageupdate-stop)   imageupdate_stop ;;
+  imageupdate-status) imageupdate_status ;;
+  *) echo "usage: $0 {start|boot-autostart|stop|restart|scale N|status|status-json|logs i|validate|build-image|prune-cache|autoscale-tick|autoscale-start|autoscale-stop|autoscale-status|imageupdate-tick|imageupdate-start|imageupdate-stop|imageupdate-status}"; exit 1 ;;
 esac

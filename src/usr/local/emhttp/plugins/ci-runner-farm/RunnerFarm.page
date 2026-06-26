@@ -193,6 +193,36 @@ _(Share host docker.sock)_:
 > Mount the host Docker socket so jobs can start service containers (e.g. postgres for integration tests). PRIVATE repos only — never expose this to public/fork-PR code (root-equivalent host access).
 :end
 
+### Image auto-update
+
+_(Auto-update runner image)_:
+: <select name="IMAGE_AUTOUPDATE">
+  <option value="false" <?=crf_sel($cfg,'IMAGE_AUTOUPDATE','false','false')?>>off (update manually)</option>
+  <option value="true" <?=crf_sel($cfg,'IMAGE_AUTOUPDATE','true','false')?>>on (pull on a schedule, roll the fleet)</option>
+  </select>
+
+:crf_imgupd_plug:
+> When on, a daemon checks the runner image on a schedule and, when a newer image is published, recreates each runner on it — **draining** first (waits for the runner's current job to finish, never interrupts a build). The shared image-cache mirror is refreshed in the same pass.
+>
+> Only **remote** images (Image source = Remote) can auto-pull — a built-in image has no upstream, so rebuild it from the Runner image builder instead.
+>
+> Takes effect on the next **Start/Restart** of the fleet (like Autoscaling).
+:end
+
+_(Auto-update: check interval (s))_:
+: <input type="number" name="IMAGE_AUTOUPDATE_INTERVAL" min="300" max="86400" value="<?=crf_g($cfg,'IMAGE_AUTOUPDATE_INTERVAL','1800')?>">
+
+:crf_imgupd_int_plug:
+> Seconds between update checks. Default 1800 (30 min). A check is a cheap registry digest comparison; the fleet only rolls when the image actually changed.
+:end
+
+_(Auto-update: drain timeout (s))_:
+: <input type="number" name="IMAGE_DRAIN_TIMEOUT" min="0" max="86400" value="<?=crf_g($cfg,'IMAGE_DRAIN_TIMEOUT','3600')?>">
+
+:crf_imgupd_drain_plug:
+> How long to wait for a busy runner to finish its current job before recreating it on the new image. If it's still busy after this, it's left on the old image and retried next cycle. `0` = wait forever (never recreate a busy runner). A runner is only ever recreated while idle.
+:end
+
 ### Autoscaling
 
 _(Autoscaling)_:
@@ -287,6 +317,7 @@ Status: <strong id="crf-tok"><?= $has_token ? 'configured &#10004;' : 'not set' 
   <thead><tr><th>Runner</th><th>State</th><th>Phase</th><th>CPU</th><th>Mem</th></tr></thead>
   <tbody><tr><td colspan="5">loading...</td></tr></tbody>
 </table>
+<div id="crf-meta" style="font-size:12px;color:#888;margin-top:4px"></div>
 <div id="crf-log" style="white-space:pre-wrap;font-family:monospace;font-size:12px;min-height:120px;max-height:220px;overflow:auto;background:#1e1e1e;color:#ddd;padding:8px;border-radius:4px;margin-top:8px"><span style="color:#888">Output from fleet actions and image builds appears here.</span></div>
 
 <hr>
@@ -344,6 +375,8 @@ function crfRefresh(){
   crfPost({action:'status-json'}).then(d=>{
     const warn=document.getElementById('crf-warn');
     if(warn){ if(d.warning){ warn.textContent='⚠ '+d.warning; warn.style.display='block'; } else { warn.textContent=''; warn.style.display='none'; } }
+    const meta=document.getElementById('crf-meta');
+    if(meta){ meta.textContent='Autoscale: '+(d.autoscale||'off')+'  ·  Image auto-update: '+(d.image_autoupdate||'off'); }
     const tb=document.querySelector('#crf-table tbody'); tb.innerHTML='';
     if(!d.runners||!d.runners.length){ tb.innerHTML='<tr><td colspan="5">no managed runners (configured: '+(d.configured||0)+')</td></tr>'; return; }
     d.runners.forEach(r=>{ const cls=r.state!=='running'?'crf-exited':('crf-'+r.phase);
