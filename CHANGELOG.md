@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/unraid/ci-runner-farm/compare/v1.1.0...v1.2.0) (2026-06-26)
+
+
+### Features
+
+* scheduled runner-image auto-update with drain-then-recreate ([#9](https://github.com/unraid/ci-runner-farm/issues/9)) ([3ddaccc](https://github.com/unraid/ci-runner-farm/commit/3ddaccc508994871e8a6556e5fc06576499a4507))
+
 ## [1.1.0](https://github.com/unraid/ci-runner-farm/compare/v1.0.0...v1.1.0) (2026-06-24)
 
 
