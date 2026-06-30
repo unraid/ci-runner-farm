@@ -470,12 +470,31 @@ start_one() {
   docker run "${ARGS[@]}" >/dev/null
 }
 
+# (Re)start any managed runner containers that exist but are stopped — e.g. after
+# Unraid stopped Docker for an array stop, which leaves them "exited". Docker's
+# unless-stopped policy does NOT resurrect explicitly-stopped containers, so the
+# docker_started event hook reconciles here. Starting in place (vs recreate) keeps
+# each runner's caches, GitHub registration and DinD data root intact, and
+# preserves a fleet the autoscaler had grown above the floor.
+start_stopped_managed() {
+  local c st
+  for c in $(managed_names); do
+    [ -n "$c" ] || continue
+    st="$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)"
+    [ "$st" = "true" ] && continue
+    log "restarting stopped runner $c"
+    docker start "$c" >/dev/null 2>&1 || err "could not restart $c"
+  done
+}
+
 cmd_start() {
   [ -z "$ACCESS_TOKEN" ] && { err "no GitHub token configured (set it in the web UI). Use 'validate' to test provisioning without one."; return 1; }
   check_cache_root || return 1
   ensure_dirs
   ensure_mirror
   registry_login
+  # bring back any runners Unraid/Docker left exited (array stop, daemon restart)
+  start_stopped_managed
   # with autoscaling on, start the floor (MIN) and let the daemon grow to demand
   local startn="$RUNNER_COUNT"
   [ "$AUTOSCALE" = "true" ] && startn="$AUTOSCALE_MIN"
@@ -628,12 +647,15 @@ cmd_build_image() {
   return $rc
 }
 
-# Called from the plugin install step, which ALSO re-runs on every boot
-# (rc.local reinstalls all .plg). At boot this fires before the array/dockerd
-# are up, so wait for both, then bring the fleet up idempotently. The caller
-# detaches it so it never blocks install/boot. No-op until a token is configured
-# (a fresh install waits for the user); cmd_start skips existing containers and
-# (re)starts the autoscale daemon, so the fleet self-heals after a reboot.
+# Called from the plugin install step (which ALSO re-runs on every boot via
+# rc.local reinstalling all .plg) AND from the Unraid `docker_started` event hook
+# (which fires on an array stop->start or Docker service restart without a
+# reboot). It may fire before the array/dockerd are up, so wait for both, then
+# bring the fleet up idempotently. The caller detaches it so it never blocks
+# install/boot/the event sequence. No-op until a token is configured (a fresh
+# install waits for the user); cmd_start restarts exited runners, skips running
+# ones, and (re)starts the autoscale daemon, so the fleet self-heals after a
+# reboot OR a Docker restart.
 cmd_boot_autostart() {
   [ -n "$ACCESS_TOKEN" ] || { log "boot-autostart: no token configured yet — skipping"; return 0; }
   local i
