@@ -440,6 +440,14 @@ build_args() {
     ARGS+=( -v "$CACHE_ROOT/docker/$name:/var/lib/docker" )
     # inner daemon.json: storage-driver + optional pull-through mirror
     ARGS+=( -v "$CACHE_ROOT/dind-daemon.json:/etc/docker/daemon.json:ro" )
+    # Persisted DinD diagnostics dir (kept by remove_runner, unlike the data root):
+    # the runner image's wait-docker.sh snapshots inner-daemon state (storage driver,
+    # Native Overlay Diff, backing fs, userxattr, uid_map) here and mirrors the inner
+    # dockerd log, so a layer-extraction failure (e.g. the whiteout "operation not
+    # permitted" mknod seen on ZFS-backed overlay2 under the services: workload) leaves
+    # a post-mortem trail off the ephemeral container. Inspect $CACHE_ROOT/dind-logs/<runner>.
+    mkdir -p "$CACHE_ROOT/dind-logs/$name"
+    ARGS+=( -v "$CACHE_ROOT/dind-logs/$name:/var/log/dind" )
     [ "$SHARED_IMAGE_CACHE" = "true" ] && ARGS+=( --add-host "host.docker.internal:host-gateway" )
   elif [ "$SHARE_DOCKER_SOCK" = "true" ]; then
     ARGS+=( -v /var/run/docker.sock:/var/run/docker.sock )
