@@ -1,0 +1,19 @@
+#!/bin/bash
+# Unraid event hook: the Docker service has just started.
+#
+# emhttpd fires this on array start AND on an array stop->start (or a Docker
+# service restart from Settings > Docker) WITHOUT a full reboot — the cases the
+# plugin's boot path (rc.local re-running the .plg) never covers.
+#
+# Why we need it: Unraid's shutdown runs `rc.docker stop`, which EXPLICITLY stops
+# our runner containers. Docker's `--restart=unless-stopped` policy deliberately
+# does not resurrect explicitly-stopped containers when the daemon returns, so
+# the fleet would otherwise stay down until the next reboot. boot-autostart waits
+# for dockerd + the cache pool to be ready, restarts any stopped runners in place,
+# refills the fleet to its floor, and relaunches the autoscale/image-update
+# daemons. It is idempotent and a no-op until a GitHub token is configured.
+#
+# Detached so we never block Unraid's start sequence.
+PLGDIR="/usr/local/emhttp/plugins/ci-runner-farm"
+CFGDIR="/boot/config/plugins/ci-runner-farm"
+( nohup "$PLGDIR/include/runner-farm.sh" boot-autostart >>"$CFGDIR/boot.log" 2>&1 & ) || true

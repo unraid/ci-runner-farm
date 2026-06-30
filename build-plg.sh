@@ -103,6 +103,8 @@ chown -R root:root "\$PLGDIR"
 find "\$PLGDIR" -type d -exec chmod 0755 {} +
 find "\$PLGDIR" -type f -exec chmod 0644 {} +
 chmod 0755 "\$PLGDIR/include/runner-farm.sh"
+# Unraid's emhttp_event executes these on Docker service start/stop — must be +x
+[ -d "\$PLGDIR/event" ] && find "\$PLGDIR/event" -type f -exec chmod 0755 {} +
 [ -f "\$CFGDIR/config.cfg" ] || cp "\$PLGDIR/default.cfg" "\$CFGDIR/config.cfg"
 chmod 0644 "\$CFGDIR/config.cfg"
 [ -f "\$CFGDIR/Dockerfile" ] || cp "\$PLGDIR/default.Dockerfile" "\$CFGDIR/Dockerfile"

@@ -1,0 +1,16 @@
+#!/bin/bash
+# Unraid event hook: the Docker service is about to stop (array stop, a Docker
+# service restart, or shutdown).
+#
+# Stop our host-side daemons first so they don't thrash trying to manage a fleet
+# whose Docker is going away (the autoscaler would otherwise keep firing failed
+# `docker run`s during the down window). The docker_started hook relaunches them
+# when Docker returns.
+#
+# We deliberately do NOT tear down the runner containers here — leaving them in
+# place lets docker_started restart them with their caches, registration and DinD
+# data root intact, rather than recreating from scratch. Unraid/Docker stops the
+# containers themselves as part of the normal shutdown.
+PLGDIR="/usr/local/emhttp/plugins/ci-runner-farm"
+"$PLGDIR/include/runner-farm.sh" autoscale-stop  >/dev/null 2>&1 || true
+"$PLGDIR/include/runner-farm.sh" imageupdate-stop >/dev/null 2>&1 || true
