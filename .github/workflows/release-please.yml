@@ -99,3 +99,79 @@ jobs:
         run: |
           set -euo pipefail
           gh release upload "$RELEASE_TAG" ci-runner-farm.plg --clobber
+
+  # Also publish the tagged .plg to the private Cloudflare R2 "preview" bucket, so
+  # the plugin can be installed from a non-public URL while the repo stays private
+  # (Unraid only needs to fetch the single .plg). Uses the org's private-repo R2
+  # credentials (CLOUDFLARE_S3_*), which are visibility=private — available to all
+  # private org repos — and already have write access to the preview bucket.
+  #
+  # The uploaded copy's pluginURL is rewritten to its own stable R2 URL so Unraid's
+  # "check for updates" resolves from R2 (works while the repo is private) instead
+  # of the private GitHub release asset. The GitHub-release .plg is left untouched.
+  publish-plugin-r2:
+    needs:
+      - release-please
+      - validate-plugin-release
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Publish .plg to Cloudflare R2 (preview bucket)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_S3_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.CLOUDFLARE_S3_URL }}
+          R2_BUCKET: ${{ secrets.CLOUDFLARE_PREVIEW_BUCKET_NAME }}
+          R2_BASE_URL: ${{ secrets.CLOUDFLARE_PREVIEW_BUCKET_BASE_URL }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          # Per-plugin object prefix in the bucket. The install URL is
+          # "$R2_BASE_URL/$KEY_PREFIX/ci-runner-farm.plg"; change here to relocate.
+          KEY_PREFIX: plugins/ci-runner-farm
+        shell: bash
+        run: |
+          set -euo pipefail
+          plg="ci-runner-farm.plg"
+          [[ -f "$plg" ]] || { echo "::error::$plg missing at tag $RELEASE_TAG" >&2; exit 1; }
+          : "${R2_ENDPOINT:?CLOUDFLARE_S3_URL not set}"
+          : "${R2_BUCKET:?CLOUDFLARE_PREVIEW_BUCKET_NAME not set}"
+          : "${R2_BASE_URL:?CLOUDFLARE_PREVIEW_BUCKET_BASE_URL not set}"
+
+          version="${RELEASE_TAG#v}"
+          stable_key="$KEY_PREFIX/ci-runner-farm.plg"
+          versioned_key="$KEY_PREFIX/ci-runner-farm-$version.plg"
+          base="${R2_BASE_URL%/}"
+          stable_url="$base/$stable_key"
+
+          # Point the R2 copy's update URL at its own stable R2 location. Rewrite
+          # the pluginURL ENTITY only (it expands into the <PLUGIN pluginURL> attr),
+          # then re-validate the XML still parses.
+          sed -i -E "s#(<!ENTITY pluginURL[[:space:]]+\").*(\">)#\1${stable_url}\2#" "$plg"
+          grep -q "$stable_url" "$plg" || { echo "::error::pluginURL rewrite failed" >&2; exit 1; }
+          python3 -c "import xml.etree.ElementTree as ET; ET.parse('$plg')"
+
+          # Upload a stable "latest" key (what installs/updates point at) and an
+          # immutable per-version copy for rollback/archival.
+          for key in "$stable_key" "$versioned_key"; do
+            echo "uploading s3://$R2_BUCKET/$key"
+            aws s3 cp "$plg" "s3://$R2_BUCKET/$key" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --content-type application/xml \
+              --cache-control "no-cache, max-age=0"
+          done
+
+          {
+            echo "### Published .plg to Cloudflare R2 (preview bucket)"
+            echo ""
+            echo "Install / update URL (private-friendly):"
+            echo ""
+            echo '```'
+            echo "$stable_url"
+            echo '```'
+            echo "- Versioned copy: \`$base/$versioned_key\`"
+          } >> "$GITHUB_STEP_SUMMARY"
