@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.0](https://github.com/unraid/ci-runner-farm/compare/v1.2.0...v1.3.0) (2026-06-30)
+
+
+### Features
+
+* **dind:** bind per-runner diagnostics dir for DinD post-mortem ([#12](https://github.com/unraid/ci-runner-farm/issues/12)) ([9f63027](https://github.com/unraid/ci-runner-farm/commit/9f63027052c2f00305e171feba634228e6b2af21))
+* restart the fleet on Unraid Docker stop/start events ([#11](https://github.com/unraid/ci-runner-farm/issues/11)) ([6596c41](https://github.com/unraid/ci-runner-farm/commit/6596c4147ed3423d8a5774c521e819f4d8c81e7b))
+
 ## [1.2.0](https://github.com/unraid/ci-runner-farm/compare/v1.1.0...v1.2.0) (2026-06-26)
 
 
