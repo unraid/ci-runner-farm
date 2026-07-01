@@ -154,6 +154,12 @@ before exposing the fleet:
   root-equivalent access to the host. Use self-hosted runners **only for
   trusted/private repositories**. Fork-PR code from public repos must **never**
   run on a privileged or socket-mounted self-hosted runner.
+- **The plugin actively warns you.** When you Start the fleet (and live on the
+  settings page), it checks each repo-scope target's visibility via your token
+  and shows a prominent warning if any is **public** while runners are
+  privileged. It warns rather than blocks — the call stays yours.
+- **`Share host docker.sock` now defaults to off.** Turn it on only for trusted
+  private repos; DinD (the default) already covers `services:` without it.
 - For stronger isolation, set `EPHEMERAL=true` so each job gets a clean runner.
 - At org scope, create a **runner group restricted to your private repos** so a
   public repo can never schedule onto these runners.

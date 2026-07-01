@@ -45,7 +45,9 @@ EPHEMERAL="false"                     # true => runner deregisters after each jo
 RUN_AS_ROOT="false"                   # false => jobs run as non-root 'runner' (sudo+docker groups), like
                                       # GitHub-hosted runners. true => jobs run as root (legacy).
 ACCESS_TOKEN=""                       # GitHub PAT (repo scope; +admin:org for org)
-SHARE_DOCKER_SOCK="true"              # mount host docker.sock for service containers (ignored when DIND=true)
+SHARE_DOCKER_SOCK="false"             # mount host docker.sock for service containers (ignored when DIND=true).
+                                      # Off by default: it gives jobs root-equivalent host access — opt in only
+                                      # for trusted/private repos. DIND=true (the default) supersedes it anyway.
 DIND="true"                           # docker-in-docker: each runner gets its own daemon (--privileged).
                                       # Fixes GitHub Actions services: networking + 'port already allocated' collisions.
 SHARED_IMAGE_CACHE="true"             # run a shared pull-through registry mirror so every DinD runner
@@ -84,6 +86,8 @@ IMAGE_DRAIN_TIMEOUT="3600"           # max seconds to wait for a busy runner to 
 [ -z "$REGISTRY_TOKEN" ] && [ -f "$REGISTRY_TOKEN_FILE" ] && REGISTRY_TOKEN="$(cat "$REGISTRY_TOKEN_FILE" 2>/dev/null)"
 AUTOSCALE_PID="${CFGDIR}/autoscale.pid"
 IMAGEUPDATE_PID="${CFGDIR}/imageupdate.pid"
+SECURITY_CACHE="${CFGDIR}/security-warn.cache"   # cached public-repo warning (TTL below), so the
+SECURITY_TTL="300"                               # UI's 5s status poll never hammers the GitHub API
 
 log()  { echo "[ci-runner-farm] $*"; }
 err()  { echo "[ci-runner-farm] ERROR: $*" >&2; }
@@ -327,6 +331,43 @@ check_cache_root() {
   return 1
 }
 
+# The single biggest footgun: pointing privileged runners at a PUBLIC repo. A
+# fork PR on a public repo runs attacker-controlled code, and here that code runs
+# in a --privileged DinD container (or with the host docker.sock mounted) — i.e.
+# root on the Unraid box. This asks GitHub, using the PAT, whether any repo-scope
+# target is public while privileged, and returns a warning describing it (empty
+# = nothing to warn about). It WARNS, never blocks — an operator who knows what
+# they're doing (e.g. an internal-only public repo) isn't trapped. Only relevant
+# for repo scope; org scope should use a runner group restricted to private repos.
+# Result is cached with a TTL (SECURITY_TTL) so the UI's 5s status poll doesn't
+# hit the GitHub API on every refresh.
+public_repo_problem() {
+  [ "$GH_SCOPE" = "repo" ] || { echo ""; return; }
+  { [ "$DIND" = "true" ] || [ "$SHARE_DOCKER_SOCK" = "true" ]; } || { echo ""; return; }
+  [ -n "$ACCESS_TOKEN" ] || { echo ""; return; }   # can't query without a token
+  if [ -f "$SECURITY_CACHE" ]; then
+    local age; age=$(( $(date +%s) - $(stat -c %Y "$SECURITY_CACHE" 2>/dev/null || echo 0) ))
+    [ "$age" -ge 0 ] && [ "$age" -lt "$SECURITY_TTL" ] && { cat "$SECURITY_CACHE"; return; }
+  fi
+  local pub="" repo vis
+  for repo in $GH_REPOS; do
+    [ -n "$repo" ] || continue
+    # GitHub's repo API returns "visibility":"public|private|internal". A 404 (curl
+    # -f fails, vis empty) means the PAT can't see it — treat as unknown, don't warn.
+    vis="$(curl -fsSL -m 5 \
+        -H "Authorization: Bearer $ACCESS_TOKEN" \
+        -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/repos/${repo}" 2>/dev/null \
+        | grep -o '"visibility"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+        | sed 's/.*"\([^"]*\)"$/\1/')"
+    [ "$vis" = "public" ] && pub="$pub ${repo}"
+  done
+  local msg=""
+  [ -n "$pub" ] && msg="PUBLIC repo(s) targeted while runners are privileged (DinD / host docker.sock):${pub}. Fork-PR code on a public repo would run as root on this server. Use trusted/private repos only, or an org runner-group restricted to private repos. See the Security section of the plugin README."
+  printf '%s' "$msg" > "$SECURITY_CACHE" 2>/dev/null || true
+  printf '%s' "$msg"
+}
+
 # docker login on the HOST so it can pull a private runner IMAGE (e.g. a private
 # GHCR image). No-op unless server+username+token are all configured.
 registry_login() {
@@ -498,6 +539,9 @@ start_stopped_managed() {
 cmd_start() {
   [ -z "$ACCESS_TOKEN" ] && { err "no GitHub token configured (set it in the web UI). Use 'validate' to test provisioning without one."; return 1; }
   check_cache_root || return 1
+  rm -f "$SECURITY_CACHE"                       # force a fresh public-repo check on an explicit Start
+  local secp; secp="$(public_repo_problem)"
+  [ -n "$secp" ] && err "SECURITY: $secp"       # warn, do not block (operator's call)
   ensure_dirs
   ensure_mirror
   registry_login
@@ -523,12 +567,26 @@ remove_runner() {
   rm -rf "$CACHE_ROOT/docker/$c" 2>/dev/null || true
 }
 
+# Full teardown: daemons, runner containers, and the shared pull-through mirror.
+# Reached from the UI Stop button AND from plugin uninstall (the .plg remove step
+# calls 'stop'), so it must leave nothing running. The mirror's on-pool cache dir
+# ($CACHE_ROOT/registry-mirror) is intentionally left behind — like the config and
+# token — so a later Start rebuilds the container with its cache warm; only the
+# container is removed here, not the cached layers.
 cmd_stop() {
   autoscale_stop
   imageupdate_stop
   local names; names="$(managed_names)"
-  [ -z "$names" ] && { log "no managed runners running"; return 0; }
-  echo "$names" | while read -r c; do [ -n "$c" ] && { log "stopping $c (graceful deregister)"; remove_runner "$c"; }; done
+  if [ -z "$names" ]; then
+    log "no managed runners running"
+  else
+    echo "$names" | while read -r c; do [ -n "$c" ] && { log "stopping $c (graceful deregister)"; remove_runner "$c"; }; done
+  fi
+  # drop the shared image-cache container so uninstall/Stop don't orphan it
+  if docker ps -a --format '{{.Names}}' | grep -qx "$MIRROR_NAME"; then
+    log "removing shared image cache ($MIRROR_NAME)"
+    docker rm -f "$MIRROR_NAME" >/dev/null 2>&1 || true
+  fi
 }
 
 cmd_scale() {
@@ -596,7 +654,8 @@ cmd_status_json() {
   local as="off"; [ "$AUTOSCALE" = "true" ] && as="$(autoscale_status)"
   local iu="off"; [ "$IMAGE_AUTOUPDATE" = "true" ] && iu="$(imageupdate_status) (every $((IMAGE_AUTOUPDATE_INTERVAL/60))m)"
   local warn; warn="$(cache_root_problem | json_escape)"
-  echo "{\"count\":$(echo "$names" | grep -c . ),\"configured\":${RUNNER_COUNT},\"token\":$([ -n "$ACCESS_TOKEN" ] && echo true || echo false),\"autoscale\":\"${as} [${AUTOSCALE_MIN}-${AUTOSCALE_MAX}, buffer ${AUTOSCALE_MIN_IDLE}]\",\"image_autoupdate\":\"$(echo "$iu" | json_escape)\",\"warning\":\"${warn}\",\"runners\":${out}}"
+  local sec; sec="$(public_repo_problem | json_escape)"
+  echo "{\"count\":$(echo "$names" | grep -c . ),\"configured\":${RUNNER_COUNT},\"token\":$([ -n "$ACCESS_TOKEN" ] && echo true || echo false),\"autoscale\":\"${as} [${AUTOSCALE_MIN}-${AUTOSCALE_MAX}, buffer ${AUTOSCALE_MIN_IDLE}]\",\"image_autoupdate\":\"$(echo "$iu" | json_escape)\",\"warning\":\"${warn}\",\"security\":\"${sec}\",\"runners\":${out}}"
 }
 
 cmd_logs() { docker logs --tail "${2:-100}" -f "${NAME_PREFIX}-${1:-1}"; }
@@ -634,7 +693,20 @@ cmd_validate() {
   log "validate: OK (container removed). Provisioning mechanics verified on this host."
 }
 
-cmd_prune_cache() { rm -rf "${CACHE_ROOT:?}/"* && log "cache cleared: $CACHE_ROOT"; }
+# Clear the cache root. Guard against a misconfigured CACHE_ROOT that points at a
+# system dir or a bare pool/share root — 'rm -rf /mnt/user/*' would wipe every
+# user share. The ':?' already stops an empty value; this blocks the dangerous
+# non-empty ones too. Refuses anything shallower than /mnt/<name>/... or /mnt/<pool>.
+cmd_prune_cache() {
+  case "${CACHE_ROOT%/}" in
+    ""|"/"|"/mnt"|"/mnt/user"|"/mnt/user0"|"/mnt/disks"|"/mnt/addons"|"/mnt/rootshare" \
+    |"/boot"|"/boot/"*|"/usr"|"/usr/"*|"/etc"|"/etc/"*|"/var"|"/var/"*|"/root"|"/root/"*|"/bin"*|"/sbin"*|"/lib"*)
+      err "refusing to prune-cache: CACHE_ROOT='$CACHE_ROOT' is a system dir or share root"; return 1 ;;
+    /mnt/*) : ;;   # /mnt/<pool>[/...] — the intended shape
+    *) err "refusing to prune-cache: CACHE_ROOT='$CACHE_ROOT' is not under /mnt"; return 1 ;;
+  esac
+  rm -rf "${CACHE_ROOT:?}/"* && log "cache cleared: $CACHE_ROOT"
+}
 
 cmd_build_image() {
   # Build the runner image from the editable Dockerfile. Uses a CLEAN temp
