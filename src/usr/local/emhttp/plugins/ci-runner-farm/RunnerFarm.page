@@ -185,8 +185,8 @@ _(Docker-in-docker mode)_:
 
 _(Share host docker.sock)_:
 : <select name="SHARE_DOCKER_SOCK">
-  <option value="true" <?=crf_sel($cfg,'SHARE_DOCKER_SOCK','true','true')?>>true</option>
-  <option value="false" <?=crf_sel($cfg,'SHARE_DOCKER_SOCK','false','true')?>>false</option>
+  <option value="false" <?=crf_sel($cfg,'SHARE_DOCKER_SOCK','false','false')?>>false</option>
+  <option value="true" <?=crf_sel($cfg,'SHARE_DOCKER_SOCK','true','false')?>>true</option>
   </select>
 
 :crf_sock_plug:
@@ -302,6 +302,7 @@ Status: <strong id="crf-tok"><?= $has_token ? 'configured &#10004;' : 'not set' 
 </div>
 
 <hr>
+<div id="crf-sec" style="display:none;margin:8px 0;padding:10px 12px;border-radius:4px;background:#fff4e5;color:#7a4a00;border:1px solid #ffce85;font-size:13px;line-height:1.4;font-weight:bold"></div>
 <div id="crf-warn" style="display:none;margin:8px 0;padding:10px 12px;border-radius:4px;background:#fdecea;color:#7a1c14;border:1px solid #f5c2bd;font-size:13px;line-height:1.4"></div>
 <p><strong>Fleet control</strong></p>
 <p>
@@ -375,6 +376,8 @@ function crfRefresh(){
   crfPost({action:'status-json'}).then(d=>{
     const warn=document.getElementById('crf-warn');
     if(warn){ if(d.warning){ warn.textContent='⚠ '+d.warning; warn.style.display='block'; } else { warn.textContent=''; warn.style.display='none'; } }
+    const sec=document.getElementById('crf-sec');
+    if(sec){ if(d.security){ sec.textContent='🔒 '+d.security; sec.style.display='block'; } else { sec.textContent=''; sec.style.display='none'; } }
     const meta=document.getElementById('crf-meta');
     if(meta){ meta.textContent='Autoscale: '+(d.autoscale||'off')+'  ·  Image auto-update: '+(d.image_autoupdate||'off'); }
     const tb=document.querySelector('#crf-table tbody'); tb.innerHTML='';
