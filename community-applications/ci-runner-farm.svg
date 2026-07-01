@@ -1,0 +1,49 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <!-- CI Runner Farm — a fleet of build runners (containers) with a CI gear -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#23232e"/>
+      <stop offset="1" stop-color="#141419"/>
+    </linearGradient>
+    <linearGradient id="orange" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff9a3c"/>
+      <stop offset="1" stop-color="#f15a24"/>
+    </linearGradient>
+  </defs>
+
+  <!-- rounded-square backdrop -->
+  <rect x="16" y="16" width="480" height="480" rx="96" fill="url(#bg)"/>
+
+  <!-- the fleet: three stacked runner "containers" -->
+  <g>
+    <rect x="104" y="150" width="230" height="66" rx="16" fill="#eef1f7"/>
+    <rect x="104" y="232" width="230" height="66" rx="16" fill="#cfd6e6"/>
+    <rect x="104" y="314" width="230" height="66" rx="16" fill="#aab4cc"/>
+    <!-- status LEDs: two idle (green), one busy (orange) -->
+    <circle cx="138" cy="183" r="13" fill="#3ec46d"/>
+    <circle cx="138" cy="265" r="13" fill="#3ec46d"/>
+    <circle cx="138" cy="347" r="13" fill="#f15a24"/>
+    <!-- "load bars" hinting at running jobs -->
+    <rect x="176" y="176" width="118" height="14" rx="7" fill="#8892a8"/>
+    <rect x="176" y="258" width="94"  height="14" rx="7" fill="#8892a8"/>
+    <rect x="176" y="340" width="132" height="14" rx="7" fill="#8892a8"/>
+  </g>
+
+  <!-- CI gear badge, bottom-right, indicating automated build/CI -->
+  <g transform="translate(356,356)">
+    <circle cx="0" cy="0" r="86" fill="url(#bg)"/>
+    <g fill="url(#orange)">
+      <path d="M0,-66 a12,12 0 0 1 12,12 v14 a12,12 0 0 1 -24,0 v-14 a12,12 0 0 1 12,-12 z"/>
+      <path d="M0,66 a12,12 0 0 1 12,12 v14 a12,12 0 0 1 -24,0 v-14 a12,12 0 0 1 12,-12 z" transform="rotate(180)"/>
+      <path d="M0,-66 a12,12 0 0 1 12,12 v14 a12,12 0 0 1 -24,0 v-14 a12,12 0 0 1 12,-12 z" transform="rotate(45)"/>
+      <path d="M0,-66 a12,12 0 0 1 12,12 v14 a12,12 0 0 1 -24,0 v-14 a12,12 0 0 1 12,-12 z" transform="rotate(90)"/>
+      <path d="M0,-66 a12,12 0 0 1 12,12 v14 a12,12 0 0 1 -24,0 v-14 a12,12 0 0 1 12,-12 z" transform="rotate(135)"/>
+      <path d="M0,-66 a12,12 0 0 1 12,12 v14 a12,12 0 0 1 -24,0 v-14 a12,12 0 0 1 12,-12 z" transform="rotate(225)"/>
+      <path d="M0,-66 a12,12 0 0 1 12,12 v14 a12,12 0 0 1 -24,0 v-14 a12,12 0 0 1 12,-12 z" transform="rotate(270)"/>
+      <path d="M0,-66 a12,12 0 0 1 12,12 v14 a12,12 0 0 1 -24,0 v-14 a12,12 0 0 1 12,-12 z" transform="rotate(315)"/>
+    </g>
+    <circle cx="0" cy="0" r="46" fill="url(#orange)"/>
+    <!-- play triangle = "runs" -->
+    <path d="M-14,-22 L24,0 L-14,22 Z" fill="#141419"/>
+  </g>
+</svg>
