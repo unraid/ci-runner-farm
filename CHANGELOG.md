@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/unraid/ci-runner-farm/compare/v1.3.0...v1.4.0) (2026-07-01)
+
+
+### Features
+
+* **security:** harden defaults for public Community Apps distribution ([#15](https://github.com/unraid/ci-runner-farm/issues/15)) ([62b9df8](https://github.com/unraid/ci-runner-farm/commit/62b9df8f7f3f9ffa57b5c41b03c0cb86a91bfa16))
+
 ## [1.3.0](https://github.com/unraid/ci-runner-farm/compare/v1.2.0...v1.3.0) (2026-06-30)
 
 
