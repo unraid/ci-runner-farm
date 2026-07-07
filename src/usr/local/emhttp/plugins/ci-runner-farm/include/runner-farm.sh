@@ -499,6 +499,19 @@ ensure_network() {
     || err "could not create network $RUNNER_NETWORK"
 }
 
+# Does container $1 sit on the network the CURRENT isolation mode expects? Used to
+# detect a mid-flight NETWORK_ISOLATION change (off <-> isolate/strict) so the mirror
+# and runners left on the old network get recreated on Start. off => default 'bridge';
+# isolate/strict => the dedicated $RUNNER_NETWORK.
+on_expected_network() {
+  local nets; nets=" $(docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$1" 2>/dev/null) "
+  if [ "$NETWORK_ISOLATION" = "off" ]; then
+    echo "$nets" | grep -q " bridge "
+  else
+    echo "$nets" | grep -q " $RUNNER_NETWORK "
+  fi
+}
+
 # Shared pull-through registry mirror so all DinD runners reuse pulled images
 # (docker.io) from one cache on the pool instead of each pulling cold. When network
 # isolation is on the mirror joins the dedicated bridge and runners reach it by name
@@ -508,6 +521,14 @@ ensure_network() {
 ensure_mirror() {
   [ "$SHARED_IMAGE_CACHE" = "true" ] && [ "$DIND" = "true" ] || return 0
   mkdir -p "$CACHE_ROOT/registry-mirror"
+  # If the mirror is up but on the wrong network for the current mode (operator
+  # switched NETWORK_ISOLATION without a full Stop/Start), drop it so it's recreated
+  # below on the right network — otherwise runners can't reach it by name and strict's
+  # firewall keys off its stale IP. Its cache is on the pool volume, so this is cheap.
+  if docker ps -a --format '{{.Names}}' | grep -qx "$MIRROR_NAME" && ! on_expected_network "$MIRROR_NAME"; then
+    log "network mode changed -> recreating shared image cache ($MIRROR_NAME)"
+    docker rm -f "$MIRROR_NAME" >/dev/null 2>&1
+  fi
   if ! docker ps --format '{{.Names}}' | grep -qx "$MIRROR_NAME"; then
     docker rm -f "$MIRROR_NAME" >/dev/null 2>&1
     local netargs=()
@@ -731,6 +752,14 @@ cmd_start() {
   firewall_clear                                # drop stale rules (e.g. strict -> off/isolate)
   firewall_apply                                # re-add egress rules (no-op unless strict)
   registry_login
+  # If NETWORK_ISOLATION changed while the fleet was up, existing runners are still
+  # on the old network — drain + recreate them so the new mode actually applies (a
+  # half-isolated fleet is a false sense of security). Runners already on the right
+  # network match and are left untouched, so a normal Start recreates nothing.
+  local c
+  for c in $(managed_names); do
+    [ -n "$c" ] && ! on_expected_network "$c" && { log "network mode changed -> recreating $c on the correct network"; drain_and_recreate "$c"; }
+  done
   # bring back any runners Unraid/Docker left exited (array stop, daemon restart)
   start_stopped_managed
   # with autoscaling on, start the floor (MIN) and let the daemon grow to demand
@@ -892,14 +921,20 @@ cmd_validate() {
 # user share. The ':?' already stops an empty value; this blocks the dangerous
 # non-empty ones too. Refuses anything shallower than /mnt/<name>/... or /mnt/<pool>.
 cmd_prune_cache() {
-  case "${CACHE_ROOT%/}" in
+  # Strip ALL trailing slashes, not just one: "${CACHE_ROOT%/}" leaves "/mnt/user//"
+  # as "/mnt/user/", which slips past the exact blocklist into the /mnt/* allow arm
+  # and then 'rm -rf /mnt/user/*' wipes every share. Normalize exhaustively and use
+  # the normalized value for BOTH the guard and the rm.
+  local root="$CACHE_ROOT"
+  while [ "${root: -1}" = "/" ]; do root="${root%/}"; done
+  case "$root" in
     ""|"/"|"/mnt"|"/mnt/user"|"/mnt/user0"|"/mnt/disks"|"/mnt/addons"|"/mnt/rootshare" \
     |"/boot"|"/boot/"*|"/usr"|"/usr/"*|"/etc"|"/etc/"*|"/var"|"/var/"*|"/root"|"/root/"*|"/bin"*|"/sbin"*|"/lib"*)
       err "refusing to prune-cache: CACHE_ROOT='$CACHE_ROOT' is a system dir or share root"; return 1 ;;
     /mnt/*) : ;;   # /mnt/<pool>[/...] — the intended shape
     *) err "refusing to prune-cache: CACHE_ROOT='$CACHE_ROOT' is not under /mnt"; return 1 ;;
   esac
-  rm -rf "${CACHE_ROOT:?}/"* && log "cache cleared: $CACHE_ROOT"
+  rm -rf "${root:?}/"* && log "cache cleared: $root"
 }
 
 cmd_build_image() {
