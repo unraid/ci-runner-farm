@@ -160,6 +160,10 @@ before exposing the fleet:
   privileged. It warns rather than blocks — the call stays yours.
 - **`Share host docker.sock` now defaults to off.** Turn it on only for trusted
   private repos; DinD (the default) already covers `services:` without it.
+- **Your GitHub token never enters a runner container.** The PAT stays on the
+  host; each runner is handed only a short-lived registration token, and runners
+  are deregistered host-side. So a workflow step can't read your token out of its
+  own environment.
 - For stronger isolation, set `EPHEMERAL=true` so each job gets a clean runner.
 - At org scope, create a **runner group restricted to your private repos** so a
   public repo can never schedule onto these runners.

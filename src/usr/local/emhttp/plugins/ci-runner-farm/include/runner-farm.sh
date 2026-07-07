@@ -44,7 +44,8 @@ IMAGE=""                              # remote image ref, used when IMAGE_SOURCE
 EPHEMERAL="false"                     # true => runner deregisters after each job
 RUN_AS_ROOT="false"                   # false => jobs run as non-root 'runner' (sudo+docker groups), like
                                       # GitHub-hosted runners. true => jobs run as root (legacy).
-ACCESS_TOKEN=""                       # GitHub PAT (repo scope; +admin:org for org)
+ACCESS_TOKEN=""                       # GitHub PAT (repo scope; +admin:org for org). Stays host-side:
+                                      # runners get a short-lived registration token, never the PAT itself.
 SHARE_DOCKER_SOCK="false"             # mount host docker.sock for service containers (ignored when DIND=true).
                                       # Off by default: it gives jobs root-equivalent host access — opt in only
                                       # for trusted/private repos. DIND=true (the default) supersedes it anyway.
@@ -331,6 +332,73 @@ check_cache_root() {
   return 1
 }
 
+# ---- host-side GitHub runner tokens ----------------------------------------
+# The long-lived PAT must NEVER enter a runner container: a job step could read
+# it straight out of its own environment (`printenv ACCESS_TOKEN`), and a repo/org
+# PAT is far more powerful than the per-job GITHUB_TOKEN. So we keep the PAT here
+# on the host (where it already lives) and hand each container only a short-lived
+# (~1h), single-purpose runner REGISTRATION token. The base image (myoung34) uses
+# RUNNER_TOKEN directly when set and only falls back to minting from ACCESS_TOKEN
+# when RUNNER_TOKEN is absent — so passing the token and omitting the PAT works.
+
+# Thin GitHub REST helper: gh_api METHOD PATH -> response body on stdout (empty on
+# failure). Requires ACCESS_TOKEN. Used for the token + deregistration calls below.
+gh_api() {
+  [ -n "$ACCESS_TOKEN" ] || return 1
+  curl -fsSL -m 10 -X "$1" \
+    -H "Authorization: Bearer $ACCESS_TOKEN" \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com$2" 2>/dev/null
+}
+
+# Mint a runner registration token for a scope. $1 = "org:<name>" or
+# "repo:<owner/repo>". Echoes the token (empty on failure). GitHub's
+# registration-token endpoint returns {"token":"...","expires_at":"..."}.
+registration_token() {
+  local target="$1" path
+  case "$target" in
+    org:*)  path="/orgs/${target#org:}/actions/runners/registration-token" ;;
+    repo:*) path="/repos/${target#repo:}/actions/runners/registration-token" ;;
+    *) echo ""; return 1 ;;
+  esac
+  gh_api POST "$path" \
+    | grep -o '"token"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+    | sed 's/.*"\([^"]*\)"$/\1/'
+}
+
+# Deregister a runner from GitHub host-side, by name, using the PAT. This replaces
+# the base image's in-container SIGTERM deregister (we disable it via
+# DISABLE_AUTOMATIC_DEREGISTRATION) — that path re-mints from ACCESS_TOKEN and so
+# required the PAT inside the container. Doing it here is both safer (PAT stays on
+# the host) and more robust (runs even when the container is hard-killed).
+# Best-effort: a busy runner can't be deleted (GitHub 422) and a leftover offline
+# entry is harmless — the next Start re-registers the same name with --replace.
+deregister_runner_api() {
+  local c="$1" rname idx repo base id
+  [ -n "$ACCESS_TOKEN" ] && [ -n "$c" ] || return 0
+  rname="$(host)-${c}"                          # matches RUNNER_NAME set in build_args
+  if [ "$GH_SCOPE" = "org" ]; then
+    base="/orgs/${GH_OWNER}"
+  else
+    idx="${c##*-}"; repo="$(repo_for_index "$idx")"
+    [ -n "$repo" ] || return 0
+    base="/repos/${repo}"
+  fi
+  # Split the runners array on '{' so each runner's own id+name land on one line,
+  # then match our unique name -> id. The extra "os|busy|status" filter keeps us on
+  # a real runner object: label objects also carry "id"+"name", so without it a
+  # runner whose *label* happened to equal $rname could resolve the label's id.
+  id="$(gh_api GET "${base}/actions/runners?per_page=100" \
+        | tr '{' '\n' \
+        | grep -E "\"name\"[[:space:]]*:[[:space:]]*\"${rname}\"" \
+        | grep -E '"(os|busy|status)"[[:space:]]*:' \
+        | grep -oE '"id"[[:space:]]*:[[:space:]]*[0-9]+' | head -1 \
+        | grep -oE '[0-9]+' | head -1)"
+  [ -n "$id" ] || return 0
+  gh_api DELETE "${base}/actions/runners/${id}" >/dev/null 2>&1 \
+    && log "deregistered $rname from GitHub (id $id)" || true
+}
+
 # The single biggest footgun: pointing privileged runners at a PUBLIC repo. A
 # fork PR on a public repo runs attacker-controlled code, and here that code runs
 # in a --privileged DinD container (or with the host docker.sock mounted) — i.e.
@@ -456,6 +524,7 @@ build_args() {
     -e LABELS="$RUNNER_LABELS"
     -e EPHEMERAL="$EPHEMERAL"
     -e DISABLE_AUTO_UPDATE="true"
+    -e DISABLE_AUTOMATIC_DEREGISTRATION="true"   # we deregister host-side (deregister_runner_api)
     -e RUN_AS_ROOT="$RUN_AS_ROOT"
     -e RUNNER_ALLOW_RUNASROOT="1"
     -e RUNNER_WORKDIR="/_work"
@@ -468,7 +537,6 @@ build_args() {
   done
   [ -n "$RUNNER_CPUS" ]   && ARGS+=( --cpus="$RUNNER_CPUS" )
   [ -n "$RUNNER_MEMORY" ] && ARGS+=( --memory="$RUNNER_MEMORY" )
-  [ -n "$ACCESS_TOKEN" ] && ARGS+=( -e ACCESS_TOKEN="$ACCESS_TOKEN" )
   if [ "$DIND" = "true" ]; then
     # each runner runs its own dockerd: isolates service-container ports and
     # makes localhost:<port> reachable from job steps (the runner IS the host).
@@ -499,12 +567,23 @@ build_args() {
     mkdir -p "$CACHE_ROOT/work/$name"
     ARGS+=( -v "$CACHE_ROOT/work/$name:/_work" )
   fi
+  local scope_target=""
   if [ "$GH_SCOPE" = "org" ]; then
     ARGS+=( -e RUNNER_SCOPE="org" -e ORG_NAME="$GH_OWNER" )
     [ -n "$RUNNER_GROUP" ] && ARGS+=( -e RUNNER_GROUP="$RUNNER_GROUP" )
+    scope_target="org:$GH_OWNER"
   else
     local repo; repo="$(repo_for_index "$idx")"
     ARGS+=( -e RUNNER_SCOPE="repo" -e REPO_URL="https://github.com/${repo}" )
+    scope_target="repo:$repo"
+  fi
+  # Hand the container a short-lived registration token, never the PAT (see the
+  # host-side token helpers above). Skipped when no PAT is configured — e.g. the
+  # 'validate' path, which swaps the entrypoint for a sleep and never registers.
+  if [ -n "$ACCESS_TOKEN" ] && [ "${NO_REGISTER:-0}" != "1" ]; then
+    local reg; reg="$(registration_token "$scope_target")"
+    [ -z "$reg" ] && { err "could not mint a runner registration token for ${scope_target#*:} (check the PAT's scope/permissions)"; return 1; }
+    ARGS+=( -e RUNNER_TOKEN="$reg" )
   fi
   ARGS+=( "$(effective_image)" )
 }
@@ -514,7 +593,7 @@ start_one() {
   if docker ps -a --format '{{.Names}}' | grep -qx "$name"; then
     log "runner $name already exists; skipping"; return 0
   fi
-  build_args "$idx"
+  build_args "$idx" || { err "runner $name not started (registration-token error)"; return 1; }
   log "starting $name (cpus=$RUNNER_CPUS mem=$RUNNER_MEMORY scope=$GH_SCOPE)"
   docker run "${ARGS[@]}" >/dev/null
 }
@@ -562,6 +641,7 @@ cmd_start() {
 # the pool is reclaimed instead of leaking a tree per retired runner.
 remove_runner() {
   local c="$1"
+  deregister_runner_api "$c"                  # host-side (PAT stays off the container)
   docker stop -t 30 "$c" >/dev/null 2>&1
   docker rm "$c" >/dev/null 2>&1
   rm -rf "$CACHE_ROOT/docker/$c" 2>/dev/null || true
@@ -668,6 +748,7 @@ cmd_validate() {
   registry_login
   local name="${NAME_PREFIX}-validate"
   docker rm -f "$name" >/dev/null 2>&1
+  local NO_REGISTER=1               # validate swaps the entrypoint for a sleep — never registers
   build_args 99 "$name"
   # swap real entrypoint for an inert sleep so no registration is attempted
   local injected=(); local a; local eimg; eimg="$(effective_image)"
