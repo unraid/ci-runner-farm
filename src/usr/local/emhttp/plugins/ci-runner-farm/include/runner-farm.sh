@@ -394,16 +394,16 @@ deregister_runner_api() {
     [ -n "$repo" ] || return 0
     base="/repos/${repo}"
   fi
-  # Split the runners array on '{' so each runner's own id+name land on one line,
-  # then match our unique name -> id. The extra "os|busy|status" filter keeps us on
-  # a real runner object: label objects also carry "id"+"name", so without it a
-  # runner whose *label* happened to equal $rname could resolve the label's id.
-  id="$(gh_api GET "${base}/actions/runners?per_page=100" \
-        | tr '{' '\n' \
-        | grep -E "\"name\"[[:space:]]*:[[:space:]]*\"${rname}\"" \
-        | grep -E '"(os|busy|status)"[[:space:]]*:' \
-        | grep -oE '"id"[[:space:]]*:[[:space:]]*[0-9]+' | head -1 \
-        | grep -oE '[0-9]+' | head -1)"
+  # Resolve name -> id from the (pretty-printed, multi-line) runners list. Track the
+  # last-seen id and name, and emit only at a runner-only key ("os") — label objects
+  # carry "id"+"name" too but never "os", and a runner's own id/name precede its
+  # labels, so at the "os" line cur/nm still hold the runner's values. Robust to the
+  # API's whitespace/line formatting (a single-line grep pair is not).
+  id="$(gh_api GET "${base}/actions/runners?per_page=100" | awk -v want="$rname" '
+      /"id"[[:space:]]*:/   { if (match($0, /[0-9]+/)) cur = substr($0, RSTART, RLENGTH) }
+      /"name"[[:space:]]*:/ { s=$0; sub(/^[^:]*:[[:space:]]*"/, "", s); sub(/".*/, "", s); nm=s }
+      /"os"[[:space:]]*:/   { if (nm == want) { print cur; exit } }
+    ')"
   [ -n "$id" ] || return 0
   gh_api DELETE "${base}/actions/runners/${id}" >/dev/null 2>&1 \
     && log "deregistered $rname from GitHub (id $id)" || true
