@@ -44,7 +44,8 @@ IMAGE=""                              # remote image ref, used when IMAGE_SOURCE
 EPHEMERAL="false"                     # true => runner deregisters after each job
 RUN_AS_ROOT="false"                   # false => jobs run as non-root 'runner' (sudo+docker groups), like
                                       # GitHub-hosted runners. true => jobs run as root (legacy).
-ACCESS_TOKEN=""                       # GitHub PAT (repo scope; +admin:org for org)
+ACCESS_TOKEN=""                       # GitHub PAT (repo scope; +admin:org for org). Stays host-side:
+                                      # runners get a short-lived registration token, never the PAT itself.
 SHARE_DOCKER_SOCK="false"             # mount host docker.sock for service containers (ignored when DIND=true).
                                       # Off by default: it gives jobs root-equivalent host access — opt in only
                                       # for trusted/private repos. DIND=true (the default) supersedes it anyway.
@@ -54,6 +55,16 @@ SHARED_IMAGE_CACHE="true"             # run a shared pull-through registry mirro
                                       # reuses pulled images (postgres, etc.) instead of each pulling cold.
 MIRROR_NAME="ci-runner-mirror"        # cache persists on the pool across restarts.
 MIRROR_PORT="5000"
+# ---- network isolation -----------------------------------------------------
+NETWORK_ISOLATION="off"               # off     = runners on the default docker bridge (legacy).
+                                      # isolate = dedicated bridge; runners can't reach your OTHER
+                                      #           Unraid containers (docker inter-network isolation).
+                                      # strict  = isolate + DOCKER-USER egress rules that block the
+                                      #           runners from the Unraid host + your LAN (RFC1918),
+                                      #           while still allowing the internet + the shared mirror.
+RUNNER_NETWORK="ci-runner-net"        # name of the dedicated bridge (created when isolation != off).
+                                      # Docker auto-allocates its subnet; we read it back for the rules.
+FW_TAG="ci-runner-farm"               # iptables comment tag used to find/remove our DOCKER-USER rules
 # ---- private registry auth: docker login so the host can pull a private IMAGE
 REGISTRY_SERVER=""                     # e.g. ghcr.io — registry to docker login (empty = skip)
 REGISTRY_USERNAME=""                   # registry username (password/token stored in registry-token file)
@@ -331,6 +342,73 @@ check_cache_root() {
   return 1
 }
 
+# ---- host-side GitHub runner tokens ----------------------------------------
+# The long-lived PAT must NEVER enter a runner container: a job step could read
+# it straight out of its own environment (`printenv ACCESS_TOKEN`), and a repo/org
+# PAT is far more powerful than the per-job GITHUB_TOKEN. So we keep the PAT here
+# on the host (where it already lives) and hand each container only a short-lived
+# (~1h), single-purpose runner REGISTRATION token. The base image (myoung34) uses
+# RUNNER_TOKEN directly when set and only falls back to minting from ACCESS_TOKEN
+# when RUNNER_TOKEN is absent — so passing the token and omitting the PAT works.
+
+# Thin GitHub REST helper: gh_api METHOD PATH -> response body on stdout (empty on
+# failure). Requires ACCESS_TOKEN. Used for the token + deregistration calls below.
+gh_api() {
+  [ -n "$ACCESS_TOKEN" ] || return 1
+  curl -fsSL -m 10 -X "$1" \
+    -H "Authorization: Bearer $ACCESS_TOKEN" \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com$2" 2>/dev/null
+}
+
+# Mint a runner registration token for a scope. $1 = "org:<name>" or
+# "repo:<owner/repo>". Echoes the token (empty on failure). GitHub's
+# registration-token endpoint returns {"token":"...","expires_at":"..."}.
+registration_token() {
+  local target="$1" path
+  case "$target" in
+    org:*)  path="/orgs/${target#org:}/actions/runners/registration-token" ;;
+    repo:*) path="/repos/${target#repo:}/actions/runners/registration-token" ;;
+    *) echo ""; return 1 ;;
+  esac
+  gh_api POST "$path" \
+    | grep -o '"token"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+    | sed 's/.*"\([^"]*\)"$/\1/'
+}
+
+# Deregister a runner from GitHub host-side, by name, using the PAT. This replaces
+# the base image's in-container SIGTERM deregister (we disable it via
+# DISABLE_AUTOMATIC_DEREGISTRATION) — that path re-mints from ACCESS_TOKEN and so
+# required the PAT inside the container. Doing it here is both safer (PAT stays on
+# the host) and more robust (runs even when the container is hard-killed).
+# Best-effort: a busy runner can't be deleted (GitHub 422) and a leftover offline
+# entry is harmless — the next Start re-registers the same name with --replace.
+deregister_runner_api() {
+  local c="$1" rname idx repo base id
+  [ -n "$ACCESS_TOKEN" ] && [ -n "$c" ] || return 0
+  rname="$(host)-${c}"                          # matches RUNNER_NAME set in build_args
+  if [ "$GH_SCOPE" = "org" ]; then
+    base="/orgs/${GH_OWNER}"
+  else
+    idx="${c##*-}"; repo="$(repo_for_index "$idx")"
+    [ -n "$repo" ] || return 0
+    base="/repos/${repo}"
+  fi
+  # Resolve name -> id from the (pretty-printed, multi-line) runners list. Track the
+  # last-seen id and name, and emit only at a runner-only key ("os") — label objects
+  # carry "id"+"name" too but never "os", and a runner's own id/name precede its
+  # labels, so at the "os" line cur/nm still hold the runner's values. Robust to the
+  # API's whitespace/line formatting (a single-line grep pair is not).
+  id="$(gh_api GET "${base}/actions/runners?per_page=100" | awk -v want="$rname" '
+      /"id"[[:space:]]*:/   { if (match($0, /[0-9]+/)) cur = substr($0, RSTART, RLENGTH) }
+      /"name"[[:space:]]*:/ { s=$0; sub(/^[^:]*:[[:space:]]*"/, "", s); sub(/".*/, "", s); nm=s }
+      /"os"[[:space:]]*:/   { if (nm == want) { print cur; exit } }
+    ')"
+  [ -n "$id" ] || return 0
+  gh_api DELETE "${base}/actions/runners/${id}" >/dev/null 2>&1 \
+    && log "deregistered $rname from GitHub (id $id)" || true
+}
+
 # The single biggest footgun: pointing privileged runners at a PUBLIC repo. A
 # fork PR on a public repo runs attacker-controlled code, and here that code runs
 # in a --privileged DinD container (or with the host docker.sock mounted) — i.e.
@@ -409,16 +487,40 @@ ensure_dirs() {
   write_dind_config
 }
 
+# Dedicated user-defined bridge for the fleet (created when NETWORK_ISOLATION is
+# on). Docker isolates user-defined bridges from each other, so runners here can't
+# reach your OTHER Unraid containers. Docker auto-allocates the subnet; strict mode
+# reads it back for the egress rules. No-op (and never created) when isolation=off.
+ensure_network() {
+  [ "$NETWORK_ISOLATION" = "off" ] && return 0
+  docker network inspect "$RUNNER_NETWORK" >/dev/null 2>&1 && return 0
+  log "creating isolated runner network $RUNNER_NETWORK"
+  docker network create --driver bridge "$RUNNER_NETWORK" >/dev/null \
+    || err "could not create network $RUNNER_NETWORK"
+}
+
 # Shared pull-through registry mirror so all DinD runners reuse pulled images
-# (docker.io) from one cache on the pool instead of each pulling cold.
+# (docker.io) from one cache on the pool instead of each pulling cold. When network
+# isolation is on the mirror joins the dedicated bridge and runners reach it by name
+# ($MIRROR_NAME:5000) over that bridge — so it keeps working even in strict mode,
+# where host access is blocked. Otherwise it's published on the host ($MIRROR_PORT)
+# and reached via host.docker.internal (the legacy path).
 ensure_mirror() {
   [ "$SHARED_IMAGE_CACHE" = "true" ] && [ "$DIND" = "true" ] || return 0
   mkdir -p "$CACHE_ROOT/registry-mirror"
   if ! docker ps --format '{{.Names}}' | grep -qx "$MIRROR_NAME"; then
     docker rm -f "$MIRROR_NAME" >/dev/null 2>&1
-    log "starting shared image cache ($MIRROR_NAME) on :$MIRROR_PORT"
+    local netargs=()
+    if [ "$NETWORK_ISOLATION" != "off" ]; then
+      ensure_network
+      netargs=( --network "$RUNNER_NETWORK" )
+      log "starting shared image cache ($MIRROR_NAME) on $RUNNER_NETWORK"
+    else
+      netargs=( -p "${MIRROR_PORT}:5000" )
+      log "starting shared image cache ($MIRROR_NAME) on :$MIRROR_PORT"
+    fi
     docker run -d --restart=unless-stopped --name "$MIRROR_NAME" \
-      -p "${MIRROR_PORT}:5000" \
+      "${netargs[@]}" \
       -v "$CACHE_ROOT/registry-mirror:/var/lib/registry" \
       -e REGISTRY_PROXY_REMOTEURL="https://registry-1.docker.io" \
       registry:2 >/dev/null 2>&1 || err "could not start $MIRROR_NAME"
@@ -432,9 +534,74 @@ ensure_mirror() {
 # Adds the shared pull-through mirror when that's enabled.
 write_dind_config() {
   [ "$DIND" = "true" ] || return 0
-  local mirror=""
-  [ "$SHARED_IMAGE_CACHE" = "true" ] && mirror=$(printf ',"registry-mirrors":["http://host.docker.internal:%s"],"insecure-registries":["host.docker.internal:%s"]' "$MIRROR_PORT" "$MIRROR_PORT")
+  local mirror="" ep
+  if [ "$SHARED_IMAGE_CACHE" = "true" ]; then
+    # Isolated: reach the mirror by container name over the dedicated bridge (works
+    # in strict mode, where host access is blocked). Legacy: via the published host
+    # port. The inner dockerd shares the runner's netns, so Docker DNS resolves the
+    # name for it.
+    if [ "$NETWORK_ISOLATION" != "off" ]; then ep="${MIRROR_NAME}:5000"; else ep="host.docker.internal:${MIRROR_PORT}"; fi
+    mirror=$(printf ',"registry-mirrors":["http://%s"],"insecure-registries":["%s"]' "$ep" "$ep")
+  fi
   printf '{"storage-driver":"overlay2"%s}\n' "$mirror" > "$CACHE_ROOT/dind-daemon.json"
+}
+
+# --- strict-mode egress firewall (DOCKER-USER) ------------------------------
+# strict isolation blocks runners from reaching the Unraid host and your LAN while
+# still allowing the internet (GitHub, package registries) and the shared mirror.
+# We drive Docker's DOCKER-USER chain (the supported hook for user rules on
+# forwarded container traffic). Rules are scoped to the runner network's subnet, so
+# nothing else on the box is affected. Best-effort: a missing iptables or chain
+# just means egress isn't restricted (logged), never a failed Start.
+
+# Remove every rule we previously added (matched by our comment tag), highest line
+# number first so deletes don't renumber out from under us. Covers BOTH chains we
+# touch: DOCKER-USER (forwarded traffic) and INPUT (traffic to the host's own IPs).
+# Idempotent.
+firewall_clear() {
+  command -v iptables >/dev/null 2>&1 || return 0
+  local chain n
+  for chain in DOCKER-USER INPUT; do
+    for n in $(iptables -w -L "$chain" --line-numbers -n 2>/dev/null \
+               | awk -v t="$FW_TAG" 'index($0,t){print $1}' | sort -rn); do
+      iptables -w -D "$chain" "$n" 2>/dev/null || true
+    done
+  done
+}
+
+# Install the egress rules for strict mode. Reads the runner network's subnet and
+# the mirror's IP back from docker (no pinned subnet -> no collisions). RETURN =
+# "leave DOCKER-USER, let Docker's normal ACCEPT handle it"; public destinations
+# match none of the DROPs and fall through, so internet egress still works.
+firewall_apply() {
+  [ "$NETWORK_ISOLATION" = "strict" ] || return 0
+  command -v iptables >/dev/null 2>&1 || { err "strict isolation needs iptables — egress NOT restricted"; return 0; }
+  docker network inspect "$RUNNER_NETWORK" >/dev/null 2>&1 || { err "strict isolation: $RUNNER_NETWORK missing — egress NOT restricted"; return 0; }
+  local s gw mip i=1
+  s="$(docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}' "$RUNNER_NETWORK" 2>/dev/null)"
+  gw="$(docker network inspect -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}' "$RUNNER_NETWORK" 2>/dev/null)"
+  [ -n "$s" ] || { err "strict isolation: could not resolve $RUNNER_NETWORK subnet — egress NOT restricted"; return 0; }
+  mip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$MIRROR_NAME" 2>/dev/null)"
+  firewall_clear
+  # Order matters (top-down): allow mirror + established replies, THEN drop host +
+  # every private range. Inserting at increasing indices keeps them in this order
+  # ahead of Docker's trailing RETURN.
+  [ -n "$mip" ] && { iptables -w -I DOCKER-USER "$i" -s "$s" -d "$mip" -p tcp --dport 5000 -j RETURN -m comment --comment "$FW_TAG:mirror"; i=$((i+1)); }
+  iptables -w -I DOCKER-USER "$i" -d "$s" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN -m comment --comment "$FW_TAG:estab"; i=$((i+1))
+  [ -n "$gw" ] && { iptables -w -I DOCKER-USER "$i" -s "$s" -d "$gw" -j DROP -m comment --comment "$FW_TAG:host"; i=$((i+1)); }
+  iptables -w -I DOCKER-USER "$i" -s "$s" -d 10.0.0.0/8     -j DROP -m comment --comment "$FW_TAG:lan10";  i=$((i+1))
+  iptables -w -I DOCKER-USER "$i" -s "$s" -d 172.16.0.0/12  -j DROP -m comment --comment "$FW_TAG:lan172"; i=$((i+1))
+  iptables -w -I DOCKER-USER "$i" -s "$s" -d 192.168.0.0/16 -j DROP -m comment --comment "$FW_TAG:lan192"; i=$((i+1))
+  iptables -w -I DOCKER-USER "$i" -s "$s" -d 100.64.0.0/10  -j DROP -m comment --comment "$FW_TAG:cgnat"; i=$((i+1))
+  # DOCKER-USER is in the FORWARD path only. A runner reaching the Unraid host's OWN
+  # ip (e.g. the webGUI on the LAN address, or the host's tailscale ip) is delivered
+  # locally via INPUT and never forwarded, so the rules above miss it — that leaves
+  # the management UI reachable. Drop new traffic from the runner subnet to the host
+  # here too; the runner needs nothing that originates host-side (the mirror is a
+  # container = forwarded, DNS is Docker's embedded resolver inside the netns).
+  iptables -w -I INPUT 1 -s "$s" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN -m comment --comment "$FW_TAG:in-estab"
+  iptables -w -I INPUT 2 -s "$s" -j DROP -m comment --comment "$FW_TAG:in-drop"
+  log "strict isolation: egress locked to internet+mirror for $s (Unraid host + LAN blocked)"
 }
 
 # resolve the image to run: the locally-built image (builtin) or a remote ref.
@@ -456,6 +623,7 @@ build_args() {
     -e LABELS="$RUNNER_LABELS"
     -e EPHEMERAL="$EPHEMERAL"
     -e DISABLE_AUTO_UPDATE="true"
+    -e DISABLE_AUTOMATIC_DEREGISTRATION="true"   # we deregister host-side (deregister_runner_api)
     -e RUN_AS_ROOT="$RUN_AS_ROOT"
     -e RUNNER_ALLOW_RUNASROOT="1"
     -e RUNNER_WORKDIR="/_work"
@@ -468,7 +636,8 @@ build_args() {
   done
   [ -n "$RUNNER_CPUS" ]   && ARGS+=( --cpus="$RUNNER_CPUS" )
   [ -n "$RUNNER_MEMORY" ] && ARGS+=( --memory="$RUNNER_MEMORY" )
-  [ -n "$ACCESS_TOKEN" ] && ARGS+=( -e ACCESS_TOKEN="$ACCESS_TOKEN" )
+  # network isolation: put the runner on the dedicated bridge (off = default bridge)
+  [ "$NETWORK_ISOLATION" != "off" ] && ARGS+=( --network "$RUNNER_NETWORK" )
   if [ "$DIND" = "true" ]; then
     # each runner runs its own dockerd: isolates service-container ports and
     # makes localhost:<port> reachable from job steps (the runner IS the host).
@@ -489,7 +658,10 @@ build_args() {
     # a post-mortem trail off the ephemeral container. Inspect $CACHE_ROOT/dind-logs/<runner>.
     mkdir -p "$CACHE_ROOT/dind-logs/$name"
     ARGS+=( -v "$CACHE_ROOT/dind-logs/$name:/var/log/dind" )
-    [ "$SHARED_IMAGE_CACHE" = "true" ] && ARGS+=( --add-host "host.docker.internal:host-gateway" )
+    # Legacy mirror path: reach the host-published mirror via host.docker.internal.
+    # Under isolation the mirror is on the dedicated bridge and reached by name, so
+    # host-gateway isn't needed (and is blocked in strict) — skip it.
+    [ "$SHARED_IMAGE_CACHE" = "true" ] && [ "$NETWORK_ISOLATION" = "off" ] && ARGS+=( --add-host "host.docker.internal:host-gateway" )
   elif [ "$SHARE_DOCKER_SOCK" = "true" ]; then
     ARGS+=( -v /var/run/docker.sock:/var/run/docker.sock )
   fi
@@ -499,12 +671,23 @@ build_args() {
     mkdir -p "$CACHE_ROOT/work/$name"
     ARGS+=( -v "$CACHE_ROOT/work/$name:/_work" )
   fi
+  local scope_target=""
   if [ "$GH_SCOPE" = "org" ]; then
     ARGS+=( -e RUNNER_SCOPE="org" -e ORG_NAME="$GH_OWNER" )
     [ -n "$RUNNER_GROUP" ] && ARGS+=( -e RUNNER_GROUP="$RUNNER_GROUP" )
+    scope_target="org:$GH_OWNER"
   else
     local repo; repo="$(repo_for_index "$idx")"
     ARGS+=( -e RUNNER_SCOPE="repo" -e REPO_URL="https://github.com/${repo}" )
+    scope_target="repo:$repo"
+  fi
+  # Hand the container a short-lived registration token, never the PAT (see the
+  # host-side token helpers above). Skipped when no PAT is configured — e.g. the
+  # 'validate' path, which swaps the entrypoint for a sleep and never registers.
+  if [ -n "$ACCESS_TOKEN" ] && [ "${NO_REGISTER:-0}" != "1" ]; then
+    local reg; reg="$(registration_token "$scope_target")"
+    [ -z "$reg" ] && { err "could not mint a runner registration token for ${scope_target#*:} (check the PAT's scope/permissions)"; return 1; }
+    ARGS+=( -e RUNNER_TOKEN="$reg" )
   fi
   ARGS+=( "$(effective_image)" )
 }
@@ -514,7 +697,7 @@ start_one() {
   if docker ps -a --format '{{.Names}}' | grep -qx "$name"; then
     log "runner $name already exists; skipping"; return 0
   fi
-  build_args "$idx"
+  build_args "$idx" || { err "runner $name not started (registration-token error)"; return 1; }
   log "starting $name (cpus=$RUNNER_CPUS mem=$RUNNER_MEMORY scope=$GH_SCOPE)"
   docker run "${ARGS[@]}" >/dev/null
 }
@@ -543,7 +726,10 @@ cmd_start() {
   local secp; secp="$(public_repo_problem)"
   [ -n "$secp" ] && err "SECURITY: $secp"       # warn, do not block (operator's call)
   ensure_dirs
+  ensure_network
   ensure_mirror
+  firewall_clear                                # drop stale rules (e.g. strict -> off/isolate)
+  firewall_apply                                # re-add egress rules (no-op unless strict)
   registry_login
   # bring back any runners Unraid/Docker left exited (array stop, daemon restart)
   start_stopped_managed
@@ -562,6 +748,7 @@ cmd_start() {
 # the pool is reclaimed instead of leaking a tree per retired runner.
 remove_runner() {
   local c="$1"
+  deregister_runner_api "$c"                  # host-side (PAT stays off the container)
   docker stop -t 30 "$c" >/dev/null 2>&1
   docker rm "$c" >/dev/null 2>&1
   rm -rf "$CACHE_ROOT/docker/$c" 2>/dev/null || true
@@ -586,6 +773,12 @@ cmd_stop() {
   if docker ps -a --format '{{.Names}}' | grep -qx "$MIRROR_NAME"; then
     log "removing shared image cache ($MIRROR_NAME)"
     docker rm -f "$MIRROR_NAME" >/dev/null 2>&1 || true
+  fi
+  # tear down the strict-mode egress rules and the now-empty dedicated network
+  firewall_clear
+  if [ "$NETWORK_ISOLATION" != "off" ] && docker network inspect "$RUNNER_NETWORK" >/dev/null 2>&1; then
+    log "removing isolated runner network ($RUNNER_NETWORK)"
+    docker network rm "$RUNNER_NETWORK" >/dev/null 2>&1 || true
   fi
 }
 
@@ -668,6 +861,7 @@ cmd_validate() {
   registry_login
   local name="${NAME_PREFIX}-validate"
   docker rm -f "$name" >/dev/null 2>&1
+  local NO_REGISTER=1               # validate swaps the entrypoint for a sleep — never registers
   build_args 99 "$name"
   # swap real entrypoint for an inert sleep so no registration is attempted
   local injected=(); local a; local eimg; eimg="$(effective_image)"

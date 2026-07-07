@@ -193,6 +193,23 @@ _(Share host docker.sock)_:
 > Mount the host Docker socket so jobs can start service containers (e.g. postgres for integration tests). PRIVATE repos only — never expose this to public/fork-PR code (root-equivalent host access).
 :end
 
+_(Network isolation)_:
+: <select name="NETWORK_ISOLATION">
+  <option value="off" <?=crf_sel($cfg,'NETWORK_ISOLATION','off','off')?>>off (default docker bridge)</option>
+  <option value="isolate" <?=crf_sel($cfg,'NETWORK_ISOLATION','isolate','off')?>>isolate (dedicated bridge)</option>
+  <option value="strict" <?=crf_sel($cfg,'NETWORK_ISOLATION','strict','off')?>>strict (dedicated bridge + block host/LAN)</option>
+  </select>
+
+:crf_net_plug:
+> Confines the runners at the network layer. Applies on the next **Start**.
+>
+> **off** — runners share the default Docker bridge (legacy behavior).
+>
+> **isolate** — runners run on a dedicated bridge (`ci-runner-net`), so they can't reach your **other Unraid containers**. The shared image cache joins the same network. Low-risk; recommended.
+>
+> **strict** — everything `isolate` does, **plus** firewall rules (Docker's `DOCKER-USER` chain) that stop runners from reaching the **Unraid host and your LAN**, while still allowing the internet and the shared cache. Best when runners might touch less-trusted code. Requires `iptables` on the host; if it can't be applied, Start logs a warning and continues without the egress rules.
+:end
+
 ### Image auto-update
 
 _(Auto-update runner image)_:
