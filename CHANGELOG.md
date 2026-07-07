@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.2](https://github.com/unraid/ci-runner-farm/compare/v1.4.1...v1.4.2) (2026-07-07)
+
+
+### Bug Fixes
+
+* **plugin:** dedicated .tgz package + Unraid config idioms ([#23](https://github.com/unraid/ci-runner-farm/issues/23)) ([97873dc](https://github.com/unraid/ci-runner-farm/commit/97873dc377e2bea6a46af95f976e45951f17b880))
+* recreate runners with a fresh token instead of resurrecting stale ones ([#22](https://github.com/unraid/ci-runner-farm/issues/22)) ([411d5cd](https://github.com/unraid/ci-runner-farm/commit/411d5cd5f24f6602684df8d60148d2807da1d4a2))
+
 ## [1.4.1](https://github.com/unraid/ci-runner-farm/compare/v1.4.0...v1.4.1) (2026-07-07)
 
 
