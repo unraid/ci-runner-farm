@@ -554,14 +554,18 @@ write_dind_config() {
 # nothing else on the box is affected. Best-effort: a missing iptables or chain
 # just means egress isn't restricted (logged), never a failed Start.
 
-# Remove every DOCKER-USER rule we previously added (matched by our comment tag),
-# highest line number first so deletes don't renumber out from under us. Idempotent.
+# Remove every rule we previously added (matched by our comment tag), highest line
+# number first so deletes don't renumber out from under us. Covers BOTH chains we
+# touch: DOCKER-USER (forwarded traffic) and INPUT (traffic to the host's own IPs).
+# Idempotent.
 firewall_clear() {
   command -v iptables >/dev/null 2>&1 || return 0
-  local n
-  for n in $(iptables -w -L DOCKER-USER --line-numbers -n 2>/dev/null \
-             | awk -v t="$FW_TAG" 'index($0,t){print $1}' | sort -rn); do
-    iptables -w -D DOCKER-USER "$n" 2>/dev/null || true
+  local chain n
+  for chain in DOCKER-USER INPUT; do
+    for n in $(iptables -w -L "$chain" --line-numbers -n 2>/dev/null \
+               | awk -v t="$FW_TAG" 'index($0,t){print $1}' | sort -rn); do
+      iptables -w -D "$chain" "$n" 2>/dev/null || true
+    done
   done
 }
 
@@ -588,6 +592,15 @@ firewall_apply() {
   iptables -w -I DOCKER-USER "$i" -s "$s" -d 10.0.0.0/8     -j DROP -m comment --comment "$FW_TAG:lan10";  i=$((i+1))
   iptables -w -I DOCKER-USER "$i" -s "$s" -d 172.16.0.0/12  -j DROP -m comment --comment "$FW_TAG:lan172"; i=$((i+1))
   iptables -w -I DOCKER-USER "$i" -s "$s" -d 192.168.0.0/16 -j DROP -m comment --comment "$FW_TAG:lan192"; i=$((i+1))
+  iptables -w -I DOCKER-USER "$i" -s "$s" -d 100.64.0.0/10  -j DROP -m comment --comment "$FW_TAG:cgnat"; i=$((i+1))
+  # DOCKER-USER is in the FORWARD path only. A runner reaching the Unraid host's OWN
+  # ip (e.g. the webGUI on the LAN address, or the host's tailscale ip) is delivered
+  # locally via INPUT and never forwarded, so the rules above miss it — that leaves
+  # the management UI reachable. Drop new traffic from the runner subnet to the host
+  # here too; the runner needs nothing that originates host-side (the mirror is a
+  # container = forwarded, DNS is Docker's embedded resolver inside the netns).
+  iptables -w -I INPUT 1 -s "$s" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN -m comment --comment "$FW_TAG:in-estab"
+  iptables -w -I INPUT 2 -s "$s" -j DROP -m comment --comment "$FW_TAG:in-drop"
   log "strict isolation: egress locked to internet+mirror for $s (Unraid host + LAN blocked)"
 }
 
