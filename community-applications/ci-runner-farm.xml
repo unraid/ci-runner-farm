@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Containers>
+<Plugin>True</Plugin>
 <PluginURL>https://github.com/unraid/ci-runner-farm/releases/latest/download/ci-runner-farm.plg</PluginURL>
 <PluginAuthor>Lime Technology</PluginAuthor>
 <Beta>False</Beta>
@@ -12,6 +13,15 @@ Point it at a repo or organization, paste a GitHub token, and your CI runs on yo
 [br][br]
 [b]Security:[/b] self-hosted runners execute arbitrary workflow code on your hardware, and DinD runners run privileged. Use them only for trusted/private repositories — never let public/fork-PR code run on a privileged self-hosted runner. The plugin actively warns you when a privileged runner is pointed at a public repo. See the README for full guidance.
 </Description>
+<Requires>
+[b]&#9888; Security — this plugin runs arbitrary CI code as root on your server.[/b]
+[br][br]
+CI Runner Farm executes GitHub Actions jobs in [b]privileged Docker-in-Docker[/b] containers on this Unraid box. Any workflow scheduled onto the fleet — [b]including a pull request from a fork of a public repo[/b] — runs with root-equivalent access to the host Docker daemon and to any shares you expose to it.
+[br][br]
+[b]Only run trusted workflows on trusted runners.[/b] Point the fleet at [b]private / trusted repositories only[/b]; never let public or fork-PR code run on a privileged self-hosted runner. At org scope, use a runner group restricted to your private repos. The plugin also warns you live in its settings page if it detects a public repo on a privileged fleet.
+[br][br]
+By installing you acknowledge these risks and accept responsibility for what runs on your fleet.
+</Requires>
 <Support>https://github.com/unraid/ci-runner-farm/issues</Support>
 <Project>https://github.com/unraid/ci-runner-farm</Project>
 <Icon>https://raw.githubusercontent.com/unraid/ci-runner-farm/main/community-applications/ci-runner-farm.png</Icon>
