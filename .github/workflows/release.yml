@@ -76,21 +76,24 @@ jobs:
 
           python3 -c "import xml.etree.ElementTree as ET; ET.parse('$plg')"
 
-          # The embedded base64 payload must match the source tree at this commit,
-          # proving the published .plg actually ships the tagged plugin code.
-          python3 - "$plg" > /tmp/payload.b64 <<'PY'
-          import re, sys
-          text = open(sys.argv[1]).read()
-          m = re.search(r'payload\.b64.*?<!\[CDATA\[(.*?)\]\]>', text, re.S)
-          if not m:
-              sys.exit("payload.b64 CDATA block not found in PLG")
-          sys.stdout.write(m.group(1).strip())
-          PY
+          # Rebuild the package reproducibly from the tagged src. Its MD5 must
+          # match the packageMD5 the committed .plg advertises (proving publish
+          # will upload matching bytes), and its contents must match the source
+          # tree at this commit (proving the .plg fetches the tagged plugin code).
+          tgz="ci-runner-farm.tgz"
+          chmod +x build-plg.sh
+          ./build-plg.sh --tgz-only
+          plg_md5="$(sed -n 's/^<!ENTITY packageMD5[[:space:]]*"\([0-9a-f]*\)">$/\1/p' "$plg")"
+          tgz_md5="$(md5sum "$tgz" | cut -d' ' -f1)"
+          if [[ -z "$plg_md5" || "$plg_md5" != "$tgz_md5" ]]; then
+            echo "packageMD5 in $plg ($plg_md5) does not match $tgz ($tgz_md5) at $tag" >&2
+            exit 1
+          fi
           rm -rf /tmp/plgtree && mkdir -p /tmp/plgtree
-          base64 -d /tmp/payload.b64 | tar -xz -C /tmp/plgtree
+          tar -xzf "$tgz" -C /tmp/plgtree
           if ! diff -r /tmp/plgtree src/usr/local/emhttp/plugins/ci-runner-farm; then
-            echo "Embedded PLG payload does not match src/ at $tag" >&2
+            echo "PLG package ($tgz) does not match src/ at $tag" >&2
             exit 1
           fi
 
-          echo "Validated $plg for $tag (version $plg_version)"
+          echo "Validated $plg + $tgz for $tag (version $plg_version, package md5 $tgz_md5)"

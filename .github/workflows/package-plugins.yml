@@ -39,26 +39,33 @@ jobs:
           chmod +x build-plg.sh
           ./build-plg.sh
 
-      - name: Validate .plg XML and embedded payload
+      - name: Validate .plg XML, package MD5, and package contents
         run: |
           set -euo pipefail
           plg="ci-runner-farm.plg"
+          tgz="ci-runner-farm.tgz"
           python3 -c "import xml.etree.ElementTree as ET; ET.parse('$plg')"
-          python3 - "$plg" > /tmp/payload.b64 <<'PY'
-          import re, sys
-          m = re.search(r'payload\.b64.*?<!\[CDATA\[(.*?)\]\]>', open(sys.argv[1]).read(), re.S)
-          if not m:
-              sys.exit("payload.b64 CDATA block not found in PLG")
-          sys.stdout.write(m.group(1).strip())
-          PY
-          rm -rf /tmp/plgtree && mkdir -p /tmp/plgtree
-          base64 -d /tmp/payload.b64 | tar -xz -C /tmp/plgtree
-          diff -r /tmp/plgtree src/usr/local/emhttp/plugins/ci-runner-farm
-          echo "Plugin built and validated."
 
-      - name: Upload built .plg (CI artifact)
+          # The .plg carries the package's MD5 as the packageMD5 ENTITY (Unraid
+          # expands it into <MD5>); it must match the .tgz build-plg.sh produced.
+          plg_md5="$(sed -n 's/^<!ENTITY packageMD5[[:space:]]*"\([0-9a-f]*\)">$/\1/p' "$plg")"
+          tgz_md5="$(md5sum "$tgz" | cut -d' ' -f1)"
+          if [[ -z "$plg_md5" || "$plg_md5" != "$tgz_md5" ]]; then
+            echo "packageMD5 in $plg ($plg_md5) does not match $tgz ($tgz_md5)" >&2
+            exit 1
+          fi
+
+          # And the package must contain exactly the source plugin tree.
+          rm -rf /tmp/plgtree && mkdir -p /tmp/plgtree
+          tar -xzf "$tgz" -C /tmp/plgtree
+          diff -r /tmp/plgtree src/usr/local/emhttp/plugins/ci-runner-farm
+          echo "Plugin built and validated (package md5 $tgz_md5)."
+
+      - name: Upload built .plg + .tgz (CI artifact)
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ci-runner-farm-plg
-          path: ci-runner-farm.plg
+          path: |
+            ci-runner-farm.plg
+            ci-runner-farm.tgz
           if-no-files-found: error
