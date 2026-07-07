@@ -161,9 +161,33 @@ scale_down_idle() {
   done
 }
 
+# Remove managed runners that have died (crash, OOM, inner-dockerd failure, or a
+# host/Docker restart not yet reconciled). With --restart=no the plugin owns
+# recovery; a dead container would otherwise linger and — because its last log
+# line isn't "Running job" — count as phantom *idle* capacity in busy_count/idle,
+# suppressing growth so the live fleet silently shrinks while current_count still
+# looks full. Reaping lets the grow step below refill the floor with a freshly
+# registered runner. Only exited/dead containers are reaped (never a container
+# still starting), and the caches/DinD root persist as bind mounts.
+reap_dead_runners() {
+  local c st
+  for c in $(managed_names); do
+    [ -n "$c" ] || continue
+    st="$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)"
+    case "$st" in
+      exited|dead) ;;
+      *) continue ;;
+    esac
+    log "autoscale: reaping dead runner $c (state=$st)"
+    deregister_runner_api "$c"
+    docker rm -f "$c" >/dev/null 2>&1
+  done
+}
+
 # one autoscaling evaluation: keep AUTOSCALE_MIN_IDLE warm runners, within [MIN,MAX]
 autoscale_tick() {
   [ "$AUTOSCALE" = "true" ] || return 0
+  reap_dead_runners        # drop dead containers first so idle accounting is real
   local cur busy idle statef over target
   cur=$(current_count); busy=$(busy_count); idle=$((cur - busy))
   statef="${CFGDIR}/autoscale.state"; over=0
@@ -662,7 +686,14 @@ effective_image() {
 build_args() {
   local idx="$1"; local name="${2:-${NAME_PREFIX}-${idx}}"
   ARGS=(
-    -d --restart=unless-stopped
+    # --restart=no (NOT unless-stopped): the registration token baked in below is
+    # short-lived (~1h) and the runner re-runs config on start, so letting Docker
+    # auto-restart a crashed/exited runner makes it re-register with an expired
+    # token — GitHub returns 404 ("Not configured") and the container crash-loops.
+    # The plugin is the sole supervisor: start_stopped_managed (boot) and
+    # reap_dead_runners (autoscale) recreate a dead runner with a freshly minted
+    # token instead of resurrecting it with the stale one.
+    -d --restart=no
     --name "$name" --hostname "$name"
     --pids-limit=4096
     --label "${MANAGED_LABEL%=*}=true"
@@ -750,20 +781,36 @@ start_one() {
   docker run "${ARGS[@]}" >/dev/null
 }
 
-# (Re)start any managed runner containers that exist but are stopped — e.g. after
-# Unraid stopped Docker for an array stop, which leaves them "exited". Docker's
-# unless-stopped policy does NOT resurrect explicitly-stopped containers, so the
-# docker_started event hook reconciles here. Starting in place (vs recreate) keeps
-# each runner's caches, GitHub registration and DinD data root intact, and
-# preserves a fleet the autoscaler had grown above the floor.
+# Recreate a stopped managed runner with a FRESH registration token. We cannot
+# `docker start` it in place: the baked-in RUNNER_TOKEN is short-lived (~1h) and
+# the runner re-runs config on start, so a stale token yields a GitHub 404
+# ("Not configured") and a crash loop. Only the container is removed — the warm
+# caches and the DinD data root are bind mounts on the pool (see build_args), so
+# they survive under the same name and the replacement starts warm. The stale
+# GitHub registration is dropped host-side first (the PAT never touches the
+# container) so the fresh runner re-registers cleanly.
+recreate_stopped_runner() {
+  local c="$1" idx
+  idx="$(docker inspect -f '{{ index .Config.Labels "net.unraid.ci-runner-farm.index" }}' "$c" 2>/dev/null)"
+  [ -z "$idx" ] && idx="${c##*-}"
+  deregister_runner_api "$c"
+  docker rm -f "$c" >/dev/null 2>&1
+  start_one "$idx"
+}
+
+# Bring back managed runner containers that exist but are stopped — e.g. after
+# Unraid stopped Docker for an array stop, which leaves them "exited", reconciled
+# by the docker_started event hook. Each is recreated with a fresh registration
+# token (see recreate_stopped_runner) rather than started in place, because the
+# original token has almost certainly expired by the time Docker comes back.
 start_stopped_managed() {
   local c st
   for c in $(managed_names); do
     [ -n "$c" ] || continue
     st="$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)"
     [ "$st" = "true" ] && continue
-    log "restarting stopped runner $c"
-    docker start "$c" >/dev/null 2>&1 || err "could not restart $c"
+    log "recreating stopped runner $c with a fresh registration token"
+    recreate_stopped_runner "$c"
   done
 }
 
