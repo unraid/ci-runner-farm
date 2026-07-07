@@ -164,6 +164,13 @@ before exposing the fleet:
   host; each runner is handed only a short-lived registration token, and runners
   are deregistered host-side. So a workflow step can't read your token out of its
   own environment.
+- **Network isolation** (Docker section) confines runners at the network layer:
+  - `isolate` puts them on a dedicated bridge so they can't reach your **other
+    Unraid containers**;
+  - `strict` adds firewall rules (Docker's `DOCKER-USER` chain) that also block
+    the runners from the **Unraid host and your LAN**, while still allowing the
+    internet and the shared image cache. Recommended if runners might touch
+    less-trusted code. Applies on the next Start; needs `iptables` on the host.
 - For stronger isolation, set `EPHEMERAL=true` so each job gets a clean runner.
 - At org scope, create a **runner group restricted to your private repos** so a
   public repo can never schedule onto these runners.

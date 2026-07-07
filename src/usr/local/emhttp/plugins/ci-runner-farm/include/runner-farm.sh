@@ -55,6 +55,16 @@ SHARED_IMAGE_CACHE="true"             # run a shared pull-through registry mirro
                                       # reuses pulled images (postgres, etc.) instead of each pulling cold.
 MIRROR_NAME="ci-runner-mirror"        # cache persists on the pool across restarts.
 MIRROR_PORT="5000"
+# ---- network isolation -----------------------------------------------------
+NETWORK_ISOLATION="off"               # off     = runners on the default docker bridge (legacy).
+                                      # isolate = dedicated bridge; runners can't reach your OTHER
+                                      #           Unraid containers (docker inter-network isolation).
+                                      # strict  = isolate + DOCKER-USER egress rules that block the
+                                      #           runners from the Unraid host + your LAN (RFC1918),
+                                      #           while still allowing the internet + the shared mirror.
+RUNNER_NETWORK="ci-runner-net"        # name of the dedicated bridge (created when isolation != off).
+                                      # Docker auto-allocates its subnet; we read it back for the rules.
+FW_TAG="ci-runner-farm"               # iptables comment tag used to find/remove our DOCKER-USER rules
 # ---- private registry auth: docker login so the host can pull a private IMAGE
 REGISTRY_SERVER=""                     # e.g. ghcr.io — registry to docker login (empty = skip)
 REGISTRY_USERNAME=""                   # registry username (password/token stored in registry-token file)
@@ -477,16 +487,40 @@ ensure_dirs() {
   write_dind_config
 }
 
+# Dedicated user-defined bridge for the fleet (created when NETWORK_ISOLATION is
+# on). Docker isolates user-defined bridges from each other, so runners here can't
+# reach your OTHER Unraid containers. Docker auto-allocates the subnet; strict mode
+# reads it back for the egress rules. No-op (and never created) when isolation=off.
+ensure_network() {
+  [ "$NETWORK_ISOLATION" = "off" ] && return 0
+  docker network inspect "$RUNNER_NETWORK" >/dev/null 2>&1 && return 0
+  log "creating isolated runner network $RUNNER_NETWORK"
+  docker network create --driver bridge "$RUNNER_NETWORK" >/dev/null \
+    || err "could not create network $RUNNER_NETWORK"
+}
+
 # Shared pull-through registry mirror so all DinD runners reuse pulled images
-# (docker.io) from one cache on the pool instead of each pulling cold.
+# (docker.io) from one cache on the pool instead of each pulling cold. When network
+# isolation is on the mirror joins the dedicated bridge and runners reach it by name
+# ($MIRROR_NAME:5000) over that bridge — so it keeps working even in strict mode,
+# where host access is blocked. Otherwise it's published on the host ($MIRROR_PORT)
+# and reached via host.docker.internal (the legacy path).
 ensure_mirror() {
   [ "$SHARED_IMAGE_CACHE" = "true" ] && [ "$DIND" = "true" ] || return 0
   mkdir -p "$CACHE_ROOT/registry-mirror"
   if ! docker ps --format '{{.Names}}' | grep -qx "$MIRROR_NAME"; then
     docker rm -f "$MIRROR_NAME" >/dev/null 2>&1
-    log "starting shared image cache ($MIRROR_NAME) on :$MIRROR_PORT"
+    local netargs=()
+    if [ "$NETWORK_ISOLATION" != "off" ]; then
+      ensure_network
+      netargs=( --network "$RUNNER_NETWORK" )
+      log "starting shared image cache ($MIRROR_NAME) on $RUNNER_NETWORK"
+    else
+      netargs=( -p "${MIRROR_PORT}:5000" )
+      log "starting shared image cache ($MIRROR_NAME) on :$MIRROR_PORT"
+    fi
     docker run -d --restart=unless-stopped --name "$MIRROR_NAME" \
-      -p "${MIRROR_PORT}:5000" \
+      "${netargs[@]}" \
       -v "$CACHE_ROOT/registry-mirror:/var/lib/registry" \
       -e REGISTRY_PROXY_REMOTEURL="https://registry-1.docker.io" \
       registry:2 >/dev/null 2>&1 || err "could not start $MIRROR_NAME"
@@ -500,9 +534,61 @@ ensure_mirror() {
 # Adds the shared pull-through mirror when that's enabled.
 write_dind_config() {
   [ "$DIND" = "true" ] || return 0
-  local mirror=""
-  [ "$SHARED_IMAGE_CACHE" = "true" ] && mirror=$(printf ',"registry-mirrors":["http://host.docker.internal:%s"],"insecure-registries":["host.docker.internal:%s"]' "$MIRROR_PORT" "$MIRROR_PORT")
+  local mirror="" ep
+  if [ "$SHARED_IMAGE_CACHE" = "true" ]; then
+    # Isolated: reach the mirror by container name over the dedicated bridge (works
+    # in strict mode, where host access is blocked). Legacy: via the published host
+    # port. The inner dockerd shares the runner's netns, so Docker DNS resolves the
+    # name for it.
+    if [ "$NETWORK_ISOLATION" != "off" ]; then ep="${MIRROR_NAME}:5000"; else ep="host.docker.internal:${MIRROR_PORT}"; fi
+    mirror=$(printf ',"registry-mirrors":["http://%s"],"insecure-registries":["%s"]' "$ep" "$ep")
+  fi
   printf '{"storage-driver":"overlay2"%s}\n' "$mirror" > "$CACHE_ROOT/dind-daemon.json"
+}
+
+# --- strict-mode egress firewall (DOCKER-USER) ------------------------------
+# strict isolation blocks runners from reaching the Unraid host and your LAN while
+# still allowing the internet (GitHub, package registries) and the shared mirror.
+# We drive Docker's DOCKER-USER chain (the supported hook for user rules on
+# forwarded container traffic). Rules are scoped to the runner network's subnet, so
+# nothing else on the box is affected. Best-effort: a missing iptables or chain
+# just means egress isn't restricted (logged), never a failed Start.
+
+# Remove every DOCKER-USER rule we previously added (matched by our comment tag),
+# highest line number first so deletes don't renumber out from under us. Idempotent.
+firewall_clear() {
+  command -v iptables >/dev/null 2>&1 || return 0
+  local n
+  for n in $(iptables -w -L DOCKER-USER --line-numbers -n 2>/dev/null \
+             | awk -v t="$FW_TAG" 'index($0,t){print $1}' | sort -rn); do
+    iptables -w -D DOCKER-USER "$n" 2>/dev/null || true
+  done
+}
+
+# Install the egress rules for strict mode. Reads the runner network's subnet and
+# the mirror's IP back from docker (no pinned subnet -> no collisions). RETURN =
+# "leave DOCKER-USER, let Docker's normal ACCEPT handle it"; public destinations
+# match none of the DROPs and fall through, so internet egress still works.
+firewall_apply() {
+  [ "$NETWORK_ISOLATION" = "strict" ] || return 0
+  command -v iptables >/dev/null 2>&1 || { err "strict isolation needs iptables — egress NOT restricted"; return 0; }
+  docker network inspect "$RUNNER_NETWORK" >/dev/null 2>&1 || { err "strict isolation: $RUNNER_NETWORK missing — egress NOT restricted"; return 0; }
+  local s gw mip i=1
+  s="$(docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}' "$RUNNER_NETWORK" 2>/dev/null)"
+  gw="$(docker network inspect -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}' "$RUNNER_NETWORK" 2>/dev/null)"
+  [ -n "$s" ] || { err "strict isolation: could not resolve $RUNNER_NETWORK subnet — egress NOT restricted"; return 0; }
+  mip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$MIRROR_NAME" 2>/dev/null)"
+  firewall_clear
+  # Order matters (top-down): allow mirror + established replies, THEN drop host +
+  # every private range. Inserting at increasing indices keeps them in this order
+  # ahead of Docker's trailing RETURN.
+  [ -n "$mip" ] && { iptables -w -I DOCKER-USER "$i" -s "$s" -d "$mip" -p tcp --dport 5000 -j RETURN -m comment --comment "$FW_TAG:mirror"; i=$((i+1)); }
+  iptables -w -I DOCKER-USER "$i" -d "$s" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN -m comment --comment "$FW_TAG:estab"; i=$((i+1))
+  [ -n "$gw" ] && { iptables -w -I DOCKER-USER "$i" -s "$s" -d "$gw" -j DROP -m comment --comment "$FW_TAG:host"; i=$((i+1)); }
+  iptables -w -I DOCKER-USER "$i" -s "$s" -d 10.0.0.0/8     -j DROP -m comment --comment "$FW_TAG:lan10";  i=$((i+1))
+  iptables -w -I DOCKER-USER "$i" -s "$s" -d 172.16.0.0/12  -j DROP -m comment --comment "$FW_TAG:lan172"; i=$((i+1))
+  iptables -w -I DOCKER-USER "$i" -s "$s" -d 192.168.0.0/16 -j DROP -m comment --comment "$FW_TAG:lan192"; i=$((i+1))
+  log "strict isolation: egress locked to internet+mirror for $s (Unraid host + LAN blocked)"
 }
 
 # resolve the image to run: the locally-built image (builtin) or a remote ref.
@@ -537,6 +623,8 @@ build_args() {
   done
   [ -n "$RUNNER_CPUS" ]   && ARGS+=( --cpus="$RUNNER_CPUS" )
   [ -n "$RUNNER_MEMORY" ] && ARGS+=( --memory="$RUNNER_MEMORY" )
+  # network isolation: put the runner on the dedicated bridge (off = default bridge)
+  [ "$NETWORK_ISOLATION" != "off" ] && ARGS+=( --network "$RUNNER_NETWORK" )
   if [ "$DIND" = "true" ]; then
     # each runner runs its own dockerd: isolates service-container ports and
     # makes localhost:<port> reachable from job steps (the runner IS the host).
@@ -557,7 +645,10 @@ build_args() {
     # a post-mortem trail off the ephemeral container. Inspect $CACHE_ROOT/dind-logs/<runner>.
     mkdir -p "$CACHE_ROOT/dind-logs/$name"
     ARGS+=( -v "$CACHE_ROOT/dind-logs/$name:/var/log/dind" )
-    [ "$SHARED_IMAGE_CACHE" = "true" ] && ARGS+=( --add-host "host.docker.internal:host-gateway" )
+    # Legacy mirror path: reach the host-published mirror via host.docker.internal.
+    # Under isolation the mirror is on the dedicated bridge and reached by name, so
+    # host-gateway isn't needed (and is blocked in strict) — skip it.
+    [ "$SHARED_IMAGE_CACHE" = "true" ] && [ "$NETWORK_ISOLATION" = "off" ] && ARGS+=( --add-host "host.docker.internal:host-gateway" )
   elif [ "$SHARE_DOCKER_SOCK" = "true" ]; then
     ARGS+=( -v /var/run/docker.sock:/var/run/docker.sock )
   fi
@@ -622,7 +713,10 @@ cmd_start() {
   local secp; secp="$(public_repo_problem)"
   [ -n "$secp" ] && err "SECURITY: $secp"       # warn, do not block (operator's call)
   ensure_dirs
+  ensure_network
   ensure_mirror
+  firewall_clear                                # drop stale rules (e.g. strict -> off/isolate)
+  firewall_apply                                # re-add egress rules (no-op unless strict)
   registry_login
   # bring back any runners Unraid/Docker left exited (array stop, daemon restart)
   start_stopped_managed
@@ -666,6 +760,12 @@ cmd_stop() {
   if docker ps -a --format '{{.Names}}' | grep -qx "$MIRROR_NAME"; then
     log "removing shared image cache ($MIRROR_NAME)"
     docker rm -f "$MIRROR_NAME" >/dev/null 2>&1 || true
+  fi
+  # tear down the strict-mode egress rules and the now-empty dedicated network
+  firewall_clear
+  if [ "$NETWORK_ISOLATION" != "off" ] && docker network inspect "$RUNNER_NETWORK" >/dev/null 2>&1; then
+    log "removing isolated runner network ($RUNNER_NETWORK)"
+    docker network rm "$RUNNER_NETWORK" >/dev/null 2>&1 || true
   fi
 }
 
