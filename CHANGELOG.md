@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/unraid/ci-runner-farm/compare/v1.4.0...v1.4.1) (2026-07-07)
+
+
+### Bug Fixes
+
+* land stranded review fixes and release public CA readiness (1.5.0) ([#19](https://github.com/unraid/ci-runner-farm/issues/19)) ([5acc848](https://github.com/unraid/ci-runner-farm/commit/5acc8484fdfc08a399a8d315eadf1d999408c2ee))
+
 ## [1.4.0](https://github.com/unraid/ci-runner-farm/compare/v1.3.0...v1.4.0) (2026-07-01)
 
 
