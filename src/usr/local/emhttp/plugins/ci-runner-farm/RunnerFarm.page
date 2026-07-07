@@ -6,23 +6,42 @@ Tag="server"
 <?php
 /* CI Runner Farm settings page - native Unraid markdown form + inline help */
 $plugin   = 'ci-runner-farm';
-$cfgfile  = "/boot/config/plugins/$plugin/config.cfg";
-$cfg      = file_exists($cfgfile) ? parse_ini_file($cfgfile) : [];
+/* parse_plugin_cfg reads /boot/config/plugins/$plugin/$plugin.cfg (empty [] if
+   absent). Defaults are NOT stored on flash — they live in $defaults below, so
+   the flash cfg only ever holds what the user actually changed. */
+$cfg      = parse_plugin_cfg($plugin);
 $has_token= file_exists("/boot/config/plugins/$plugin/token");
 $csrf     = $var['csrf_token'] ?? '';
-$patScope = (($cfg['GH_SCOPE'] ?? 'repo') === 'org') ? 'repo,admin:org' : 'repo';
+/* Single source of truth for every form field's default. Drives both the
+   rendered fallback (via crf_g/crf_sel) and the client-side "Reset to defaults"
+   button (emitted as CRF_DEFAULTS), so the two can never drift apart. */
+$defaults = [
+  'GH_SCOPE'=>'repo', 'GH_OWNER'=>'unraid', 'GH_REPOS'=>'unraid/repo-a unraid/repo-b',
+  'RUNNER_GROUP'=>'', 'RUNNER_COUNT'=>'4', 'RUNNER_LABELS'=>'self-hosted,unraid,build',
+  'RUNNER_CPUS'=>'', 'RUNNER_MEMORY'=>'16g', 'EPHEMERAL'=>'false', 'RUN_AS_ROOT'=>'false',
+  'IMAGE_SOURCE'=>'builtin', 'IMAGE'=>'', 'REGISTRY_SERVER'=>'', 'REGISTRY_USERNAME'=>'',
+  'CACHE_ROOT'=>'/mnt/github-runner', 'WORK_TMPFS_SIZE'=>'8g',
+  'CACHE_MOUNTS'=>'pnpm-store:/home/runner/.local/share/pnpm/store npm:/home/runner/.npm yarn:/home/runner/.cache/yarn ms-playwright:/home/runner/.cache/ms-playwright',
+  'DIND'=>'true', 'SHARE_DOCKER_SOCK'=>'false', 'NETWORK_ISOLATION'=>'off',
+  'IMAGE_AUTOUPDATE'=>'false', 'IMAGE_AUTOUPDATE_INTERVAL'=>'1800', 'IMAGE_DRAIN_TIMEOUT'=>'3600',
+  'AUTOSCALE'=>'false', 'AUTOSCALE_MIN'=>'2', 'AUTOSCALE_MAX'=>'16', 'AUTOSCALE_MIN_IDLE'=>'2',
+  'AUTOSCALE_STEP'=>'2', 'AUTOSCALE_INTERVAL'=>'30', 'AUTOSCALE_IDLE_GRACE'=>'5',
+];
+$patScope = (($cfg['GH_SCOPE'] ?? $defaults['GH_SCOPE']) === 'org') ? 'repo,admin:org' : 'repo';
 $patUrl   = 'https://github.com/settings/tokens/new?description=Unraid+CI+Runner+Farm&scopes='.$patScope;
 $dfFile   = "/boot/config/plugins/$plugin/Dockerfile";
 if (!is_file($dfFile)) $dfFile = "/usr/local/emhttp/plugins/$plugin/default.Dockerfile";
 $dockerfile = is_file($dfFile) ? file_get_contents($dfFile) : '';
-if (!function_exists('crf_g'))   { function crf_g($cfg,$k,$d=''){ return htmlspecialchars($cfg[$k] ?? $d, ENT_QUOTES); } }
-if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d){ return (($cfg[$k] ?? $d) === $val) ? 'selected' : ''; } }
+/* $defaults is authoritative: the inline $d args at call sites are a fallback
+   for any key not listed above (there are none today). */
+if (!function_exists('crf_g'))   { function crf_g($cfg,$k,$d=''){ global $defaults; return htmlspecialchars($cfg[$k] ?? $defaults[$k] ?? $d, ENT_QUOTES); } }
+if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d=''){ global $defaults; return (($cfg[$k] ?? $defaults[$k] ?? $d) === $val) ? 'selected' : ''; } }
 ?>
 <link type="text/css" rel="stylesheet" href="<?autov('/webGui/styles/jquery.filetree.css')?>">
 <script src="<?autov('/webGui/javascript/jquery.filetree.js')?>" charset="utf-8"></script>
 
 <form markdown="1" name="ci_runner_farm" method="POST" action="/update.php" target="progressFrame">
-<input type="hidden" name="#file" value="ci-runner-farm/config.cfg">
+<input type="hidden" name="#file" value="ci-runner-farm/ci-runner-farm.cfg">
 
 ### GitHub
 
@@ -295,14 +314,15 @@ _(Autoscale: scale-down grace)_:
 :end
 
 &nbsp;
-: <input type="submit" name="Apply" value="_(Apply)_">
+: <input type="submit" name="Apply" value="_(Apply)_" style="width:auto">
+  <input type="button" value="_(Reset to defaults)_" onclick="crfResetDefaults()" style="width:auto">
 
 </form>
 
 <hr>
 <div>
 <p><strong>GitHub token (PAT)</strong> &nbsp;<a href="<?=$patUrl?>" target="_blank" rel="noopener">Create a pre-scoped PAT on GitHub &#8599;</a><br>
-Stored at <code>/boot/config/plugins/ci-runner-farm/token</code> (chmod 600), never in config.cfg.
+Stored at <code>/boot/config/plugins/ci-runner-farm/token</code> (chmod 600), never in ci-runner-farm.cfg.
 Status: <strong id="crf-tok"><?= $has_token ? 'configured &#10004;' : 'not set' ?></strong></p>
 <p>
   <input type="password" id="crf-token" placeholder="ghp_... (scopes pre-filled by the link)" style="width:28em">
@@ -358,6 +378,13 @@ Status: <strong id="crf-tok"><?= $has_token ? 'configured &#10004;' : 'not set' 
 <script>
 const CRF_CSRF = "<?=$csrf?>";
 const CRF_URL  = "/plugins/ci-runner-farm/include/exec.php";
+const CRF_DEFAULTS = <?=json_encode($defaults)?>;
+// Reset the visible form fields to their built-in defaults. Client-side only —
+// nothing is written to flash until the user clicks Apply.
+function crfResetDefaults(){
+  for (const k in CRF_DEFAULTS){ const el=document.getElementsByName(k)[0]; if(el) el.value=CRF_DEFAULTS[k]; }
+  crfImgSrc();   // re-sync the remote-only field visibility to the reset Image source
+}
 function crfPost(p){
   p.csrf_token = CRF_CSRF;
   return fetch(CRF_URL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},

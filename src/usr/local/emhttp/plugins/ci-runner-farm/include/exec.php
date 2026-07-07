@@ -1,7 +1,7 @@
 <?php
 /* CI Runner Farm - backend endpoint for the web UI.
    Guards every action with the Unraid CSRF token, then shells out to
-   runner-farm.sh. Token writes go to a chmod-600 file, never config.cfg. */
+   runner-farm.sh. Token writes go to a chmod-600 file, never ci-runner-farm.cfg. */
 header('Content-Type: application/json');
 
 $var = @parse_ini_file('/var/local/emhttp/var.ini');

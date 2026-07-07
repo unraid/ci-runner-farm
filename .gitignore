@@ -1,2 +1,5 @@
 *.err
 /tmp/
+# Build output: the .plg is committed (its version stamp is frozen at the tag),
+# but the .tgz package is rebuilt reproducibly by CI at publish — never committed.
+/ci-runner-farm.tgz

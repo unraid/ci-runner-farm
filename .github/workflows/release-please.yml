@@ -98,7 +98,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh release upload "$RELEASE_TAG" ci-runner-farm.plg --clobber
+          # Rebuild the package reproducibly from the tagged src; its MD5 matches
+          # the packageMD5 the committed .plg already advertises. Upload it under
+          # the version-pinned asset name the .plg's packageName entity expects.
+          chmod +x build-plg.sh
+          ./build-plg.sh --tgz-only
+          asset="$(sed -n 's/^<!ENTITY packageName[[:space:]]*"\([^"]*\)">$/\1/p' ci-runner-farm.plg)"
+          [[ -n "$asset" ]] || { echo "::error::packageName entity missing in .plg" >&2; exit 1; }
+          plg_md5="$(sed -n 's/^<!ENTITY packageMD5[[:space:]]*"\([0-9a-f]*\)">$/\1/p' ci-runner-farm.plg)"
+          tgz_md5="$(md5sum ci-runner-farm.tgz | cut -d' ' -f1)"
+          [[ "$plg_md5" == "$tgz_md5" ]] || { echo "::error::rebuilt package md5 ($tgz_md5) != committed .plg packageMD5 ($plg_md5)" >&2; exit 1; }
+          cp ci-runner-farm.tgz "$asset"
+          gh release upload "$RELEASE_TAG" ci-runner-farm.plg "$asset" --clobber
 
   # Also publish the tagged .plg to the private Cloudflare R2 "preview" bucket, so
   # the plugin can be installed from a non-public URL while the repo stays private
@@ -137,23 +148,48 @@ jobs:
         run: |
           set -euo pipefail
           plg="ci-runner-farm.plg"
+          tgz="ci-runner-farm.tgz"
           [[ -f "$plg" ]] || { echo "::error::$plg missing at tag $RELEASE_TAG" >&2; exit 1; }
+          # Rebuild the package reproducibly (matches the committed .plg's MD5).
+          chmod +x build-plg.sh
+          ./build-plg.sh --tgz-only
+          plg_md5="$(sed -n 's/^<!ENTITY packageMD5[[:space:]]*"\([0-9a-f]*\)">$/\1/p' "$plg")"
+          tgz_md5="$(md5sum "$tgz" | cut -d' ' -f1)"
+          [[ "$plg_md5" == "$tgz_md5" ]] || { echo "::error::rebuilt package md5 ($tgz_md5) != committed .plg packageMD5 ($plg_md5)" >&2; exit 1; }
           : "${R2_ENDPOINT:?CLOUDFLARE_S3_URL not set}"
           : "${R2_BUCKET:?CLOUDFLARE_PREVIEW_BUCKET_NAME not set}"
           : "${R2_BASE_URL:?CLOUDFLARE_PREVIEW_BUCKET_BASE_URL not set}"
 
           version="${RELEASE_TAG#v}"
+          base="${R2_BASE_URL%/}"
           stable_key="$KEY_PREFIX/ci-runner-farm.plg"
           versioned_key="$KEY_PREFIX/ci-runner-farm-$version.plg"
-          base="${R2_BASE_URL%/}"
           stable_url="$base/$stable_key"
 
-          # Point the R2 copy's update URL at its own stable R2 location. Rewrite
-          # the pluginURL ENTITY only (it expands into the <PLUGIN pluginURL> attr),
-          # then re-validate the XML still parses.
+          # The package keeps its version-pinned filename (packageName ENTITY) in
+          # R2 too, so the same immutable object is addressable per release.
+          package_name="$(sed -n 's/^<!ENTITY packageName[[:space:]]*"\([^"]*\)">$/\1/p' "$plg")"
+          [[ -n "$package_name" ]] || { echo "::error::packageName entity missing in .plg" >&2; exit 1; }
+          tgz_key="$KEY_PREFIX/$package_name"
+          tgz_url="$base/$tgz_key"
+
+          # Point the R2 copy's URLs at their own R2 locations. Rewrite the
+          # pluginURL ENTITY (update-check target) AND the packageURL ENTITY (the
+          # .tgz this .plg downloads); the packageMD5 is unchanged (same bytes).
+          # Then re-validate the XML still parses.
           sed -i -E "s#(<!ENTITY pluginURL[[:space:]]+\").*(\">)#\1${stable_url}\2#" "$plg"
+          sed -i -E "s#(<!ENTITY packageURL[[:space:]]+\").*(\">)#\1${tgz_url}\2#" "$plg"
           grep -q "$stable_url" "$plg" || { echo "::error::pluginURL rewrite failed" >&2; exit 1; }
+          grep -q "$tgz_url" "$plg"    || { echo "::error::packageURL rewrite failed" >&2; exit 1; }
           python3 -c "import xml.etree.ElementTree as ET; ET.parse('$plg')"
+
+          # Upload the package (immutable, per-version) so the rewritten packageURL
+          # resolves in R2. The .plg still verifies it by the unchanged MD5.
+          echo "uploading s3://$R2_BUCKET/$tgz_key"
+          aws s3 cp "$tgz" "s3://$R2_BUCKET/$tgz_key" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --content-type application/gzip \
+            --cache-control "public, max-age=31536000, immutable"
 
           # Upload a stable "latest" key (what installs/updates point at) and an
           # immutable per-version copy for rollback/archival.
@@ -174,4 +210,5 @@ jobs:
             echo "$stable_url"
             echo '```'
             echo "- Versioned copy: \`$base/$versioned_key\`"
+            echo "- Package: \`$tgz_url\`"
           } >> "$GITHUB_STEP_SUMMARY"

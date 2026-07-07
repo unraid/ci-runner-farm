@@ -21,13 +21,13 @@ set -uo pipefail
 
 PLUGIN="ci-runner-farm"
 CFGDIR="/boot/config/plugins/${PLUGIN}"
-CFG="${CFGDIR}/config.cfg"
+CFG="${CFGDIR}/${PLUGIN}.cfg"
 TOKEN_FILE="${CFGDIR}/token"
 REGISTRY_TOKEN_FILE="${CFGDIR}/registry-token"
 MANAGED_LABEL="net.unraid.ci-runner-farm.managed=true"
 NAME_PREFIX="ci-runner"
 
-# ---- defaults (overridden by config.cfg) -----------------------------------
+# ---- defaults (overridden by ci-runner-farm.cfg) ---------------------------
 GH_SCOPE="repo"                       # repo | org
 GH_OWNER="unraid"
 GH_REPOS="unraid/repo-a unraid/repo-b"
@@ -92,7 +92,34 @@ IMAGE_DRAIN_TIMEOUT="3600"           # max seconds to wait for a busy runner to 
                                      # before leaving it on the old image this cycle (0 = wait forever)
 # ----------------------------------------------------------------------------
 
-[ -f "$CFG" ] && . "$CFG"
+# Allowlist of keys the settings page may set. load_cfg only ever assigns these.
+CFG_KEYS="GH_SCOPE GH_OWNER GH_REPOS RUNNER_GROUP RUNNER_COUNT RUNNER_LABELS \
+RUNNER_CPUS RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE IMAGE_SOURCE IMAGE EPHEMERAL \
+RUN_AS_ROOT REGISTRY_SERVER REGISTRY_USERNAME CACHE_MOUNTS SHARE_DOCKER_SOCK DIND \
+SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK AUTOSCALE AUTOSCALE_MIN \
+AUTOSCALE_MAX AUTOSCALE_MIN_IDLE AUTOSCALE_STEP AUTOSCALE_INTERVAL \
+AUTOSCALE_IDLE_GRACE IMAGE_AUTOUPDATE IMAGE_AUTOUPDATE_INTERVAL IMAGE_DRAIN_TIMEOUT"
+
+# Read ci-runner-farm.cfg WITHOUT sourcing it (the file is written by the web form, so
+# sourcing would execute anything a crafted value smuggled in). Parse KEY="value"
+# lines ourselves and assign via printf -v — a literal string set, never eval'd —
+# and only for keys on the allowlist above.
+load_cfg() {
+  [ -f "$CFG" ] || return 0
+  local line key val
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|\#*) continue;; esac
+    [ "${line#*=}" = "$line" ] && continue           # no '=' on the line
+    key="${line%%=*}"; val="${line#*=}"
+    key="${key//[[:space:]]/}"
+    case "$key" in *[!A-Za-z0-9_]*|'') continue;; esac
+    case " $CFG_KEYS " in *" $key "*) ;; *) continue;; esac
+    val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
+    printf -v "$key" '%s' "$val"
+  done < "$CFG"
+}
+
+load_cfg
 [ -z "$ACCESS_TOKEN" ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
 [ -z "$REGISTRY_TOKEN" ] && [ -f "$REGISTRY_TOKEN_FILE" ] && REGISTRY_TOKEN="$(cat "$REGISTRY_TOKEN_FILE" 2>/dev/null)"
 AUTOSCALE_PID="${CFGDIR}/autoscale.pid"
@@ -161,7 +188,7 @@ autoscale_tick() {
 autoscale_daemon() {
   log "autoscale daemon up (min=$AUTOSCALE_MIN max=$AUTOSCALE_MAX buffer=$AUTOSCALE_MIN_IDLE step=$AUTOSCALE_STEP every ${AUTOSCALE_INTERVAL}s)"
   while true; do
-    [ -f "$CFG" ] && . "$CFG"
+    load_cfg
     [ -z "$ACCESS_TOKEN" ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
     [ "$AUTOSCALE" = "true" ] || { log "autoscale disabled -> daemon exit"; rm -f "$AUTOSCALE_PID"; break; }
     autoscale_tick
@@ -272,7 +299,7 @@ imageupdate_tick() {
 imageupdate_daemon() {
   log "image-update daemon up (every ${IMAGE_AUTOUPDATE_INTERVAL}s, drain-timeout ${IMAGE_DRAIN_TIMEOUT}s)"
   while true; do
-    [ -f "$CFG" ] && . "$CFG"
+    load_cfg
     [ -z "$ACCESS_TOKEN" ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
     [ -z "$REGISTRY_TOKEN" ] && [ -f "$REGISTRY_TOKEN_FILE" ] && REGISTRY_TOKEN="$(cat "$REGISTRY_TOKEN_FILE" 2>/dev/null)"
     [ "$IMAGE_AUTOUPDATE" = "true" ] || { log "image auto-update disabled -> daemon exit"; rm -f "$IMAGEUPDATE_PID"; break; }
