@@ -161,24 +161,38 @@ scale_down_idle() {
   done
 }
 
-# Remove managed runners that have died (crash, OOM, inner-dockerd failure, or a
-# host/Docker restart not yet reconciled). With --restart=no the plugin owns
-# recovery; a dead container would otherwise linger and — because its last log
-# line isn't "Running job" — count as phantom *idle* capacity in busy_count/idle,
-# suppressing growth so the live fleet silently shrinks while current_count still
-# looks full. Reaping lets the grow step below refill the floor with a freshly
-# registered runner. Only exited/dead containers are reaped (never a container
-# still starting), and the caches/DinD root persist as bind mounts.
+# Remove managed runners that can no longer service jobs, so the grow step below
+# refills the floor with a freshly registered one. Two failure modes qualify:
+#
+#   1. exited/dead — crash, OOM, inner-dockerd failure, or a host/Docker restart
+#      not yet reconciled. With --restart=no the plugin owns recovery.
+#   2. running + Docker health=unhealthy — the runner's GitHub registration was
+#      removed out from under it, so its listener loops forever on "Registration
+#      was not found / Retrying until reconnected". It never exits, so mode (1)
+#      misses it. The runner image's HEALTHCHECK flags exactly this state.
+#
+# Either way the zombie lingers and — because its last log line isn't "Running
+# job" — counts as phantom *idle* capacity in busy_count/idle, suppressing growth
+# so the live fleet silently shrinks to zero usable runners while current_count
+# still looks full (jobs then queue forever behind zombies). Never reaped: a
+# container still starting (state != running, or health=starting within the
+# HEALTHCHECK start-period) or one on an image without a healthcheck (health
+# empty => treated as fine, so this is a safe no-op until the new image ships).
+# Caches/DinD roots persist as bind mounts across the recycle.
 reap_dead_runners() {
-  local c st
+  local c st health
   for c in $(managed_names); do
     [ -n "$c" ] || continue
     st="$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)"
+    health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$c" 2>/dev/null)"
     case "$st" in
-      exited|dead) ;;
+      exited|dead)
+        log "autoscale: reaping dead runner $c (state=$st)" ;;
+      running)
+        [ "$health" = "unhealthy" ] || continue
+        log "autoscale: reaping unhealthy runner $c (disconnected; health=$health)" ;;
       *) continue ;;
     esac
-    log "autoscale: reaping dead runner $c (state=$st)"
     deregister_runner_api "$c"
     docker rm -f "$c" >/dev/null 2>&1
   done
