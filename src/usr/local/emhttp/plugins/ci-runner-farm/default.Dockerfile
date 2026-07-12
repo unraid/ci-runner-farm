@@ -27,4 +27,31 @@ RUN printf '%s\n' \
   'exec "$@"' \
   > /usr/local/bin/wait-docker.sh \
  && chmod +x /usr/local/bin/wait-docker.sh
+
+# Health probe so ci-runner-farm can reap a runner whose GitHub registration was
+# removed: its listener then loops forever on "Registration was not found /
+# Retrying until reconnected" instead of exiting, so it never gets recycled and
+# silently counts as idle capacity. Reports unhealthy ONLY in that stuck state —
+# never a runner that is running a job or still starting.
+RUN printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -uo pipefail' \
+  '# Running a job => healthy, unconditionally (never interrupt a build).' \
+  'pgrep -x Runner.Worker >/dev/null 2>&1 && exit 0' \
+  '# No listener => nothing services jobs; recycle it.' \
+  'pgrep -x Runner.Listener >/dev/null 2>&1 || exit 1' \
+  '# Idle: require positive proof of a live session in the newest listener log.' \
+  'log="$(ls -1t /actions-runner/_diag/Runner_*.log 2>/dev/null | head -1)"' \
+  '[ -n "$log" ] || exit 0   # too early to tell; --start-period covers startup' \
+  'last="$(grep -niE "Session created|Listening for Jobs|create session|connect error|Registration.*not found|has been removed|SessionConflict|SessionExpired|Retrying until reconnected|Runner listener exit" "$log" 2>/dev/null | tail -1)"' \
+  'case "$last" in' \
+  '  *"Session created"*|*"Listening for Jobs"*) exit 0 ;;  # connected' \
+  '  "") exit 0 ;;                                          # inconclusive -> healthy' \
+  '  *) exit 1 ;;                                           # stuck disconnected' \
+  'esac' \
+  > /usr/local/bin/runner-healthcheck.sh \
+ && chmod +x /usr/local/bin/runner-healthcheck.sh
+HEALTHCHECK --start-period=120s --interval=30s --timeout=10s --retries=3 \
+  CMD ["/usr/local/bin/runner-healthcheck.sh"]
+
 CMD ["/usr/local/bin/wait-docker.sh", "./bin/Runner.Listener", "run", "--startuptype", "service"]
