@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.3](https://github.com/unraid/ci-runner-farm/compare/v1.4.2...v1.4.3) (2026-07-12)
+
+
+### Bug Fixes
+
+* **autoscale:** reap disconnected (health=unhealthy) runners, not just exited ([#25](https://github.com/unraid/ci-runner-farm/issues/25)) ([727e4e2](https://github.com/unraid/ci-runner-farm/commit/727e4e2ed0aaf5753f40c82e64e586c5bb7cd1b3))
+
 ## [1.4.2](https://github.com/unraid/ci-runner-farm/compare/v1.4.1...v1.4.2) (2026-07-07)
 
 
