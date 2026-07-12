@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/unraid/ci-runner-farm/compare/v1.4.3...v1.5.0) (2026-07-12)
+
+
+### Features
+
+* **default-image:** add runner HEALTHCHECK to the shipped starter Dockerfile ([#27](https://github.com/unraid/ci-runner-farm/issues/27)) ([ea6c88d](https://github.com/unraid/ci-runner-farm/commit/ea6c88d0cbb9e8f683610d2c7bd632224fa13367))
+
 ## [1.4.3](https://github.com/unraid/ci-runner-farm/compare/v1.4.2...v1.4.3) (2026-07-12)
 
 
