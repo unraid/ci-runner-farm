@@ -114,8 +114,8 @@ jobs:
   # Also publish the tagged .plg to the private Cloudflare R2 "preview" bucket, so
   # the plugin can be installed from a non-public URL while the repo stays private
   # (Unraid only needs to fetch the single .plg). Uses the org's private-repo R2
-  # credentials (CLOUDFLARE_S3_*), which are visibility=private — available to all
-  # private org repos — and already have write access to the preview bucket.
+  # credentials (CLOUDFLARE_PREVIEW_*), which are explicitly shared with the
+  # public repositories that publish to the preview bucket.
   #
   # The uploaded copy's pluginURL is rewritten to its own stable R2 URL so Unraid's
   # "check for updates" resolves from R2 (works while the repo is private) instead
@@ -134,8 +134,8 @@ jobs:
 
       - name: Publish .plg to Cloudflare R2 (preview bucket)
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_S3_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_S3_SECRET_ACCESS_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_PREVIEW_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_PREVIEW_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: auto
           R2_ENDPOINT: ${{ secrets.CLOUDFLARE_S3_URL }}
           R2_BUCKET: ${{ secrets.CLOUDFLARE_PREVIEW_BUCKET_NAME }}
@@ -156,6 +156,8 @@ jobs:
           plg_md5="$(sed -n 's/^<!ENTITY packageMD5[[:space:]]*"\([0-9a-f]*\)">$/\1/p' "$plg")"
           tgz_md5="$(md5sum "$tgz" | cut -d' ' -f1)"
           [[ "$plg_md5" == "$tgz_md5" ]] || { echo "::error::rebuilt package md5 ($tgz_md5) != committed .plg packageMD5 ($plg_md5)" >&2; exit 1; }
+          : "${AWS_ACCESS_KEY_ID:?CLOUDFLARE_PREVIEW_ACCESS_KEY_ID not set}"
+          : "${AWS_SECRET_ACCESS_KEY:?CLOUDFLARE_PREVIEW_SECRET_ACCESS_KEY not set}"
           : "${R2_ENDPOINT:?CLOUDFLARE_S3_URL not set}"
           : "${R2_BUCKET:?CLOUDFLARE_PREVIEW_BUCKET_NAME not set}"
           : "${R2_BASE_URL:?CLOUDFLARE_PREVIEW_BUCKET_BASE_URL not set}"
