@@ -209,10 +209,15 @@ autoscale_tick() {
 
   # runner churn (crash, reap, or ephemeral exit) can drop the fleet below the
   # floor between ticks; the grow branch below only ever adds STEP to the
-  # current count, so enforce AUTOSCALE_MIN unconditionally first.
-  if [ "$cur" -lt "$AUTOSCALE_MIN" ]; then
-    log "autoscale: count $cur < min $AUTOSCALE_MIN -> grow to $AUTOSCALE_MIN"
-    cmd_scale "$AUTOSCALE_MIN" >/dev/null; echo 0 > "$statef"
+  # current count, so enforce AUTOSCALE_MIN unconditionally first. Clamp the
+  # floor to AUTOSCALE_MAX so a floor misconfigured above the ceiling can
+  # never bypass the resource cap.
+  local floor
+  floor=$AUTOSCALE_MIN
+  [ "$floor" -gt "$AUTOSCALE_MAX" ] && floor=$AUTOSCALE_MAX
+  if [ "$cur" -lt "$floor" ]; then
+    log "autoscale: count $cur < floor $floor -> grow to $floor"
+    cmd_scale "$floor" >/dev/null; echo 0 > "$statef"
     return 0
   fi
 
