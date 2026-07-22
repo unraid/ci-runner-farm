@@ -968,8 +968,20 @@ cmd_image_info_json() {
   echo "{\"exists\":true,\"image\":\"$(echo "$img"|json_escape)\",\"id\":\"$(echo "$id" | cut -c8-19)\",\"created\":\"$created\",\"size_mb\":$(( ${size:-0}/1024/1024 )),\"base\":\"$(echo "$base"|json_escape)\",\"in_use\":$inuse,\"dockerfile\":\"$(echo "$df"|json_escape)\",\"source\":\"${IMAGE_SOURCE}\"}"
 }
 
+# "1.5GiB" / "512MiB" / "900kB" -> integer MiB (docker stats human units)
+to_mib() {
+  echo "$1" | awk '{
+    v=$0; sub(/[A-Za-z]+$/,"",v); u=$0; sub(/^[0-9.]+/,"",u);
+    if (u ~ /^G/) v*=1024; else if (u ~ /^k/ || u ~ /^K/) v/=1024; else if (u ~ /^B/) v/=1048576;
+    printf "%d", v }'
+}
+
 cmd_status_json() {
   local names; names="$(managed_names)"
+  # One batched docker stats call for live per-runner usage (CPU%% and memory).
+  # --no-stream costs ~1s; the UI polls every 5s so that is acceptable.
+  local statsraw=""
+  [ -n "$names" ] && statsraw="$(docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' $names 2>/dev/null)"
   local out="["; local first=1
   for c in $names; do
     [ -z "$c" ] && continue
@@ -985,8 +997,14 @@ cmd_status_json() {
     if [ "$phase" = "busy" ]; then
       job="$(docker logs --tail 60 "$c" 2>&1 | grep -oE 'Running job: .*' | tail -1 | sed 's/^Running job: //' | tr -d '\r' | json_escape)"
     fi
+    local srow cpu_pct="0" mem_used_mib="0"
+    srow="$(echo "$statsraw" | grep "^${c}|" | head -1)"
+    if [ -n "$srow" ]; then
+      cpu_pct="$(echo "$srow" | cut -d'|' -f2 | tr -d '%')"
+      mem_used_mib="$(to_mib "$(echo "$srow" | cut -d'|' -f3 | awk -F' / ' '{print $1}')")"
+    fi
     [ $first -eq 0 ] && out+=","
-    out+="{\"name\":\"$(echo "$c"|json_escape)\",\"state\":\"${st:-unknown}\",\"phase\":\"$phase\",\"job\":\"${job}\",\"cpus\":$(( ${cpus:-0}/1000000000 )),\"mem_gb\":$(( ${mem:-0}/1024/1024/1024 ))}"
+    out+="{\"name\":\"$(echo "$c"|json_escape)\",\"state\":\"${st:-unknown}\",\"phase\":\"$phase\",\"job\":\"${job}\",\"cpus\":$(( ${cpus:-0}/1000000000 )),\"mem_gb\":$(( ${mem:-0}/1024/1024/1024 )),\"cpu_pct\":${cpu_pct:-0},\"mem_used_mib\":${mem_used_mib:-0}}"
     first=0
   done
   out+="]"

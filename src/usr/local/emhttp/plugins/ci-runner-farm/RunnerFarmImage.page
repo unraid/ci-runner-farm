@@ -30,9 +30,9 @@ $crf_dockerfile = is_file($crf_df) ? file_get_contents($crf_df) : '';
     <span class="crfi-path"><span class="crf-ball crfi-dot" id="crfi-dirty" title="Unsaved changes"></span><code id="crfi-df-path"><?=htmlspecialchars($crf_df, ENT_QUOTES)?></code></span>
     <span class="crfi-editor-tools">
       <span class="crfi-status"><span class="crf-ball" id="crfi-build-ball" style="display:none"></span><span id="crf-build-status" class="crf-muted"></span></span>
-      <input type="button" value="Reset to shipped default" onclick="crfiResetDf()">
-      <input type="button" value="Save Dockerfile" onclick="crfSaveDf()">
-      <input type="button" value="Save + Build" onclick="crfBuild()">
+      <uui-button variant="ghost" size="sm" onclick="crfiResetDf()">Reset to shipped default</uui-button>
+      <uui-button variant="secondary" size="sm" onclick="crfSaveDf()">Save Dockerfile</uui-button>
+      <uui-brand-button size="sm" onclick="crfBuild()">Save + Build</uui-brand-button>
     </span>
   </div>
   <div id="crfi-ace"></div>
@@ -42,7 +42,7 @@ $crf_dockerfile = is_file($crf_df) ? file_get_contents($crf_df) : '';
 <div class="crf-console">
   <div class="crf-console-head">
     <span>Build log</span>
-    <input type="button" value="Copy" onclick="crfCopyBuildLog(this)">
+    <uui-button variant="ghost" size="sm" onclick="crfCopyBuildLog(this)">Copy</uui-button>
   </div>
   <div id="crf-build-log" class="crf-console-body"><span class="crf-muted">Build output appears here. Set Image source to Built-in on the Settings tab and restart the fleet to use a new build.</span></div>
 </div>
@@ -60,6 +60,7 @@ $crf_dockerfile = is_file($crf_df) ? file_get_contents($crf_df) : '';
   .crfi-dot.on{visibility:visible;background:var(--crf-busy)}
   .crfi-editor-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .crfi-editor-tools input[type=button]{margin:0;font-size:11px}
+  .crfi-editor-tools uui-button:not(:defined),.crfi-editor-tools uui-brand-button:not(:defined){cursor:pointer;border:1px solid var(--border-color);border-radius:6px;padding:3px 10px;font-size:11px;color:var(--text-color)}
   .crfi-status{display:flex;align-items:center;gap:6px;font-size:11px}
   #crfi-ace{height:340px;font-size:12px;font-family:bitstream,monospace}
 </style>
@@ -137,6 +138,6 @@ function crfPollBuild(){ crfPost({action:'build-log'}).then(d=>{ const el=docume
     crfiBuildState(ok?'ok':'err', ok?'build finished — restart the fleet to use it':'build failed — see log'); crfiInfo(); } }); }
 function crfCopyBuildLog(btn){
   const t=document.getElementById('crf-build-log').textContent||'';
-  navigator.clipboard.writeText(t).then(()=>{ btn.value='Copied'; setTimeout(()=>btn.value='Copy',1500); }).catch(()=>{});
+  navigator.clipboard.writeText(t).then(()=>{ const o=btn.textContent; btn.textContent='Copied'; setTimeout(()=>btn.textContent=o,1500); }).catch(()=>{});
 }
 </script>

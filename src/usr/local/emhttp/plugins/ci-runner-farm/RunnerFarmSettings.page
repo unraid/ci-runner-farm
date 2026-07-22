@@ -46,8 +46,8 @@ if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d=''){ global 
   </div>
   <div class="crfs-tok-input">
     <input type="password" id="crf-token" placeholder="ghp_... (scopes pre-filled by the link)">
-    <input type="button" value="Save token" onclick="crfSetToken()">
-    <input type="button" value="Clear" onclick="crfClearToken()">
+    <uui-button size="sm" onclick="crfSetToken()">Save token</uui-button>
+    <uui-button variant="ghost" size="sm" onclick="crfClearToken()">Clear</uui-button>
     <a href="<?=$patUrl?>" target="_blank" rel="noopener">Create a pre-scoped PAT &#8599;</a>
   </div>
 </div>
@@ -61,8 +61,8 @@ if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d=''){ global 
   </div>
   <div class="crfs-tok-input">
     <input type="password" id="crf-registry-token" placeholder="registry password / token">
-    <input type="button" value="Save registry token" onclick="crfSetRegistryToken()">
-    <input type="button" value="Clear" onclick="crfClearRegistryToken()">
+    <uui-button size="sm" onclick="crfSetRegistryToken()">Save registry token</uui-button>
+    <uui-button variant="ghost" size="sm" onclick="crfClearRegistryToken()">Clear</uui-button>
   </div>
 </div>
 
@@ -415,6 +415,7 @@ if (window.jQuery) jQuery(function($){ if ($.fn.fileTreeAttach) $("#CACHE_ROOT")
   .crfs-tok-input{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .crfs-tok-input input[type=password]{width:24em;font-size:12px}
   .crfs-tok-input input[type=button]{margin:0}
+  .crfs-tok-input uui-button:not(:defined){cursor:pointer;border:1px solid var(--border-color);border-radius:6px;padding:4px 12px;font-size:12px;color:var(--text-color)}
   .crfs-tok-input a{font-size:12px;white-space:nowrap}
 </style>
 <script>

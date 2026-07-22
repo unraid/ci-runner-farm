@@ -3,42 +3,59 @@ Title="Fleet"
 Tag="server"
 ---
 <?php
-/* Fleet hub tab: live stats, actions, runner bays, and the fleet log.
-   Shares one document with the other RunnerFarm tabs (dynamix xmenu tabs), so
-   the crf* JS core and the .crf-* stylesheet defined here serve all tabs. */
+/* Fleet hub tab: live stats, actions, runner bays with usage, and the fleet
+   log. Shares one document with the other RunnerFarm tabs (dynamix xmenu
+   tabs), so the crf* JS core, the uui loader, and the .crf-* stylesheet
+   defined here serve all tabs.
+
+   Modern components: Unraid ships the @unraid/ui web-component bundle on every
+   page but never registers it, and its stylesheet is missing the Tailwind
+   utilities layer (they live in the standalone apps css). crfUuiLoad() below
+   force-registers the bundle with a merged, shadow-rescoped stylesheet. Both
+   hashed filenames are resolved at render/runtime (manifest + PHP glob), so
+   Unraid updates don't break it — and if any piece is missing the custom
+   elements stay unregistered, which still renders their slotted text and
+   still fires their onclick handlers, so the page degrades to plain-looking
+   but functional controls. */
 $crf_csrf = $var['csrf_token'] ?? '';
+$crf_uui_base = '/plugins/dynamix.my.servers/unraid-components/uui/';
+$crf_util_css = '';
+foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/standalone/standalone-apps-*.css') ?: [] as $f) {
+  $crf_util_css = '/plugins/dynamix.my.servers/unraid-components/standalone/' . basename($f);
+  break;
+}
 ?>
 <div id="crf-sec" class="crf-banner crf-banner-sec" style="display:none"></div>
 <div id="crf-warn" class="crf-banner crf-banner-warn" style="display:none"></div>
 
 <div class="crf-stats" id="crf-stats">
-  <div class="crf-stat"><span class="crf-stat-label">Runners up</span><span class="crf-stat-value" id="crf-s-up">&ndash;</span></div>
-  <div class="crf-stat"><span class="crf-stat-label">Busy</span><span class="crf-stat-value crf-c-busy" id="crf-s-busy">&ndash;</span></div>
-  <div class="crf-stat"><span class="crf-stat-label">Idle</span><span class="crf-stat-value crf-c-ok" id="crf-s-idle">&ndash;</span></div>
-  <div class="crf-stat"><span class="crf-stat-label">Autoscale</span><span class="crf-stat-small" id="crf-s-as">&ndash;</span></div>
-  <div class="crf-stat"><span class="crf-stat-label">Image update</span><span class="crf-stat-small" id="crf-s-iu">&ndash;</span></div>
+  <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label">Runners up</span><span class="crf-stat-value" id="crf-s-up">&ndash;</span></div></uui-card-wrapper>
+  <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label">Busy</span><span class="crf-stat-value crf-c-busy" id="crf-s-busy">&ndash;</span></div></uui-card-wrapper>
+  <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label">Idle</span><span class="crf-stat-value crf-c-ok" id="crf-s-idle">&ndash;</span></div></uui-card-wrapper>
+  <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label">Autoscale</span><span class="crf-stat-small" id="crf-s-as">&ndash;</span></div></uui-card-wrapper>
+  <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label">Image update</span><span class="crf-stat-small" id="crf-s-iu">&ndash;</span></div></uui-card-wrapper>
 </div>
 
 <div class="crf-toolbar">
-  <input type="button" value="Start" onclick="crfAction('start')">
-  <input type="button" value="Stop" onclick="crfAction('stop')">
-  <input type="button" value="Restart" onclick="crfAction('restart')">
-  <input type="button" value="Validate (no token)" onclick="crfAction('validate')">
+  <uui-brand-button onclick="crfAction('start')">Start</uui-brand-button>
+  <uui-button variant="secondary" onclick="crfAction('stop')">Stop</uui-button>
+  <uui-button variant="secondary" onclick="crfAction('restart')">Restart</uui-button>
+  <uui-button variant="outline" onclick="crfAction('validate')">Validate (no token)</uui-button>
   <span class="crf-scale">Scale to <input type="number" id="crf-n" min="0" max="20" value="4">
-  <input type="button" value="Scale" onclick="crfScale()"></span>
+  <uui-button variant="secondary" onclick="crfScale()">Scale</uui-button></span>
 </div>
 
 <div class="crf-bays">
   <div class="crf-bay crf-bay-head">
-    <span></span><span>Runner</span><span>Phase</span><span>Job</span><span class="crf-right">Limits</span>
+    <span></span><span>Runner</span><span>Phase</span><span>Job</span><span>CPU</span><span>Memory</span>
   </div>
-  <div id="crf-bays-body"><div class="crf-bay"><span></span><span class="crf-muted">loading...</span><span></span><span></span><span></span></div></div>
+  <div id="crf-bays-body"><div class="crf-bay"><span></span><span class="crf-muted">loading...</span><span></span><span></span><span></span><span></span></div></div>
 </div>
 
 <div class="crf-console">
   <div class="crf-console-head">
     <span>Fleet log</span>
-    <input type="button" value="Copy" onclick="crfCopyLog(this)">
+    <uui-button variant="ghost" size="sm" onclick="crfCopyLog(this)">Copy</uui-button>
   </div>
   <div id="crf-log" class="crf-console-body"><span class="crf-muted">Output from fleet actions and image builds appears here.</span></div>
 </div>
@@ -50,35 +67,37 @@ $crf_csrf = $var['csrf_token'] ?? '';
   .crf-banner{margin:8px 0;padding:10px 12px;border-radius:4px;font-size:13px;line-height:1.4}
   .crf-banner-sec{border:1px solid var(--crf-busy);background:color-mix(in srgb,var(--crf-busy) 12%,var(--background-color));color:var(--text-color);font-weight:bold}
   .crf-banner-warn{border:1px solid var(--crf-err);background:color-mix(in srgb,var(--crf-err) 12%,var(--background-color));color:var(--text-color)}
-  .crf-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin:8px 0 12px}
-  .crf-stat{background:var(--shade-bg-color,var(--table-header-background-color));border:1px solid var(--border-color);border-radius:6px;padding:8px 12px;display:flex;flex-direction:column;gap:2px}
+  .crf-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:8px 0 12px}
+  .crf-stat-inner{display:flex;flex-direction:column;gap:2px;padding:8px 12px}
+  uui-card-wrapper.crf-stat:not(:defined){background:var(--shade-bg-color,var(--table-header-background-color));border:1px solid var(--border-color);border-radius:6px;display:block}
   .crf-stat-label{font-size:11px;color:var(--alt-text-color)}
   .crf-stat-value{font-size:20px;color:var(--text-color)}
   .crf-stat-small{font-size:13px;color:var(--text-color);margin-top:3px}
   .crf-c-ok{color:var(--crf-ok)}.crf-c-busy{color:var(--crf-busy)}
-  .crf-toolbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:10px 0}
-  .crf-toolbar input[type=button]{margin:0}
+  .crf-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:10px 0}
   .crf-scale{margin-left:auto;display:flex;align-items:center;gap:6px;color:var(--alt-text-color);font-size:13px}
   .crf-scale input[type=number]{width:4em}
+  uui-button:not(:defined),uui-brand-button:not(:defined){cursor:pointer;border:1px solid var(--border-color);border-radius:6px;padding:5px 12px;font-size:13px;color:var(--text-color)}
   .crf-bays{border:1px solid var(--border-color);border-radius:6px;overflow:hidden;margin:6px 0 12px}
-  .crf-bay{display:grid;grid-template-columns:24px minmax(120px,1fr) 92px minmax(120px,2fr) 84px;gap:10px;align-items:center;padding:8px 12px;border-top:1px solid var(--table-border-color,var(--border-color))}
+  .crf-bay{display:grid;grid-template-columns:24px minmax(110px,1fr) 96px minmax(120px,1.6fr) 130px 170px;gap:10px;align-items:center;padding:8px 12px;border-top:1px solid var(--table-border-color,var(--border-color))}
   .crf-bay:first-child{border-top:none}
   .crf-bay-head{background:var(--table-header-background-color);font-size:11px;color:var(--alt-text-color);padding:6px 12px}
   #crf-bays-body .crf-bay:hover{background:var(--hover-table-row-background-color)}
   .crf-name{font-family:bitstream,monospace;font-size:13px;color:var(--text-color)}
   .crf-job{font-size:12px;color:var(--alt-text-color);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .crf-limits{font-family:bitstream,monospace;font-size:12px;color:var(--text-color);text-align:right}
+  .crf-usage{display:flex;align-items:center;gap:8px;min-width:0}
+  .crf-ubar{flex:1;height:8px;border-radius:4px;background:var(--usage-bar-background-color,var(--border-color));overflow:hidden;min-width:40px}
+  .crf-ubar>span{display:block;height:100%;background:var(--usage-bar-used-background-color,var(--crf-busy));transition:width .6s ease}
+  .crf-ubar.crf-hot>span{background:var(--crf-err)}
+  .crf-uval{font-family:bitstream,monospace;font-size:11px;color:var(--text-color);white-space:nowrap}
   .crf-ball{width:12px;height:12px;border-radius:50%;background:var(--disabled-text-color,#888);display:inline-block}
   .crf-ball-idle{background:var(--crf-ok)}
   .crf-ball-busy{background:var(--crf-busy);animation:crf-pulse 1.6s ease-in-out infinite}
   .crf-ball-error{background:var(--crf-err)}
   .crf-ball-starting{animation:crf-pulse 1.1s ease-in-out infinite}
-  .crf-pill{padding:1px 10px;border-radius:10px;font-size:11px;border:1px solid var(--border-color);color:var(--alt-text-color);width:fit-content}
-  .crf-pill-idle{color:var(--crf-ok);border-color:var(--crf-ok)}
-  .crf-pill-busy{color:var(--crf-busy);border-color:var(--crf-busy)}
-  .crf-pill-error{color:var(--crf-err);border-color:var(--crf-err)}
+  .crf-phase uui-badge:not(:defined){font-size:11px;color:var(--alt-text-color)}
   .crf-console{border:1px solid var(--border-color);border-radius:6px;overflow:hidden;margin:0 0 12px}
-  .crf-console-head{display:flex;align-items:center;justify-content:space-between;padding:5px 8px 5px 12px;background:var(--table-header-background-color);font-size:11px;color:var(--alt-text-color)}
+  .crf-console-head{display:flex;align-items:center;justify-content:space-between;padding:3px 8px 3px 12px;background:var(--table-header-background-color);font-size:11px;color:var(--alt-text-color)}
   .crf-console-body{white-space:pre-wrap;font-family:bitstream,monospace;font-size:12px;line-height:1.55;min-height:120px;max-height:240px;overflow:auto;background:var(--shade-bg-color,var(--background-color));color:var(--text-color);padding:8px 12px}
   .crf-builder-wrap textarea{width:100%;font-family:bitstream,monospace;font-size:12px;background:var(--input-bg-color);color:var(--text-color);border:1px solid var(--textarea-border-color,var(--input-border-color))}
   @keyframes crf-pulse{0%,100%{opacity:1}50%{opacity:.35}}
@@ -88,6 +107,29 @@ $crf_csrf = $var['csrf_token'] ?? '';
 <script>
 const CRF_CSRF = "<?=$crf_csrf?>";
 const CRF_URL  = "/plugins/ci-runner-farm/include/exec.php";
+const CRF_UUI_BASE = "<?=$crf_uui_base?>";
+const CRF_UTIL_CSS = "<?=$crf_util_css?>";
+const CRF_DARK = /Theme--(black|gray)\b/.test(document.documentElement.className);
+/* Force-register @unraid/ui (see header comment). Resolves both hashed asset
+   names at runtime; merges the standalone Tailwind utilities (which the uui
+   bundle ships without) with the uui tokens, rescoped for shadow DOM. */
+window.CRF_UUI = (async () => {
+  try {
+    const man = await (await fetch(CRF_UUI_BASE + 'ui.manifest.json')).json();
+    const parts = [];
+    if (CRF_UTIL_CSS) parts.push(await (await fetch(CRF_UTIL_CSS)).text());
+    parts.push(await (await fetch(CRF_UUI_BASE + man['style.css'].file)).text());
+    const css = parts.join('\n')
+      .replace(/\.unapi\.dark\b/g, ':host(.dark)')
+      .replace(/\.unapi\b/g, ':host')
+      .replace(/:root\b/g, ':host')
+      .replace(/\.dark\b/g, ':host(.dark)');
+    const mod = await import(CRF_UUI_BASE + man['src/register.ts'].file);
+    mod.registerAllComponents({ sharedCssContent: css });
+    if (CRF_DARK) document.querySelectorAll('uui-button,uui-brand-button,uui-badge,uui-card-wrapper').forEach(e => e.classList.add('dark'));
+    return true;
+  } catch (e) { console.warn('ci-runner-farm: @unraid/ui unavailable, using fallback styling', e); return false; }
+})();
 function crfPost(p){
   p.csrf_token = CRF_CSRF;
   return fetch(CRF_URL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
@@ -111,7 +153,11 @@ function crfAction(a){ crfPost({action:a}).then(o=>{crfLog(o); crfRefresh();}); 
 function crfScale(){ crfPost({action:'scale',n:document.getElementById('crf-n').value}).then(o=>{crfLog(o); crfRefresh();}); }
 function crfCopyLog(btn){
   const t=document.getElementById('crf-log').textContent||'';
-  navigator.clipboard.writeText(t).then(()=>{ btn.value='Copied'; setTimeout(()=>btn.value='Copy',1500); }).catch(()=>{});
+  navigator.clipboard.writeText(t).then(()=>{ const old=btn.textContent; btn.textContent='Copied'; setTimeout(()=>btn.textContent=old,1500); }).catch(()=>{});
+}
+function crfBar(pct,hot){
+  const p=Math.max(0,Math.min(100,Math.round(pct)));
+  return '<span class="crf-ubar'+(hot?' crf-hot':'')+'"><span style="width:'+p+'%"></span></span>';
 }
 function crfRefresh(){
   crfPost({action:'status-json'}).then(d=>{
@@ -128,22 +174,28 @@ function crfRefresh(){
     put('crf-s-as',d.autoscale||'off'); put('crf-s-iu',d.image_autoupdate||'off');
     const tb=document.getElementById('crf-bays-body'); if(!tb) return;
     if(!rs.length){
-      tb.innerHTML='<div class="crf-bay"><span class="crf-ball"></span><span class="crf-muted">no managed runners (configured: '+crfEsc(d.configured||0)+')</span><span></span><span></span><span></span></div>';
+      tb.innerHTML='<div class="crf-bay"><span class="crf-ball"></span><span class="crf-muted">no managed runners (configured: '+crfEsc(d.configured||0)+')</span><span></span><span></span><span></span><span></span></div>';
       return;
     }
+    const dark=CRF_DARK?' class="dark"':'';
     tb.innerHTML=rs.map(r=>{
       const running=r.state==='running';
       const ph=running?r.phase:'exited';
       const ball=running?('crf-ball-'+r.phase):'crf-ball';
-      const pill=running?('crf-pill-'+r.phase):'';
+      const bvar=ph==='busy'?'orange':ph==='idle'?'green':ph==='error'?'red':'gray';
       const job=running&&r.phase==='busy'?(r.job||'&mdash;'):(running&&r.phase==='idle'?'waiting for jobs':r.state);
       const jobCls=running&&r.phase==='busy'&&r.job?'crf-job':'crf-job crf-muted';
+      const cpuMax=(r.cpus&&r.cpus>0)?r.cpus*100:100;
+      const cpuPct=running?(100*(r.cpu_pct||0)/cpuMax):0;
+      const memPct=running&&r.mem_gb?100*(r.mem_used_mib||0)/(r.mem_gb*1024):0;
+      const memTxt=running?((r.mem_used_mib>=1024?( (r.mem_used_mib/1024).toFixed(1)+'g'):(r.mem_used_mib+'m'))+'/'+r.mem_gb+'g'):'&ndash;';
       return '<div class="crf-bay">'+
         '<span class="crf-ball '+ball+'"></span>'+
         '<span class="crf-name">'+crfEsc(r.name)+'</span>'+
-        '<span class="crf-pill '+pill+'">'+crfEsc(ph)+'</span>'+
+        '<span class="crf-phase"><uui-badge variant="'+bvar+'" size="xs"'+dark+'>'+crfEsc(ph)+'</uui-badge></span>'+
         '<span class="'+jobCls+'" title="'+crfEsc(r.job||'')+'">'+(r.job?crfEsc(job):job)+'</span>'+
-        '<span class="crf-limits">'+(r.cpus?r.cpus+'c':'max')+' &middot; '+r.mem_gb+'g</span>'+
+        '<span class="crf-usage">'+crfBar(cpuPct,cpuPct>90)+'<span class="crf-uval">'+(running?Math.round(r.cpu_pct||0)+'%':'&ndash;')+'</span></span>'+
+        '<span class="crf-usage">'+crfBar(memPct,memPct>90)+'<span class="crf-uval">'+memTxt+'</span></span>'+
       '</div>';
     }).join('');
   }).catch(()=>{});
