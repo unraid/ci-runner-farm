@@ -132,7 +132,7 @@ function crfSaveDf(cb){ crfPost({action:'save-dockerfile',dockerfile:document.ge
   crfiBuildState(o.ok?'ok':'err', o.ok?'saved':('error: '+(o.error||'')));
   if(typeof cb==='function'&&o.ok) cb(); }); }
 function crfBuild(){ crfiBuildState('busy','saving + building...'); crfSaveDf(function(){ crfPost({action:'build-image'}).then(()=>crfPollBuild()); }); }
-function crfPollBuild(){ crfPost({action:'build-log'}).then(d=>{ const el=document.getElementById('crf-build-log'); el.textContent=d.log||''; el.scrollTop=el.scrollHeight;
+function crfPollBuild(){ crfPost({action:'build-log'}).then(d=>{ const el=document.getElementById('crf-build-log'); el.innerHTML=crfColorize(d.log||''); el.scrollTop=el.scrollHeight;
   if(d.running){ crfiBuildState('busy','building...'); setTimeout(crfPollBuild,2000); }
   else { const ok=!/error|failed/i.test((d.log||'').split('\n').slice(-6).join('\n'));
     crfiBuildState(ok?'ok':'err', ok?'build finished — restart the fleet to use it':'build failed — see log'); crfiInfo(); } }); }

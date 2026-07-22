@@ -99,6 +99,10 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
   .crf-phase uui-badge:not(:defined){font-size:11px;color:var(--alt-text-color)}
   .crf-console{border:1px solid var(--border-color);border-radius:6px;overflow:hidden;margin:0 0 12px}
   .crf-console-head{display:flex;align-items:center;justify-content:space-between;padding:2px 6px 2px 12px;background:var(--table-header-background-color);font-size:11px;color:var(--alt-text-color)}
+  .crf-lg-dim{color:var(--alt-text-color)}
+  .crf-lg-ok{color:var(--crf-ok)}
+  .crf-lg-warn{color:var(--crf-busy)}
+  .crf-lg-err{color:var(--crf-err)}
   .crf-console-body{white-space:pre-wrap;font-family:bitstream,monospace;font-size:12px;line-height:1.5;min-height:90px;max-height:200px;overflow:auto;background:var(--shade-bg-color,var(--background-color));color:var(--text-color);padding:6px 10px}
   .crf-builder-wrap textarea{width:100%;font-family:bitstream,monospace;font-size:12px;background:var(--input-bg-color);color:var(--text-color);border:1px solid var(--textarea-border-color,var(--input-border-color))}
   @keyframes crf-pulse{0%,100%{opacity:1}50%{opacity:.35}}
@@ -137,8 +141,23 @@ function crfPost(p){
     body:Object.entries(p).map(([k,v])=>encodeURIComponent(k)+'='+encodeURIComponent(v)).join('&')}).then(r=>r.json());
 }
 function crfEsc(s){ return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+/* Semantic log tinting: escape first, then dim structural prefixes and tint
+   error/warn lines and known lifecycle phrases. Applies to both consoles. */
+function crfColorize(t){
+  return String(t||'').split('\n').map(line=>{
+    let l=crfEsc(line);
+    l=l.replace(/^(\[ci-runner-farm\])/,'<span class="crf-lg-dim">$1</span>');
+    l=l.replace(/^(\d{4}-\d{2}-\d{2}[T ][\d:.]+Z?)/,'<span class="crf-lg-dim">$1</span>');
+    l=l.replace(/^(#\d+\s)/,'<span class="crf-lg-dim">$1</span>');
+    if(/error|fatal|failed|failure/i.test(line)) return '<span class="crf-lg-err">'+l+'</span>';
+    if(/warn/i.test(line)) return '<span class="crf-lg-warn">'+l+'</span>';
+    l=l.replace(/\b(shrink by \d+|removing idle [\w-]+|deregistered [\w-]+|reaping [\w-]+|stopping|stopped)\b/gi,'<span class="crf-lg-warn">$1</span>');
+    l=l.replace(/\b(grow to \d+|daemon up|started|registered|Listening for Jobs|successfully|DONE|CACHED|FINISHED|build complete)\b/gi,'<span class="crf-lg-ok">$1</span>');
+    return l;
+  }).join('\n');
+}
 let crfUserLog=false;
-function crfLog(o){ crfUserLog=true; document.getElementById('crf-log').textContent = (o.log||JSON.stringify(o)); }
+function crfLog(o){ crfUserLog=true; document.getElementById('crf-log').innerHTML = crfColorize(o.log||JSON.stringify(o)); }
 /* Until the user triggers an action, the Fleet log shows live farm activity
    (autoscale daemon log) instead of sitting on a placeholder. */
 function crfFarmLog(){
@@ -146,7 +165,7 @@ function crfFarmLog(){
   crfPost({action:'farm-log'}).then(d=>{
     if(crfUserLog||!d.log) return;
     const el=document.getElementById('crf-log');
-    el.textContent=d.log; el.scrollTop=el.scrollHeight;
+    el.innerHTML=crfColorize(d.log); el.scrollTop=el.scrollHeight;
   }).catch(()=>{});
 }
 crfFarmLog(); setInterval(crfFarmLog,10000);
