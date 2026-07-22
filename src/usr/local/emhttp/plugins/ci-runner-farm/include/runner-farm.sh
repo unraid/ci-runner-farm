@@ -852,18 +852,30 @@ start_stopped_managed() {
   done
 }
 
-cmd_start() {
-  [ -z "$ACCESS_TOKEN" ] && { err "no GitHub token configured (set it in the web UI). Use 'validate' to test provisioning without one."; return 1; }
+# Provisioning prerequisites shared by every path that then runs start_one — Start,
+# Scale, and the Fleet recycle button. Validates the cache root (hard guard: aborts
+# on FUSE for DIND, etc.), creates the cache dirs / isolated network / image-cache
+# mirror, (re)applies strict egress rules, and logs in to a remote registry.
+# Returns non-zero (problem already logged) when the cache-root guard fails so
+# callers can bail before provisioning; a registry-login failure is left for
+# start_one to surface per-runner, matching the historical Start behavior.
+provision_preflight() {
   check_cache_root || return 1
-  rm -f "$SECURITY_CACHE"                       # force a fresh public-repo check on an explicit Start
-  local secp; secp="$(public_repo_problem)"
-  [ -n "$secp" ] && err "SECURITY: $secp"       # warn, do not block (operator's call)
   ensure_dirs
   ensure_network
   ensure_mirror
   firewall_clear                                # drop stale rules (e.g. strict -> off/isolate)
   firewall_apply                                # re-add egress rules (no-op unless strict)
   registry_login
+  return 0
+}
+
+cmd_start() {
+  [ -z "$ACCESS_TOKEN" ] && { err "no GitHub token configured (set it in the web UI). Use 'validate' to test provisioning without one."; return 1; }
+  rm -f "$SECURITY_CACHE"                       # force a fresh public-repo check on an explicit Start
+  local secp; secp="$(public_repo_problem)"
+  [ -n "$secp" ] && err "SECURITY: $secp"       # warn, do not block (operator's call)
+  provision_preflight || return 1               # cache-root guard + dirs/network/mirror/firewall/registry
   # If NETWORK_ISOLATION changed while the fleet was up, existing runners are still
   # on the old network — drain + recreate them so the new mode actually applies (a
   # half-isolated fleet is a false sense of security). Runners already on the right
@@ -1146,19 +1158,18 @@ cmd_recycle() {
   echo "$name" | grep -qE "^${NAME_PREFIX}-[0-9]+$" || { echo '{"ok":false,"error":"bad name"}'; return 1; }
   idx="$(docker inspect -f '{{ index .Config.Labels "net.unraid.ci-runner-farm.index" }}' "$name" 2>/dev/null)"
   [ -z "$idx" ] && idx="${name##*-}"
-  # start_one relies on provisioning prerequisites that cmd_start normally creates
-  # (cache dirs, the isolated network, the image-cache mirror). Create them BEFORE
-  # removing the old container so a config change since the last Start — e.g.
-  # NETWORK_ISOLATION off->isolate, which creates ci-runner-net only on Start —
-  # can't leave the runner removed-but-not-replaced. Verify the network is actually
-  # up (don't just trust ensure_network's return) and abort with the runner intact.
-  ensure_dirs
-  ensure_network
+  # Mirror cmd_start's FULL provisioning preflight before removing the old
+  # container: validate the cache root (a DIND fleet moved onto FUSE would recreate
+  # and fail), create the isolated network + cache dirs + mirror, and (re)apply
+  # strict egress rules so the replacement is never started unprotected. A config
+  # change since the last Start therefore can't leave the runner removed-but-not-
+  # replaced, or replaced without its firewall. Abort with the runner intact if a
+  # hard prerequisite (cache root) or the isolated network is unavailable.
+  provision_preflight || { echo '{"ok":false,"error":"provisioning preflight failed (see log)"}'; return 1; }
   if [ "$NETWORK_ISOLATION" != "off" ] && ! docker network inspect "$RUNNER_NETWORK" >/dev/null 2>&1; then
     log "recycle: $name left in place — runner network $RUNNER_NETWORK unavailable"
     echo '{"ok":false,"error":"runner network unavailable"}'; return 1
   fi
-  ensure_mirror
   deregister_runner_api "$name"
   if ! docker rm -f "$name" >/dev/null 2>&1; then
     log "recycle: docker rm failed for $name"; echo '{"ok":false,"error":"remove failed"}'; return 1
