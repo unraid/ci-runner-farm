@@ -76,6 +76,5 @@ repo target on a privileged fleet.
 ## Screenshots
 
 Additional images available under `docs/images/` in the repo:
-`1-settings-github-runners.png`, `2-runner-image-storage-docker.png`,
-`3-autoscaling.png` (used as the CA screenshot),
-`4-fleet-control-image-builder.png`, `5-running-containers.png`.
+`fleet.png` (used as the CA screenshot), `settings.png`, `runner-image.png`,
+`fleet-log-drawer.png`.
