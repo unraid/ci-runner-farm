@@ -32,6 +32,7 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
   <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label">Runners up</span><span class="crf-stat-value" id="crf-s-up">&ndash;</span></div></uui-card-wrapper>
   <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label">Busy</span><span class="crf-stat-value crf-c-busy" id="crf-s-busy">&ndash;</span></div></uui-card-wrapper>
   <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label">Idle</span><span class="crf-stat-value crf-c-ok" id="crf-s-idle">&ndash;</span></div></uui-card-wrapper>
+  <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label">Queued</span><span class="crf-stat-value" id="crf-s-q">&ndash;</span></div></uui-card-wrapper>
   <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label">Autoscale</span><span class="crf-stat-small" id="crf-s-as">&ndash;</span></div></uui-card-wrapper>
   <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label">Image update</span><span class="crf-stat-small" id="crf-s-iu">&ndash;</span></div></uui-card-wrapper>
 </div>
@@ -47,9 +48,9 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
 
 <div class="crf-bays">
   <div class="crf-bay crf-bay-head">
-    <span></span><span>Runner</span><span>Phase</span><span>Job</span><span>CPU</span><span>Memory</span>
+    <span></span><span>Runner</span><span>Phase</span><span>Job</span><span>CPU</span><span>Memory</span><span></span>
   </div>
-  <div id="crf-bays-body"><div class="crf-bay"><span></span><span class="crf-muted">loading...</span><span></span><span></span><span></span><span></span></div></div>
+  <div id="crf-bays-body"><div class="crf-bay"><span></span><span class="crf-muted">loading...</span><span></span><span></span><span></span><span></span><span></span></div></div>
 </div>
 
 <div class="crf-console">
@@ -79,7 +80,7 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
   .crf-scale input[type=number]{width:4em;height:26px;box-sizing:border-box;border-radius:6px;padding:0 8px;font-size:12px;margin:0}
   uui-button:not(:defined),uui-brand-button:not(:defined){cursor:pointer;border:1px solid var(--border-color);border-radius:6px;padding:5px 12px;font-size:13px;color:var(--text-color)}
   .crf-bays{border:1px solid var(--border-color);border-radius:6px;overflow:hidden;margin:0 0 8px}
-  .crf-bay{display:grid;grid-template-columns:22px minmax(110px,1fr) 88px minmax(120px,1.6fr) 120px 160px;gap:8px;align-items:center;padding:4px 10px;border-top:1px solid var(--table-border-color,var(--border-color))}
+  .crf-bay{display:grid;grid-template-columns:22px minmax(110px,1fr) 88px minmax(120px,1.6fr) 120px 160px 26px;gap:8px;align-items:center;padding:4px 10px;border-top:1px solid var(--table-border-color,var(--border-color))}
   .crf-bay:first-child{border-top:none}
   .crf-bay-head{background:var(--table-header-background-color);font-size:11px;color:var(--alt-text-color);padding:5px 10px}
   #crf-bays-body .crf-bay:hover{background:var(--hover-table-row-background-color)}
@@ -99,6 +100,10 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
   .crf-elapsed{font-size:11px;color:var(--alt-text-color);margin-left:6px;font-family:bitstream,monospace}
   .crf-el-warn{color:var(--crf-busy)}
   .crf-el-hot{color:var(--crf-err);font-weight:bold}
+  #crf-bays-body .crf-bay{cursor:pointer}
+  .crf-recycle{cursor:pointer;color:var(--alt-text-color);font-size:15px;line-height:1;text-align:center;border-radius:4px;padding:1px 2px}
+  .crf-recycle:hover{color:var(--crf-busy)}
+  .crf-bay-drawer{border-top:1px solid var(--table-border-color,var(--border-color));background:var(--shade-bg-color,var(--background-color));padding:8px 12px 8px 44px;font-family:bitstream,monospace;font-size:11.5px;line-height:1.5;white-space:pre-wrap;max-height:190px;overflow:auto;cursor:default}
   .crf-empty{display:flex;align-items:center;gap:14px;padding:18px 16px}
   .crf-empty strong{font-size:13px;color:var(--text-color)}
   .crf-toast{position:fixed;right:18px;bottom:48px;z-index:9999;background:var(--inverse-background-color,#222);color:var(--inverse-text-color,#fff);border:1px solid var(--border-color);border-radius:6px;padding:9px 16px;font-size:13px;opacity:0;transform:translateY(6px);transition:opacity .2s,transform .2s;pointer-events:none}
@@ -272,16 +277,60 @@ function crfRefresh(){
       const cpuPct=running?(100*(r.cpu_pct||0)/cpuMax):0;
       const memPct=running&&r.mem_gb?100*(r.mem_used_mib||0)/(r.mem_gb*1024):0;
       const memTxt=running?((r.mem_used_mib>=1024?( (r.mem_used_mib/1024).toFixed(1)+'g'):(r.mem_used_mib+'m'))+'/'+r.mem_gb+'g'):'&ndash;';
-      return '<div class="crf-bay">'+
+      return '<div class="crf-bay" data-name="'+crfEsc(r.name)+'">'+
         '<span class="crf-ball '+ball+'"></span>'+
         '<span class="crf-name">'+crfEsc(r.name)+'</span>'+
         '<span class="crf-phase"><uui-badge variant="'+bvar+'" size="xs"'+dark+'>'+crfEsc(ph)+'</uui-badge></span>'+
         '<span class="'+jobCls+'" title="'+crfEsc(r.job||'')+'">'+jobHtml+'</span>'+
         '<span class="crf-usage">'+crfBar(cpuPct)+'<span class="crf-uval">'+(running?Math.round(r.cpu_pct||0)+'%':'&ndash;')+'</span></span>'+
         '<span class="crf-usage">'+crfBar(memPct)+'<span class="crf-uval">'+memTxt+'</span></span>'+
+        '<span class="crf-recycle" title="Recycle this runner" onclick="crfRecycle(\''+crfEsc(r.name)+'\')">&#10227;</span>'+
       '</div>';
     }).join('');
+    crfDrawerMount();
   }).catch(()=>{});
 }
 crfRefresh(); setInterval(crfRefresh,5000);
+function crfQueued(){
+  crfPost({action:'queued-json'}).then(d=>{
+    const el=document.getElementById('crf-s-q'); if(!el) return;
+    const q=(typeof d.queued==='number'&&d.queued>=0)?d.queued:null;
+    el.textContent=q===null?'\u2013':q;
+    el.classList.toggle('crf-c-busy',!!q);
+  }).catch(()=>{});
+}
+crfQueued(); setInterval(crfQueued,30000);
+function crfRecycle(name){
+  const r=((window.CRF_LAST||{}).runners||[]).find(x=>x.name===name)||{};
+  const go=()=>crfPost({action:'recycle',name}).then(o=>{ if(o.ok){ crfToast('Recycled '+name); } crfRefresh(); });
+  if(r.state==='running'&&r.phase==='busy'&&window.swal){
+    swal({title:'Recycle '+name+'?',text:'It is mid-job'+(r.job?': '+r.job:'')+'.\nThe job will fail and re-queue.',type:'warning',showCancelButton:true,confirmButtonText:'Recycle',cancelButtonText:'Cancel'},ok=>{ if(ok) go(); });
+  } else go();
+}
+/* Click a bay to open a live log drawer for that runner (persists across the
+   5s re-render; content refreshes each poll while open). */
+window.CRF_DRAWER=null;
+function crfDrawerFill(name){
+  crfPost({action:'runner-log',name}).then(d=>{
+    const el=document.querySelector('.crf-bay-drawer[data-for="'+name+'"]');
+    if(el&&window.CRF_DRAWER===name){ el.innerHTML=crfColorize(d.log||'(no output)'); el.scrollTop=el.scrollHeight; }
+  }).catch(()=>{});
+}
+function crfDrawerMount(){
+  document.querySelectorAll('.crf-bay-drawer').forEach(e=>{ if(e.dataset.for!==window.CRF_DRAWER) e.remove(); });
+  if(!window.CRF_DRAWER) return;
+  if(document.querySelector('.crf-bay-drawer[data-for="'+window.CRF_DRAWER+'"]')) return;
+  const row=document.querySelector('#crf-bays-body .crf-bay[data-name="'+window.CRF_DRAWER+'"]');
+  if(!row) return;
+  const d=document.createElement('div'); d.className='crf-bay-drawer'; d.dataset.for=window.CRF_DRAWER;
+  d.innerHTML='<span class="crf-muted">loading log...</span>';
+  row.after(d); crfDrawerFill(window.CRF_DRAWER);
+}
+document.getElementById('crf-bays-body').addEventListener('click',e=>{
+  if(e.target.closest('a,.crf-recycle,uui-button,.crf-bay-drawer')) return;
+  const row=e.target.closest('.crf-bay[data-name]'); if(!row) return;
+  window.CRF_DRAWER = window.CRF_DRAWER===row.dataset.name ? null : row.dataset.name;
+  crfDrawerMount();
+});
+setInterval(()=>{ if(window.CRF_DRAWER) crfDrawerFill(window.CRF_DRAWER); },5000);
 </script>

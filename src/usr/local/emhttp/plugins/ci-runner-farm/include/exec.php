@@ -87,6 +87,25 @@ switch ($action) {
     echo json_encode(['ok' => true, 'action' => 'build-image']);
     break;
 
+  case 'queued-json':
+    [$out, $rc] = run(escapeshellarg($SCRIPT) . ' queued-json');
+    echo $out !== '' ? $out : json_encode(['queued' => -1]);
+    break;
+
+  case 'recycle':
+    $n = $_REQUEST['name'] ?? '';
+    if (!preg_match('/^ci-runner-[0-9]+$/', $n)) { echo json_encode(['ok'=>false,'error'=>'bad name']); break; }
+    [$out, $rc] = run(escapeshellarg($SCRIPT) . ' recycle ' . escapeshellarg($n));
+    echo $out !== '' ? $out : json_encode(['ok' => $rc === 0]);
+    break;
+
+  case 'runner-log':
+    $n = $_REQUEST['name'] ?? '';
+    if (!preg_match('/^ci-runner-[0-9]+$/', $n)) { echo json_encode(['ok'=>false,'error'=>'bad name']); break; }
+    [$out, $rc] = run(escapeshellarg($SCRIPT) . ' logs-tail ' . escapeshellarg($n) . ' 150');
+    echo json_encode(['ok' => true, 'log' => $out]);
+    break;
+
   case 'image-info':
     [$out, $rc] = run(escapeshellarg($SCRIPT) . ' image-info-json');
     echo $out !== '' ? $out : json_encode(['exists' => false]);

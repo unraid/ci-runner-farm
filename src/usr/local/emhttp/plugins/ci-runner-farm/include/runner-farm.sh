@@ -976,6 +976,49 @@ to_mib() {
     printf "%d", v }'
 }
 
+cmd_queued_refresh() {
+  # Sum queued workflow runs across GH_REPOS into a cache file. Invoked in the
+  # background from cmd_queued_json so the UI poll never blocks on 20+ curls.
+  [ -z "$ACCESS_TOKEN" ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
+  [ -n "$ACCESS_TOKEN" ] || return 0
+  local total=0 r n
+  for r in $GH_REPOS; do
+    n="$(curl -s --max-time 10 -H "Authorization: Bearer $ACCESS_TOKEN" \
+      "https://api.github.com/repos/$r/actions/runs?status=queued&per_page=1" \
+      | grep -m1 -oE '"total_count":[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | head -1)"
+    total=$(( total + ${n:-0} ))
+  done
+  echo "$(date +%s) $total" > "$CFGDIR/queued.cache"
+}
+
+cmd_queued_json() {
+  local now ts count age=999999
+  now=$(date +%s)
+  if [ -f "$CFGDIR/queued.cache" ]; then
+    read -r ts count < "$CFGDIR/queued.cache"
+    age=$(( now - ${ts:-0} ))
+  fi
+  if [ "$age" -gt 60 ] && ! [ -f "$CFGDIR/queued.lock" ]; then
+    ( touch "$CFGDIR/queued.lock"; "$0" queued-refresh; rm -f "$CFGDIR/queued.lock" ) >/dev/null 2>&1 &
+  fi
+  echo "{\"queued\":${count:--1},\"age\":$age}"
+}
+
+cmd_recycle() {
+  # Deregister + remove one runner; the autoscale daemon respawns it fresh.
+  local name="$1"
+  echo "$name" | grep -qE "^${NAME_PREFIX}-[0-9]+$" || { echo '{"ok":false,"error":"bad name"}'; return 1; }
+  deregister_runner_api "$name"
+  docker rm -f "$name" >/dev/null 2>&1
+  log "recycled $name (manual, from settings page)"
+  echo '{"ok":true}'
+}
+
+cmd_logs_tail() {
+  echo "$1" | grep -qE "^${NAME_PREFIX}-[0-9]+$" || return 1
+  docker logs --tail "${2:-150}" "$1" 2>&1
+}
+
 cmd_status_json() {
   local names; names="$(managed_names)"
   # One batched docker stats call for live per-runner usage (CPU%% and memory).
@@ -1139,6 +1182,10 @@ case "${1:-status}" in
   status)       cmd_status ;;
   status-json)  cmd_status_json ;;
   image-info-json) cmd_image_info_json ;;
+  queued-json)  cmd_queued_json ;;
+  queued-refresh) cmd_queued_refresh ;;
+  recycle)      cmd_recycle "${2:?usage: recycle <name>}" ;;
+  logs-tail)    cmd_logs_tail "${2:?usage: logs-tail <name> [n]}" "${3:-150}" ;;
   logs)         cmd_logs "${2:-1}" "${3:-100}" ;;
   validate)         cmd_validate ;;
   build-image)      cmd_build_image ;;

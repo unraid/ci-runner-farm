@@ -11,6 +11,7 @@ $plugin   = 'ci-runner-farm';
 $cfg      = parse_plugin_cfg($plugin);
 $has_token= file_exists("/boot/config/plugins/$plugin/token");
 $has_regtok = file_exists("/boot/config/plugins/$plugin/registry-token");
+$host_mem_gb = (int)round(((int)preg_replace('/[^0-9]/', '', (string)shell_exec("grep MemTotal /proc/meminfo"))) / 1048576);
 $csrf     = $var['csrf_token'] ?? '';
 /* Single source of truth for every form field's default. Drives both the
    rendered fallback (via crf_g/crf_sel) and the client-side "Reset to defaults"
@@ -46,9 +47,8 @@ if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d=''){ global 
   </div>
   <div class="crfs-tok-input">
     <uui-button variant="outline" size="xs" onclick="window.open('<?=$patUrl?>','_blank','noopener')">Get a pre-scoped PAT &#8599;</uui-button>
-    <input type="password" id="crf-token" autocomplete="new-password" placeholder="ghp_... (scopes pre-filled)">
+    <span class="crfs-field"><input type="password" id="crf-token" autocomplete="new-password" placeholder="ghp_... (scopes pre-filled)"><button type="button" class="crfs-fx" title="Clear saved token" onclick="crfClearToken()">&times;</button></span>
     <uui-button size="xs" onclick="crfSetToken()">Save token</uui-button>
-    <uui-button variant="ghost" size="xs" onclick="crfClearToken()">Clear</uui-button>
   </div>
 </div>
 <div class="crfs-tokband crfs-regband" id="crf-remote-auth">
@@ -60,9 +60,8 @@ if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d=''){ global 
     </span>
   </div>
   <div class="crfs-tok-input">
-    <input type="password" id="crf-registry-token" autocomplete="new-password" placeholder="registry password / token">
+    <span class="crfs-field"><input type="password" id="crf-registry-token" autocomplete="new-password" placeholder="registry password / token"><button type="button" class="crfs-fx" title="Clear saved registry token" onclick="crfClearRegistryToken()">&times;</button></span>
     <uui-button size="xs" onclick="crfSetRegistryToken()">Save registry token</uui-button>
-    <uui-button variant="ghost" size="xs" onclick="crfClearRegistryToken()">Clear</uui-button>
   </div>
 </div>
 
@@ -401,6 +400,28 @@ crfImgSrc();
   const check=()=>w.classList.toggle('on', (+min.value||0) > (+max.value||0));
   min.addEventListener('input',check); max.addEventListener('input',check); check();
 })();
+/* Advisory when the worst-case memory envelope (per-runner limit x the
+   effective max fleet size) crowds the host — this box learned that lesson
+   the hard way. Orange advisory, not an error: limits are not reservations. */
+(function(){
+  const HOST_GB=<?=$host_mem_gb?:0?>;
+  if(!HOST_GB) return;
+  const mem=document.getElementsByName('RUNNER_MEMORY')[0], cnt=document.getElementsByName('RUNNER_COUNT')[0],
+        as=document.getElementsByName('AUTOSCALE')[0], asmax=document.getElementsByName('AUTOSCALE_MAX')[0];
+  if(!mem||!cnt) return;
+  const w=document.createElement('div'); w.className='crfs-mem-warn';
+  (mem.closest('dl')||mem.parentElement).after(w);
+  const check=()=>{
+    const g=parseFloat(mem.value)||0;
+    const n=(as&&as.value==='true')?(+((asmax||{}).value)||0):(+cnt.value||0);
+    const worst=g*n;
+    const on=worst>HOST_GB*0.8;
+    w.textContent='Worst case '+n+' \u00d7 '+g+'g = '+worst+'g of the host\u2019s '+HOST_GB+'g \u2014 leaves '+(HOST_GB-worst)+'g for everything else on this box.';
+    w.classList.toggle('on',on);
+  };
+  [mem,cnt,as,asmax].forEach(el=>{ if(el){ el.addEventListener('input',check); el.addEventListener('change',check); } });
+  check();
+})();
 // Native Unraid folder picker on the Cache root path field
 if (window.jQuery) jQuery(function($){ if ($.fn.fileTreeAttach) $("#CACHE_ROOT").fileTreeAttach(); });
 </script>
@@ -424,7 +445,12 @@ if (window.jQuery) jQuery(function($){ if ($.fn.fileTreeAttach) $("#CACHE_ROOT")
   .crfs-tok-text strong{font-size:13px;color:var(--text-color)}
   .crfs-tok-sub{font-size:11px;color:var(--alt-text-color)}
   .crfs-tok-input{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-  .crfs-tok-input input[type=password]{width:24em;font-size:12px}
+  .crfs-tok-input input[type=password]{width:24em;font-size:12px;padding-right:26px!important;box-sizing:border-box}
+  .crfs-field{position:relative;display:inline-flex;align-items:center}
+  button.crfs-fx{position:absolute;right:4px;border:none!important;background:none!important;box-shadow:none!important;outline:none;width:auto!important;min-width:0!important;height:auto!important;color:var(--alt-text-color)!important;font-size:16px;line-height:1;cursor:pointer;padding:2px 5px!important;margin:0!important;letter-spacing:0}
+  button.crfs-fx:hover{color:var(--brand-red,#e22828)!important}
+  .crfs-mem-warn{display:none;font-size:12px;color:var(--brand-orange,#ff8c2f);padding:4px 0 2px}
+  .crfs-mem-warn.on{display:block}
   .crfs-tok-input input[type=button]{margin:0}
   .crfs-tok-input uui-button:not(:defined){cursor:pointer;border:1px solid var(--border-color);border-radius:6px;padding:4px 12px;font-size:12px;color:var(--text-color)}
   .crfs-tok-input a{font-size:12px;white-space:nowrap}
