@@ -10,6 +10,7 @@ $plugin   = 'ci-runner-farm';
    the flash cfg only ever holds what the user actually changed. */
 $cfg      = parse_plugin_cfg($plugin);
 $has_token= file_exists("/boot/config/plugins/$plugin/token");
+$has_regtok = file_exists("/boot/config/plugins/$plugin/registry-token");
 $csrf     = $var['csrf_token'] ?? '';
 /* Single source of truth for every form field's default. Drives both the
    rendered fallback (via crf_g/crf_sel) and the client-side "Reset to defaults"
@@ -35,6 +36,36 @@ if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d=''){ global 
 ?>
 <link type="text/css" rel="stylesheet" href="<?autov('/webGui/styles/jquery.filetree.css')?>">
 <script src="<?autov('/webGui/javascript/jquery.filetree.js')?>" charset="utf-8"></script>
+<div class="crfs-tokband<?= $has_token ? '' : ' crfs-tokband-missing' ?>" id="crf-tokband">
+  <div class="crfs-tok-status">
+    <span class="crf-ball <?= $has_token ? 'crf-ball-idle' : 'crf-ball-error' ?>" id="crf-tok-ball"></span>
+    <span class="crfs-tok-text">
+      <strong id="crf-tok"><?= $has_token ? 'GitHub token configured' : 'GitHub token not set' ?></strong>
+      <span class="crfs-tok-sub" id="crf-tok-sub"><?= $has_token ? 'Stored at /boot/config/plugins/ci-runner-farm/token (chmod 600), never in ci-runner-farm.cfg.' : 'The farm cannot register runners until a token is saved.' ?></span>
+    </span>
+  </div>
+  <div class="crfs-tok-input">
+    <input type="password" id="crf-token" placeholder="ghp_... (scopes pre-filled by the link)">
+    <input type="button" value="Save token" onclick="crfSetToken()">
+    <input type="button" value="Clear" onclick="crfClearToken()">
+    <a href="<?=$patUrl?>" target="_blank" rel="noopener">Create a pre-scoped PAT &#8599;</a>
+  </div>
+</div>
+<div class="crfs-tokband crfs-regband" id="crf-remote-auth">
+  <div class="crfs-tok-status">
+    <span class="crf-ball <?= $has_regtok ? 'crf-ball-idle' : '' ?>" id="crf-regtok-ball"></span>
+    <span class="crfs-tok-text">
+      <strong id="crf-regtok"><?= $has_regtok ? 'Registry token configured' : 'Registry token not set' ?></strong>
+      <span class="crfs-tok-sub">Password/token for the private registry (e.g. a PAT with read:packages for ghcr.io). For ghcr.io, leaving it blank reuses the GitHub PAT.</span>
+    </span>
+  </div>
+  <div class="crfs-tok-input">
+    <input type="password" id="crf-registry-token" placeholder="registry password / token">
+    <input type="button" value="Save registry token" onclick="crfSetRegistryToken()">
+    <input type="button" value="Clear" onclick="crfClearRegistryToken()">
+  </div>
+</div>
+
 <form markdown="1" name="ci_runner_farm" method="POST" action="/update.php" target="progressFrame">
 <input type="hidden" name="#file" value="ci-runner-farm/ci-runner-farm.cfg">
 
@@ -314,25 +345,6 @@ _(Autoscale: scale-down grace)_:
 
 </form>
 
-<hr>
-<div>
-<p><strong>GitHub token (PAT)</strong> &nbsp;<a href="<?=$patUrl?>" target="_blank" rel="noopener">Create a pre-scoped PAT on GitHub &#8599;</a><br>
-Stored at <code>/boot/config/plugins/ci-runner-farm/token</code> (chmod 600), never in ci-runner-farm.cfg.
-Status: <strong id="crf-tok"><?= $has_token ? 'configured &#10004;' : 'not set' ?></strong></p>
-<p>
-  <input type="password" id="crf-token" placeholder="ghp_... (scopes pre-filled by the link)" style="width:28em">
-  <input type="button" value="Save token" onclick="crfSetToken()">
-  <input type="button" value="Clear" onclick="crfAction('clear-token')">
-</p>
-<div id="crf-remote-auth">
-<p><strong>Registry token</strong> &mdash; password/token for the private registry above (e.g. a GitHub PAT with <code>read:packages</code> for ghcr.io). Stored at <code>registry-token</code> (chmod 600), never in config. <span id="crf-regtok"></span></p>
-<p>
-  <input type="password" id="crf-registry-token" placeholder="registry password / token" style="width:28em">
-  <input type="button" value="Save registry token" onclick="crfSetRegistryToken()">
-  <input type="button" value="Clear" onclick="crfAction('clear-registry-token')">
-</p>
-</div>
-</div>
 
 <script>
 const CRF_DEFAULTS = <?=json_encode($defaults)?>;
@@ -342,10 +354,23 @@ function crfResetDefaults(){
   for (const k in CRF_DEFAULTS){ const el=document.getElementsByName(k)[0]; if(el) el.value=CRF_DEFAULTS[k]; }
   crfImgSrc();
 }
+function crfTokState(ok){
+  const band=document.getElementById('crf-tokband'), ball=document.getElementById('crf-tok-ball');
+  document.getElementById('crf-tok').textContent = ok?'GitHub token configured':'GitHub token not set';
+  document.getElementById('crf-tok-sub').textContent = ok?'Stored at /boot/config/plugins/ci-runner-farm/token (chmod 600), never in ci-runner-farm.cfg.':'The farm cannot register runners until a token is saved.';
+  band.classList.toggle('crfs-tokband-missing',!ok);
+  ball.className='crf-ball '+(ok?'crf-ball-idle':'crf-ball-error');
+}
 function crfSetToken(){ const t=document.getElementById('crf-token').value; if(!t)return;
-  crfPost({action:'set-token',token:t}).then(o=>{document.getElementById('crf-tok').innerHTML=o.ok?'configured &#10004;':'error';document.getElementById('crf-token').value='';}); }
+  crfPost({action:'set-token',token:t}).then(o=>{crfTokState(!!o.ok);document.getElementById('crf-token').value='';}); }
+function crfClearToken(){ crfPost({action:'clear-token'}).then(()=>crfTokState(false)); }
+function crfRegState(ok){
+  document.getElementById('crf-regtok').textContent = ok?'Registry token configured':'Registry token not set';
+  document.getElementById('crf-regtok-ball').className='crf-ball '+(ok?'crf-ball-idle':'');
+}
 function crfSetRegistryToken(){ const t=document.getElementById('crf-registry-token').value; if(!t)return;
-  crfPost({action:'set-registry-token',token:t}).then(o=>{document.getElementById('crf-regtok').innerHTML=o.ok?'configured &#10004;':'error';document.getElementById('crf-registry-token').value='';}); }
+  crfPost({action:'set-registry-token',token:t}).then(o=>{crfRegState(!!o.ok);document.getElementById('crf-registry-token').value='';}); }
+function crfClearRegistryToken(){ crfPost({action:'clear-registry-token'}).then(()=>crfRegState(false)); }
 // show/hide the remote-only fields (Remote image + registry server/username/token)
 // based on the Image source select. Targets each field's <dd>+<dt> (Unraid
 // markdown forms are MarkdownExtra definition lists). Hide-only (never disable):
@@ -381,10 +406,16 @@ if (window.jQuery) jQuery(function($){ if ($.fn.fileTreeAttach) $("#CACHE_ROOT")
   .crfs-card dd input[type=text],.crfs-card dd input[type=number],.crfs-card dd select{width:100%!important;max-width:none!important;font-size:12px;padding:3px 6px;margin:0}
   .crfs-actions{display:flex;gap:8px;justify-content:flex-end;padding:4px 0 2px}
   .crfs-actions input{width:auto!important;margin:0!important}
-  .crfs-tokens{margin-top:2px;border:1px solid var(--border-color);border-radius:6px;padding:2px 14px 8px;display:flex;gap:24px;flex-wrap:wrap}
-  .crfs-tokens>div{flex:1 1 380px;min-width:0}
-  .crfs-tokens p{margin:6px 0;font-size:12px}
-  .crfs-tokens input[type=password]{font-size:12px}
+  .crfs-tokband{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;border:1px solid var(--border-color);border-radius:6px;background:var(--shade-bg-color,transparent);padding:10px 14px;margin:6px 0 10px}
+  .crfs-tokband-missing{border-color:var(--crf-err);background:color-mix(in srgb,var(--crf-err) 8%,var(--background-color))}
+  .crfs-tok-status{display:flex;align-items:center;gap:12px;min-width:260px}
+  .crfs-tok-text{display:flex;flex-direction:column;gap:2px}
+  .crfs-tok-text strong{font-size:13px;color:var(--text-color)}
+  .crfs-tok-sub{font-size:11px;color:var(--alt-text-color)}
+  .crfs-tok-input{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .crfs-tok-input input[type=password]{width:24em;font-size:12px}
+  .crfs-tok-input input[type=button]{margin:0}
+  .crfs-tok-input a{font-size:12px;white-space:nowrap}
 </style>
 <script>
 /* Regroup the rendered markdown form (h3 + dl runs) into section cards laid out
@@ -410,13 +441,6 @@ if (window.jQuery) jQuery(function($){ if ($.fn.fileTreeAttach) $("#CACHE_ROOT")
     actions.querySelectorAll('input').forEach(b=>bar.appendChild(b));
     actions.remove();
     form.appendChild(bar);
-  }
-  const tok=form.nextElementSibling&&form.nextElementSibling.tagName==='HR'?form.nextElementSibling.nextElementSibling:null;
-  if(tok&&tok.tagName==='DIV'){
-    tok.classList.add('crfs-tokens');
-    const col=document.createElement('div');
-    while(tok.firstChild&&tok.firstChild!==document.getElementById('crf-remote-auth')) col.appendChild(tok.firstChild);
-    tok.insertBefore(col,tok.firstChild);
   }
 })();
 </script>
