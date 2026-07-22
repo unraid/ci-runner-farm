@@ -2,13 +2,13 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name          "ci-runner-farm">
 <!ENTITY author        "Lime Technology">
-<!ENTITY version       "2026.07.22.0712.0-1.5.1">
-<!ENTITY pluginVersion "1.5.1">
-<!ENTITY releaseTag    "v1.5.1">
+<!ENTITY version       "2026.07.22.1719.34-1.6.0">
+<!ENTITY pluginVersion "1.6.0">
+<!ENTITY releaseTag    "v1.6.0">
 <!ENTITY pluginURL     "https://github.com/unraid/ci-runner-farm/releases/latest/download/ci-runner-farm.plg">
-<!ENTITY packageName   "ci-runner-farm-2026.07.22.0712.0-1.5.1.tgz">
-<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/v1.5.1/ci-runner-farm-2026.07.22.0712.0-1.5.1.tgz">
-<!ENTITY packageMD5    "7952814007b77f916c81d7684ace9d16">
+<!ENTITY packageName   "ci-runner-farm-2026.07.22.1719.34-1.6.0.tgz">
+<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/v1.6.0/ci-runner-farm-2026.07.22.1719.34-1.6.0.tgz">
+<!ENTITY packageMD5    "47b7ac42acb843ba8008b8662142e462">
 <!ENTITY plgdir        "/usr/local/emhttp/plugins/&name;">
 <!ENTITY cfgdir        "/boot/config/plugins/&name;">
 ]>
@@ -22,8 +22,11 @@
 
 <CHANGES>
 ### &version;
+### Features
+* **ui:** settings-page facelift — tabbed fleet hub, image builder, cache/stats, native theming ([#33](https://github.com/unraid/ci-runner-farm/issues/33)) ([fc95b61](https://github.com/unraid/ci-runner-farm/commit/fc95b614c61dc8dca99c68358e67ea428c4a0297))
 ### Bug Fixes
-* honor EPHEMERAL=false, enforce autoscale MIN floor, runner-owned cache dirs ([#30](https://github.com/unraid/ci-runner-farm/issues/30)) ([a605b80](https://github.com/unraid/ci-runner-farm/commit/a605b80193cd93ba37ee9849c8ea52ba3110cd45))
+* **release:** credit commit authors in notes ([#35](https://github.com/unraid/ci-runner-farm/issues/35)) ([7307817](https://github.com/unraid/ci-runner-farm/commit/73078170d2156559b928b30d86e9bf677f857bda))
+* **release:** update release-please action ([#38](https://github.com/unraid/ci-runner-farm/issues/38)) ([4a33381](https://github.com/unraid/ci-runner-farm/commit/4a333817291f452a9cb46ea7782334cdca0054d0))
 </CHANGES>
 
 <!-- plugin package: Unraid downloads it to flash and verifies the MD5 -->
@@ -40,11 +43,11 @@ PLGDIR="/usr/local/emhttp/plugins/ci-runner-farm"
 CFGDIR="/boot/config/plugins/ci-runner-farm"
 mkdir -p "$CFGDIR" "$PLGDIR"
 # Sweep any older package versions off flash, keeping this build's package.
-find "$CFGDIR" -maxdepth 1 -name 'ci-runner-farm-*.tgz' ! -name 'ci-runner-farm-2026.07.22.0712.0-1.5.1.tgz' -delete 2>/dev/null || true
+find "$CFGDIR" -maxdepth 1 -name 'ci-runner-farm-*.tgz' ! -name 'ci-runner-farm-2026.07.22.1719.34-1.6.0.tgz' -delete 2>/dev/null || true
 # Extract ONLY into the plugin dir; --no-same-owner forces root ownership;
 # --no-overwrite-dir leaves existing dir metadata alone. System dirs untouched.
 # The .tgz is kept on flash so the on-boot reinstall works without a download.
-tar -xzf "$CFGDIR/ci-runner-farm-2026.07.22.0712.0-1.5.1.tgz" --no-same-owner --no-overwrite-dir -C "$PLGDIR"
+tar -xzf "$CFGDIR/ci-runner-farm-2026.07.22.1719.34-1.6.0.tgz" --no-same-owner --no-overwrite-dir -C "$PLGDIR"
 chown -R root:root "$PLGDIR"
 find "$PLGDIR" -type d -exec chmod 0755 {} +
 find "$PLGDIR" -type f -exec chmod 0644 {} +
@@ -91,7 +94,7 @@ fi
 ( nohup "$PLGDIR/include/runner-farm.sh" boot-autostart >>"$CFGDIR/boot.log" 2>&1 & ) || true
 echo ""
 echo "+=============================================================+"
-echo "| ci-runner-farm 2026.07.22.0712.0-1.5.1 installed.                         "
+echo "| ci-runner-farm 2026.07.22.1719.34-1.6.0 installed.                         "
 echo "| Settings > Utilities > CI Runner Farm                        "
 echo "| Set a GitHub PAT, then Start (or Validate without a token).  "
 echo "+=============================================================+"

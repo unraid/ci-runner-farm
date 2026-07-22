@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.6.0](https://github.com/unraid/ci-runner-farm/compare/v1.5.1...v1.6.0) (2026-07-22)
+
+
+### Features
+
+* **ui:** settings-page facelift — tabbed fleet hub, image builder, cache/stats, native theming (@jmagar) ([#33](https://github.com/unraid/ci-runner-farm/issues/33)) ([fc95b61](https://github.com/unraid/ci-runner-farm/commit/fc95b614c61dc8dca99c68358e67ea428c4a0297))
+
+
+### Bug Fixes
+
+* **release:** credit commit authors in notes ([#35](https://github.com/unraid/ci-runner-farm/issues/35)) ([7307817](https://github.com/unraid/ci-runner-farm/commit/73078170d2156559b928b30d86e9bf677f857bda))
+* **release:** update release-please action ([#38](https://github.com/unraid/ci-runner-farm/issues/38)) ([4a33381](https://github.com/unraid/ci-runner-farm/commit/4a333817291f452a9cb46ea7782334cdca0054d0))
+
 ## [1.5.1](https://github.com/unraid/ci-runner-farm/compare/v1.5.0...v1.5.1) (2026-07-22)
 
 
