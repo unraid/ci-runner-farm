@@ -956,8 +956,15 @@ cmd_status_json() {
     cpus="$(docker inspect -f '{{.HostConfig.NanoCpus}}' "$c" 2>/dev/null)"
     mem="$(docker inspect -f '{{.HostConfig.Memory}}' "$c" 2>/dev/null)"
     phase="$(runner_phase "$c")"
+    # Current job name (busy runners only): the runner listener logs
+    # "Running job: <name>" when it picks one up — cheap to scrape and lets the
+    # settings page show what each runner is working on.
+    local job=""
+    if [ "$phase" = "busy" ]; then
+      job="$(docker logs --tail 60 "$c" 2>&1 | grep -oE 'Running job: .*' | tail -1 | sed 's/^Running job: //' | tr -d '\r' | json_escape)"
+    fi
     [ $first -eq 0 ] && out+=","
-    out+="{\"name\":\"$(echo "$c"|json_escape)\",\"state\":\"${st:-unknown}\",\"phase\":\"$phase\",\"cpus\":$(( ${cpus:-0}/1000000000 )),\"mem_gb\":$(( ${mem:-0}/1024/1024/1024 ))}"
+    out+="{\"name\":\"$(echo "$c"|json_escape)\",\"state\":\"${st:-unknown}\",\"phase\":\"$phase\",\"job\":\"${job}\",\"cpus\":$(( ${cpus:-0}/1000000000 )),\"mem_gb\":$(( ${mem:-0}/1024/1024/1024 ))}"
     first=0
   done
   out+="]"

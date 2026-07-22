@@ -87,6 +87,16 @@ switch ($action) {
     echo json_encode(['ok' => true, 'action' => 'build-image']);
     break;
 
+  case 'farm-log':
+    // Live farm activity for the Fleet log's idle state: the autoscale daemon
+    // log (or boot.log before the daemon ever ran), minus docker's noisy
+    // per-invocation swap-limit warning.
+    $as = "$CFGDIR/autoscale.log"; $bt = "$CFGDIR/boot.log";
+    $src = is_file($as) ? $as : $bt;
+    $txt = is_file($src) ? shell_exec('tail -n 150 ' . escapeshellarg($src) . " | grep -v 'swap limit capabilities' | tail -n 60") : '';
+    echo json_encode(['ok' => true, 'log' => $txt ?: '']);
+    break;
+
   case 'build-log':
     $log = "$CFGDIR/build.log";
     $txt = is_file($log) ? shell_exec('tail -n 100 ' . escapeshellarg($log)) : '';
