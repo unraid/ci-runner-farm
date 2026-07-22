@@ -352,6 +352,9 @@ const CRF_DEFAULTS = <?=json_encode($defaults)?>;
 function crfResetDefaults(){
   for (const k in CRF_DEFAULTS){ const el=document.getElementsByName(k)[0]; if(el) el.value=CRF_DEFAULTS[k]; }
   crfImgSrc();
+  // programmatic .value changes fire no input event, so nudge the advisory
+  // listeners (Min>Max, memory envelope) to re-evaluate against the reset values.
+  ['AUTOSCALE_MIN','AUTOSCALE_MAX','RUNNER_MEMORY','RUNNER_COUNT','AUTOSCALE'].forEach(n=>{ const el=document.getElementsByName(n)[0]; if(el) el.dispatchEvent(new Event('input')); });
 }
 function crfTokState(ok){
   const band=document.getElementById('crf-tokband'), ball=document.getElementById('crf-tok-ball');

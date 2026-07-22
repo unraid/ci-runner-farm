@@ -35,6 +35,7 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
   <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label">Queued</span><span class="crf-stat-value" id="crf-s-q">&ndash;</span></div></uui-card-wrapper>
   <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label">Autoscale</span><span class="crf-stat-small" id="crf-s-as">&ndash;</span></div></uui-card-wrapper>
   <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label">Image update</span><span class="crf-stat-small" id="crf-s-iu">&ndash;</span></div></uui-card-wrapper>
+  <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label">Cache</span><span class="crf-stat-value" id="crf-s-cache">&ndash;</span><a class="crf-cache-clear" id="crf-cache-clear" href="javascript:void(0)" role="button" onclick="crfCacheClear()">Clear caches</a></div></uui-card-wrapper>
 </div>
 
 <div class="crf-toolbar">
@@ -53,10 +54,19 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
   <div id="crf-bays-body"><div class="crf-bay"><span></span><span class="crf-muted">loading...</span><span></span><span></span><span></span><span></span><span></span></div></div>
 </div>
 
+<div class="crf-runstats" id="crf-runstats">
+  <span class="crf-rs-title">Recent runs</span>
+  <span class="crf-rs-seg"><b class="crf-c-ok" id="crf-rs-ok">&ndash;</b> passed</span>
+  <span class="crf-rs-seg"><b id="crf-rs-fail" style="color:var(--crf-err)">&ndash;</b> failed</span>
+  <span class="crf-rs-seg"><b class="crf-muted" id="crf-rs-cancel">&ndash;</b> cancelled</span>
+  <span class="crf-rs-seg"><b id="crf-rs-rate">&ndash;</b> pass rate</span>
+  <span class="crf-rs-seg crf-muted" id="crf-rs-total">&ndash; total across your repos</span>
+</div>
+
 <div class="crf-console">
   <div class="crf-console-head">
     <span>Fleet log</span>
-    <uui-button variant="outline" size="xs" onclick="crfCopyLog(this)">Copy</uui-button>
+    <uui-button variant="outline" size="xs" onclick="crfCopyFrom('crf-log',this)">Copy</uui-button>
   </div>
   <div id="crf-log" class="crf-console-body"><span class="crf-muted">Output from fleet actions and image builds appears here.</span></div>
 </div>
@@ -75,6 +85,12 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
   .crf-stat-value{font-size:22px;font-weight:500;line-height:1.05;color:var(--text-color)}
   .crf-stat-small{font-size:13px;color:var(--text-color);margin-top:1px;line-height:1.3}
   .crf-c-ok{color:var(--crf-ok)}.crf-c-busy{color:var(--crf-busy)}
+  .crf-cache-clear{font-size:11px;color:var(--link-text-color);text-decoration:none;margin-top:3px;cursor:pointer;width:fit-content}
+  .crf-cache-clear:hover{text-decoration:underline}
+  .crf-cache-clear:focus-visible{outline:2px solid var(--link-text-color,#29b6f6);outline-offset:1px;border-radius:3px}
+  .crf-runstats{display:flex;align-items:center;gap:16px;flex-wrap:wrap;border:1px solid var(--border-color);border-radius:6px;background:var(--shade-bg-color,transparent);padding:8px 14px;margin:0 0 8px;font-size:13px;color:var(--text-color)}
+  .crf-rs-title{font-size:11px;color:var(--alt-text-color);letter-spacing:.03em}
+  .crf-rs-seg b{font-weight:500}
   .crf-toolbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0 0 8px}
   .crf-scale{margin-left:auto;display:flex;align-items:center;gap:6px;color:var(--alt-text-color);font-size:13px}
   .crf-scale input[type=number]{width:4em;height:26px;box-sizing:border-box;border-radius:6px;padding:0 8px;font-size:12px;margin:0}
@@ -163,7 +179,18 @@ window.CRF_UUI = (async () => {
 function crfPost(p){
   p.csrf_token = CRF_CSRF;
   return fetch(CRF_URL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body:Object.entries(p).map(([k,v])=>encodeURIComponent(k)+'='+encodeURIComponent(v)).join('&')}).then(r=>r.json());
+    body:Object.entries(p).map(([k,v])=>encodeURIComponent(k)+'='+encodeURIComponent(v)).join('&')})
+    .then(r=>r.text()).then(t=>{ try{ return JSON.parse(t); }catch(e){ throw new Error('bad response for '+p.action+': '+t.slice(0,120)); } });
+}
+/* Poll only when the Fleet tab is actually on screen. document.hidden covers a
+   backgrounded browser tab; offsetParent covers the inactive dynamix sub-tab
+   (all tabs share one document, so document.hidden stays false on Settings/Image
+   while Fleet's pollers would otherwise keep hitting docker on the NAS). */
+function crfFleetActive(){ const b=document.getElementById('crf-bays-body'); return !document.hidden && !!b && b.offsetParent!==null; }
+/* Copy the text content of an element to the clipboard, with button feedback. */
+function crfCopyFrom(id, btn){
+  const t=(document.getElementById(id)||{}).textContent||'';
+  navigator.clipboard.writeText(t).then(()=>{ const o=btn.textContent; btn.textContent='Copied'; setTimeout(()=>btn.textContent=o,1500); }).catch(()=>{});
 }
 function crfEsc(s){ return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 /* Semantic log tinting: escape first, then dim structural prefixes and tint
@@ -171,9 +198,7 @@ function crfEsc(s){ return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<'
 function crfColorize(t){
   return String(t||'').split('\n').map(line=>{
     let l=crfEsc(line);
-    l=l.replace(/^(\[ci-runner-farm\])/,'<span class="crf-lg-dim">$1</span>');
-    l=l.replace(/^(\d{4}-\d{2}-\d{2}[T ][\d:.]+Z?)/,'<span class="crf-lg-dim">$1</span>');
-    l=l.replace(/^(#\d+\s)/,'<span class="crf-lg-dim">$1</span>');
+    l=l.replace(/^(\[ci-runner-farm\]|\d{4}-\d{2}-\d{2}[T ][\d:.]+Z?|#\d+\s)/,'<span class="crf-lg-dim">$1</span>');
     if(/error|fatal|failed|failure/i.test(line)) return '<span class="crf-lg-err">'+l+'</span>';
     if(/warn/i.test(line)) return '<span class="crf-lg-warn">'+l+'</span>';
     l=l.replace(/\b(shrink by \d+|removing idle [\w-]+|deregistered [\w-]+|reaping [\w-]+|stopping|stopped)\b/gi,'<span class="crf-lg-warn">$1</span>');
@@ -186,7 +211,7 @@ function crfLog(o){ crfUserLog=true; document.getElementById('crf-log').innerHTM
 /* Until the user triggers an action, the Fleet log shows live farm activity
    (autoscale daemon log) instead of sitting on a placeholder. */
 function crfFarmLog(){
-  if(crfUserLog||document.hidden) return;
+  if(crfUserLog||!crfFleetActive()) return;
   crfPost({action:'farm-log'}).then(d=>{
     if(crfUserLog||!d.log) return;
     const el=document.getElementById('crf-log');
@@ -220,10 +245,7 @@ function crfAction(a){
   crfDoAction(a);
 }
 function crfScale(){ const n=document.getElementById('crf-n').value; crfPost({action:'scale',n}).then(o=>{crfLog(o); crfRefresh(); if(o.ok!==false) crfToast('Scaled to '+n);}); }
-function crfCopyLog(btn){
-  const t=document.getElementById('crf-log').textContent||'';
-  navigator.clipboard.writeText(t).then(()=>{ const old=btn.textContent; btn.textContent='Copied'; setTimeout(()=>btn.textContent=old,1500); }).catch(()=>{});
-}
+
 function crfElapsed(iso){
   const t=Date.parse(iso); if(isNaN(t)) return null;
   const m=Math.floor((Date.now()-t)/60000);
@@ -235,7 +257,7 @@ function crfBar(pct){
   return '<span class="crf-ubar'+cls+'"><span style="width:'+p+'%"></span></span>';
 }
 function crfRefresh(){
-  if(document.hidden) return;
+  if(!crfFleetActive()) return;
   crfPost({action:'status-json'}).then(d=>{
     window.CRF_LAST=d;
     const warn=document.getElementById('crf-warn');
@@ -292,7 +314,7 @@ function crfRefresh(){
         '<span class="'+jobCls+'" title="'+crfEsc(r.job||'')+'">'+jobHtml+'</span>'+
         '<span class="crf-usage">'+crfBar(cpuPct)+'<span class="crf-uval">'+(running?Math.round(r.cpu_pct||0)+'%':'&ndash;')+'</span></span>'+
         '<span class="crf-usage">'+crfBar(memPct)+'<span class="crf-uval">'+memTxt+'</span></span>'+
-        '<span class="crf-recycle" tabindex="0" role="button" aria-label="Recycle '+crfEsc(r.name)+'" title="Recycle this runner" onclick="crfRecycle(\''+crfEsc(r.name)+'\')">&#10227;</span>'+
+        '<span class="crf-recycle" tabindex="0" role="button" aria-label="Recycle '+crfEsc(r.name)+'" title="Recycle this runner">&#10227;</span>'+
       '</div>';
     }).join('');
     crfDrawerMount();
@@ -300,7 +322,7 @@ function crfRefresh(){
 }
 crfRefresh(); setInterval(crfRefresh,5000);
 function crfQueued(){
-  if(document.hidden) return;
+  if(!crfFleetActive()) return;
   crfPost({action:'queued-json'}).then(d=>{
     const el=document.getElementById('crf-s-q'); if(!el) return;
     const q=(typeof d.queued==='number'&&d.queued>=0)?d.queued:null;
@@ -309,9 +331,39 @@ function crfQueued(){
   }).catch(()=>{});
 }
 crfQueued(); setInterval(crfQueued,30000);
+function crfBytes(b){ if(typeof b!=='number'||b<0) return '\u2013'; const u=['B','K','M','G','T']; let i=0,v=b; while(v>=1024&&i<u.length-1){v/=1024;i++;} return (i===0?v:(v>=10?Math.round(v):v.toFixed(1)))+u[i]; }
+function crfCacheUsage(){
+  if(!crfFleetActive()) return;
+  crfPost({action:'cache-usage'}).then(d=>{
+    window.CRF_CACHE=d;
+    const el=document.getElementById('crf-s-cache'); if(el) el.textContent=crfBytes(d.total);
+    const clr=document.getElementById('crf-cache-clear'); if(clr) clr.title=(d.pkg>0?crfBytes(d.pkg)+' reclaimable':'');
+  }).catch(()=>{});
+}
+crfCacheUsage(); setInterval(crfCacheUsage,30000);
+function crfStats(){
+  if(!crfFleetActive()) return;
+  crfPost({action:'stats-json'}).then(d=>{
+    const put=(id,v)=>{const e=document.getElementById(id); if(e) e.textContent=v;};
+    const done=(d.ok||0)+(d.fail||0)+(d.cancel||0)+(d.other||0);
+    put('crf-rs-ok',d.ok??'\u2013'); put('crf-rs-fail',d.fail??'\u2013'); put('crf-rs-cancel',d.cancel??'\u2013');
+    put('crf-rs-rate', done>0 ? Math.round(100*(d.ok||0)/done)+'%' : '\u2013');
+    put('crf-rs-total', (typeof d.total==='number'&&d.total>=0 ? d.total : '\u2013')+' total across your repos');
+  }).catch(()=>{});
+}
+crfStats(); setInterval(crfStats,60000);
+function crfCacheClear(){
+  const pkg=(window.CRF_CACHE&&window.CRF_CACHE.pkg)||0;
+  const doIt=()=>crfPost({action:'cache-clear'}).then(o=>{ crfToast(o.ok?'Package caches cleared':('Clear failed'+(o.error?': '+o.error:''))); crfCacheUsage(); });
+  const msg='Removes '+crfBytes(pkg)+' of warm cargo, npm, yarn, pnpm, sccache, and Playwright caches. Running jobs keep working (a cache miss at worst); workspaces and Docker data are left intact.';
+  if(window.swal){ swal({title:'Clear package caches?',text:msg,type:'warning',showCancelButton:true,confirmButtonText:'Clear caches',cancelButtonText:'Cancel'},ok=>{ if(ok) doIt(); }); }
+  else if(confirm('Clear package caches? '+msg)) doIt();
+}
 function crfRecycle(name){
   const r=((window.CRF_LAST||{}).runners||[]).find(x=>x.name===name)||{};
-  const go=()=>crfPost({action:'recycle',name}).then(o=>{ if(o.ok){ crfToast('Recycled '+name); } crfRefresh(); });
+  const go=()=>crfPost({action:'recycle',name})
+    .then(o=>{ crfToast(o.ok?('Recycled '+name):('Recycle failed'+(o.error?': '+o.error:''))); crfRefresh(); })
+    .catch(e=>{ crfToast('Recycle failed'); console.error('ci-runner-farm recycle:',e); });
   if(r.state==='running'&&r.phase==='busy'&&window.swal){
     swal({title:'Recycle '+name+'?',text:'It is mid-job'+(r.job?': '+r.job:'')+'.\nThe job will fail and re-queue.',type:'warning',showCancelButton:true,confirmButtonText:'Recycle',cancelButtonText:'Cancel'},ok=>{ if(ok) go(); });
   } else go();
@@ -342,7 +394,9 @@ function crfToggleDrawer(name){
   crfDrawerMount();
 }
 document.getElementById('crf-bays-body').addEventListener('click',e=>{
-  if(e.target.closest('a,.crf-recycle,uui-button,.crf-bay-drawer')) return;
+  const rc=e.target.closest('.crf-recycle');
+  if(rc){ const b=rc.closest('.crf-bay[data-name]'); if(b) crfRecycle(b.dataset.name); return; }
+  if(e.target.closest('a,uui-button,.crf-bay-drawer')) return;
   const row=e.target.closest('.crf-bay[data-name]'); if(!row) return;
   crfToggleDrawer(row.dataset.name);
 });
@@ -358,7 +412,12 @@ setInterval(()=>{ if(window.CRF_DRAWER && !document.hidden) crfDrawerFill(window
    stats + per-runner exec on the NAS); refresh immediately on return. */
 document.addEventListener('visibilitychange',()=>{
   if(document.hidden) return;
-  crfRefresh(); crfQueued(); crfFarmLog();
+  crfRefresh(); crfQueued(); crfFarmLog(); crfCacheUsage(); crfStats();
   if(window.CRF_DRAWER) crfDrawerFill(window.CRF_DRAWER);
+});
+/* Switching to the Fleet dynamix sub-tab doesn't fire visibilitychange; refresh
+   on its tab button so the paused pollers catch up immediately, not in 5s. */
+document.getElementById('tab1') && document.getElementById('tab1').addEventListener('click',()=>{
+  setTimeout(()=>{ crfRefresh(); crfQueued(); crfFarmLog(); crfCacheUsage(); crfStats(); },60);
 });
 </script>

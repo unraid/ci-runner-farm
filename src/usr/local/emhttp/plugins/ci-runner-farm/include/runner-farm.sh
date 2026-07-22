@@ -21,6 +21,10 @@ set -uo pipefail
 
 PLUGIN="ci-runner-farm"
 CFGDIR="/boot/config/plugins/${PLUGIN}"
+# Ephemeral runtime caches/locks live on tmpfs, not the USB flash (they are
+# rewritten every 60-300s while a settings tab is open — a flash-wear antipattern).
+RUNDIR="/var/local/emhttp/${PLUGIN}"
+mkdir -p "$RUNDIR" 2>/dev/null || RUNDIR="$CFGDIR"
 CFG="${CFGDIR}/${PLUGIN}.cfg"
 TOKEN_FILE="${CFGDIR}/token"
 REGISTRY_TOKEN_FILE="${CFGDIR}/registry-token"
@@ -944,7 +948,7 @@ cmd_status() {
   done
 }
 
-json_escape() { sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+json_escape() { sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\000-\037'; }
 
 cmd_image_info_json() {
   # Image facts for the settings page's Runner image tab: existence, id, age,
@@ -952,7 +956,7 @@ cmd_image_info_json() {
   local img; img="$(effective_image)"
   local id; id="$(docker image inspect -f '{{.Id}}' "$img" 2>/dev/null)"
   if [ -z "$id" ]; then
-    echo "{\"exists\":false,\"image\":\"$(echo "$img"|json_escape)\",\"source\":\"${IMAGE_SOURCE}\"}"
+    echo "{\"exists\":false,\"image\":\"$(echo "$img"|json_escape)\",\"source\":\"$(echo "$IMAGE_SOURCE"|json_escape)\"}"
     return 0
   fi
   local created size; created="$(docker image inspect -f '{{.Created}}' "$img")"
@@ -965,7 +969,7 @@ cmd_image_info_json() {
     cid="$(docker inspect -f '{{.Image}}' "$c" 2>/dev/null)"
     [ "$cid" = "$id" ] && inuse=$((inuse+1))
   done
-  echo "{\"exists\":true,\"image\":\"$(echo "$img"|json_escape)\",\"id\":\"$(echo "$id" | cut -c8-19)\",\"created\":\"$created\",\"size_mb\":$(( ${size:-0}/1024/1024 )),\"base\":\"$(echo "$base"|json_escape)\",\"in_use\":$inuse,\"dockerfile\":\"$(echo "$df"|json_escape)\",\"source\":\"${IMAGE_SOURCE}\"}"
+  echo "{\"exists\":true,\"image\":\"$(echo "$img"|json_escape)\",\"id\":\"$(echo "$id" | cut -c8-19)\",\"created\":\"$created\",\"size_mb\":$(( ${size:-0}/1024/1024 )),\"base\":\"$(echo "$base"|json_escape)\",\"in_use\":$inuse,\"dockerfile\":\"$(echo "$df"|json_escape)\",\"source\":\"$(echo "$IMAGE_SOURCE"|json_escape)\"}"
 }
 
 # "1.5GiB" / "512MiB" / "900kB" -> integer MiB (docker stats human units)
@@ -988,18 +992,106 @@ cmd_queued_refresh() {
       | grep -m1 -oE '"total_count":[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | head -1)"
     total=$(( total + ${n:-0} ))
   done
-  echo "$(date +%s) $total" > "$CFGDIR/queued.cache"
+  echo "$(date +%s) $total" > "$RUNDIR/queued.cache"
+}
+
+# Warm dependency caches under CACHE_ROOT — safe to clear even while runners are
+# up (worst case is a cache miss, not a broken job). Deliberately EXCLUDES work/
+# and docker/, which hold running runners' live workspaces and DinD data.
+CACHE_PKG_DIRS="cargo-registry cargo-git sccache npm yarn pnpm-store ms-playwright registry-mirror"
+
+cmd_cache_usage_refresh() {
+  # du can be slow on a multi-GB cache, so this runs detached and the result is
+  # cached; the UI reads the cache and only triggers a refresh when it is stale.
+  local root="$CACHE_ROOT" total=0 pkg=0 d n
+  [ -d "$root" ] || { echo "$(date +%s) 0 0" > "$RUNDIR/cache-usage.cache"; return 0; }
+  total="$(du -sb "$root" 2>/dev/null | cut -f1)"
+  for d in $CACHE_PKG_DIRS; do
+    [ -d "$root/$d" ] && { n="$(du -sb "$root/$d" 2>/dev/null | cut -f1)"; pkg=$(( pkg + ${n:-0} )); }
+  done
+  echo "$(date +%s) ${total:-0} ${pkg:-0}" > "$RUNDIR/cache-usage.cache"
+}
+
+cmd_cache_usage_json() {
+  local now ts total pkg age=999999
+  now=$(date +%s)
+  if [ -f "$RUNDIR/cache-usage.cache" ]; then
+    read -r ts total pkg < "$RUNDIR/cache-usage.cache"
+    age=$(( now - ${ts:-0} ))
+  fi
+  if [ "$age" -gt 300 ]; then
+    ( flock -n 9 || exit 0; "$0" cache-usage-refresh ) 9>"$RUNDIR/cache-usage.lock" >/dev/null 2>&1 &
+  fi
+  echo "{\"total\":${total:--1},\"pkg\":${pkg:-0},\"age\":$age}"
+}
+
+cmd_cache_clear_pkg() {
+  # Clear ONLY the warm package caches (never work/ or docker/). Reuses the
+  # prune-cache root-shape guard so a misconfigured CACHE_ROOT can't wipe a share.
+  local root="$CACHE_ROOT" d removed=0
+  while [ "${root: -1}" = "/" ]; do root="${root%/}"; done
+  case "$root" in
+    ""|"/"|"/mnt"|"/mnt/user"|"/mnt/user0"|"/mnt/disks"|"/mnt/addons"|"/mnt/rootshare" \
+    |"/boot"|"/boot/"*|"/usr"|"/usr/"*|"/etc"|"/etc/"*|"/var"|"/var/"*|"/root"|"/root/"*|"/bin"*|"/sbin"*|"/lib"*)
+      echo "{\"ok\":false,\"error\":\"unsafe cache root\"}"; return 1 ;;
+    /mnt/*) : ;;
+    *) echo "{\"ok\":false,\"error\":\"cache root not under /mnt\"}"; return 1 ;;
+  esac
+  for d in $CACHE_PKG_DIRS; do
+    [ -d "$root/$d" ] && { rm -rf "${root:?}/${d:?}/"* 2>/dev/null; removed=$((removed+1)); }
+  done
+  log "package caches cleared ($removed dir(s)) under $root"
+  ( "$0" cache-usage-refresh ) >/dev/null 2>&1 &
+  echo "{\"ok\":true,\"cleared\":$removed}"
+}
+
+cmd_stats_refresh() {
+  # Tally recent workflow-run conclusions across GH_REPOS. Detached + cached so
+  # the per-repo API sweep never blocks the UI (see queued for the pattern).
+  [ -z "$ACCESS_TOKEN" ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
+  [ -n "$ACCESS_TOKEN" ] || return 0
+  local ok=0 fail=0 cancel=0 other=0 total r body c
+  for r in $GH_REPOS; do
+    body="$(curl -s --max-time 10 -H "Authorization: Bearer $ACCESS_TOKEN" \
+      "https://api.github.com/repos/$r/actions/runs?per_page=50")"
+    while IFS= read -r c; do
+      case "$c" in
+        *'"success"'*)                              ok=$((ok+1)) ;;
+        *'"failure"'*|*'"timed_out"'*|*'"startup_failure"'*) fail=$((fail+1)) ;;
+        *'"cancelled"'*)                            cancel=$((cancel+1)) ;;
+        *null*) : ;;  # in progress / queued — not a completed run
+        ?*)     other=$((other+1)) ;;
+      esac
+    done <<< "$(echo "$body" | grep -oE '"conclusion": ?(null|"[a-z_]+")')"
+  done
+  total=$((ok+fail+cancel+other))
+  echo "$(date +%s) $ok $fail $cancel $other $total" > "$RUNDIR/stats.cache"
+}
+
+cmd_stats_json() {
+  local now ts ok fail cancel other total age=999999
+  now=$(date +%s)
+  if [ -f "$RUNDIR/stats.cache" ]; then
+    read -r ts ok fail cancel other total < "$RUNDIR/stats.cache"
+    age=$(( now - ${ts:-0} ))
+  fi
+  if [ "$age" -gt 300 ]; then
+    ( flock -n 9 || exit 0; "$0" stats-refresh ) 9>"$RUNDIR/stats.lock" >/dev/null 2>&1 &
+  fi
+  echo "{\"ok\":${ok:-0},\"fail\":${fail:-0},\"cancel\":${cancel:-0},\"other\":${other:-0},\"total\":${total:--1},\"age\":$age}"
 }
 
 cmd_queued_json() {
   local now ts count age=999999
   now=$(date +%s)
-  if [ -f "$CFGDIR/queued.cache" ]; then
-    read -r ts count < "$CFGDIR/queued.cache"
+  if [ -f "$RUNDIR/queued.cache" ]; then
+    read -r ts count < "$RUNDIR/queued.cache"
     age=$(( now - ${ts:-0} ))
   fi
-  if [ "$age" -gt 60 ] && ! [ -f "$CFGDIR/queued.lock" ]; then
-    ( touch "$CFGDIR/queued.lock"; "$0" queued-refresh; rm -f "$CFGDIR/queued.lock" ) >/dev/null 2>&1 &
+  # flock, not a plain lock file: the advisory lock is released by the kernel
+  # even on SIGKILL/reboot, so a killed refresh can never wedge future refreshes.
+  if [ "$age" -gt 60 ]; then
+    ( flock -n 9 || exit 0; "$0" queued-refresh ) 9>"$RUNDIR/queued.lock" >/dev/null 2>&1 &
   fi
   echo "{\"queued\":${count:--1},\"age\":$age}"
 }
@@ -1009,7 +1101,9 @@ cmd_recycle() {
   local name="$1"
   echo "$name" | grep -qE "^${NAME_PREFIX}-[0-9]+$" || { echo '{"ok":false,"error":"bad name"}'; return 1; }
   deregister_runner_api "$name"
-  docker rm -f "$name" >/dev/null 2>&1
+  if ! docker rm -f "$name" >/dev/null 2>&1; then
+    log "recycle: docker rm failed for $name"; echo '{"ok":false}'; return 1
+  fi
   log "recycled $name (manual, from settings page)"
   echo '{"ok":true}'
 }
@@ -1060,7 +1154,7 @@ cmd_status_json() {
     local srow cpu_pct="0" mem_used_mib="0"
     srow="$(echo "$statsraw" | grep "^${c}|" | head -1)"
     if [ -n "$srow" ]; then
-      cpu_pct="$(echo "$srow" | cut -d'|' -f2 | tr -d '%')"
+      cpu_pct="$(echo "$srow" | cut -d'|' -f2 | tr -d '%' | grep -oE '^[0-9]+(\.[0-9]+)?' | head -1)"
       mem_used_mib="$(to_mib "$(echo "$srow" | cut -d'|' -f3 | awk -F' / ' '{print $1}')")"
     fi
     [ $first -eq 0 ] && out+=","
@@ -1184,6 +1278,11 @@ case "${1:-status}" in
   image-info-json) cmd_image_info_json ;;
   queued-json)  cmd_queued_json ;;
   queued-refresh) cmd_queued_refresh ;;
+  cache-usage-json) cmd_cache_usage_json ;;
+  cache-usage-refresh) cmd_cache_usage_refresh ;;
+  cache-clear-pkg) cmd_cache_clear_pkg ;;
+  stats-json)   cmd_stats_json ;;
+  stats-refresh) cmd_stats_refresh ;;
   recycle)      cmd_recycle "${2:?usage: recycle <name>}" ;;
   logs-tail)    cmd_logs_tail "${2:?usage: logs-tail <name> [n]}" "${3:-150}" ;;
   logs)         cmd_logs "${2:-1}" "${3:-100}" ;;

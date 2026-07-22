@@ -11,6 +11,51 @@ $crf_df     = "/boot/config/plugins/$crf_plugin/Dockerfile";
 $crf_df_saved = is_file($crf_df);
 if (!$crf_df_saved) $crf_df = "/usr/local/emhttp/plugins/$crf_plugin/default.Dockerfile";
 $crf_dockerfile = is_file($crf_df) ? file_get_contents($crf_df) : '';
+
+/* Toolchain install blocks the Runner image tab can splice into the Dockerfile.
+   Nowdoc keeps $ and backslashes literal; delimited markers make add/remove
+   idempotent and let the UI detect which are already present. */
+$crfi_tc = [];
+$crfi_tc['rust'] = <<<'DFBLOCK'
+# >>> ci-runner-farm toolchain: rust >>>
+# Rust stable installed system-wide (/opt/rust) so every job shares it.
+ENV RUSTUP_HOME=/opt/rust CARGO_HOME=/opt/rust PATH=/opt/rust/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+  | sh -s -- -y --no-modify-path --default-toolchain stable --profile minimal -c clippy,rustfmt \
+ && chmod -R a+w "$CARGO_HOME"
+# <<< ci-runner-farm toolchain: rust <<<
+DFBLOCK;
+$crfi_tc['python'] = <<<'DFBLOCK'
+# >>> ci-runner-farm toolchain: python >>>
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-pip python3-venv python3-dev pipx \
+ && rm -rf /var/lib/apt/lists/*
+# <<< ci-runner-farm toolchain: python <<<
+DFBLOCK;
+$crfi_tc['node'] = <<<'DFBLOCK'
+# >>> ci-runner-farm toolchain: node >>>
+RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && corepack enable \
+ && rm -rf /var/lib/apt/lists/*
+# <<< ci-runner-farm toolchain: node <<<
+DFBLOCK;
+$crfi_tc['android'] = <<<'DFBLOCK'
+# >>> ci-runner-farm toolchain: android >>>
+# Android SDK — large (~3-4 GB); the first Build will be slow.
+ENV ANDROID_SDK_ROOT=/opt/android-sdk
+ENV PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH
+RUN apt-get update && apt-get install -y --no-install-recommends openjdk-17-jdk-headless unzip \
+ && rm -rf /var/lib/apt/lists/* \
+ && mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools" \
+ && curl -fsSL -o /tmp/actools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
+ && unzip -q /tmp/actools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools" \
+ && mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest" \
+ && rm /tmp/actools.zip \
+ && yes | sdkmanager --licenses >/dev/null \
+ && sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+# <<< ci-runner-farm toolchain: android <<<
+DFBLOCK;
 ?>
 <script src="<?autov('/plugins/dynamix/javascript/ace/ace.js')?>"></script>
 
@@ -23,6 +68,15 @@ $crf_dockerfile = is_file($crf_df) ? file_get_contents($crf_df) : '';
     </span>
   </div>
   <div class="crfi-chips" id="crfi-chips"></div>
+</div>
+
+<div class="crfi-toolchains">
+  <span class="crfi-tc-label">Toolchains</span>
+  <span class="crfi-tc" data-tc="rust" role="button" tabindex="0" onclick="crfiToolchain('rust')">Rust</span>
+  <span class="crfi-tc" data-tc="python" role="button" tabindex="0" onclick="crfiToolchain('python')">Python</span>
+  <span class="crfi-tc" data-tc="node" role="button" tabindex="0" onclick="crfiToolchain('node')">Node / TS</span>
+  <span class="crfi-tc" data-tc="android" role="button" tabindex="0" onclick="crfiToolchain('android')">Android</span>
+  <span class="crfi-tc-hint crf-muted">click to add or remove an install block, then Save + Build</span>
 </div>
 
 <div class="crfi-editor">
@@ -63,6 +117,13 @@ $crf_dockerfile = is_file($crf_df) ? file_get_contents($crf_df) : '';
   .crfi-editor-tools uui-button:not(:defined),.crfi-editor-tools uui-brand-button:not(:defined){cursor:pointer;border:1px solid var(--border-color);border-radius:6px;padding:3px 10px;font-size:11px;color:var(--text-color)}
   .crfi-status{display:flex;align-items:center;gap:6px;font-size:11px}
   #crfi-ace{height:340px;font-size:12px;font-family:bitstream,monospace}
+  .crfi-toolchains{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 8px}
+  .crfi-tc-label{font-size:12px;color:var(--alt-text-color);margin-right:2px}
+  .crfi-tc{font-size:12px;border:1px solid var(--border-color);border-radius:12px;padding:3px 12px;cursor:pointer;color:var(--text-color);user-select:none}
+  .crfi-tc:hover{border-color:var(--link-text-color)}
+  .crfi-tc.on{background:color-mix(in srgb,var(--brand-orange,#ff8c2f) 18%,var(--background-color));border-color:var(--brand-orange,#ff8c2f)}
+  .crfi-tc:focus-visible{outline:2px solid var(--link-text-color,#29b6f6);outline-offset:1px}
+  .crfi-tc-hint{font-size:11px;margin-left:4px}
 </style>
 
 <script>
@@ -103,7 +164,7 @@ let crfiAce=null, crfiSaved='';
   if(!window.ace){ ta.style.display='block'; ta.rows=18; return; }
   ace.config.set('basePath','/plugins/dynamix/javascript/ace');
   crfiAce=ace.edit('crfi-ace');
-  const dark=/Theme--(black|gray)\b/.test(document.documentElement.className);
+  const dark=crfDark();  // shared helper defined on the Fleet tab
   crfiAce.setTheme('ace/theme/'+(dark?'tomorrow_night':'tomorrow'));
   crfiAce.session.setMode('ace/mode/dockerfile');
   crfiAce.setOptions({fontFamily:'bitstream,monospace',fontSize:'12px',showPrintMargin:false,useWorker:false,tabSize:2});
@@ -113,13 +174,42 @@ let crfiAce=null, crfiSaved='';
     document.getElementById('crfi-dirty').classList.toggle('on',ta.value!==crfiSaved);
   });
 })();
+crfiSyncTC();
 function crfiResetDf(){
   crfPost({action:'get-default-dockerfile'}).then(d=>{
     if(!d.dockerfile) return;
     if(crfiAce) crfiAce.setValue(d.dockerfile,-1); else document.getElementById('crf-dockerfile').value=d.dockerfile;
     document.getElementById('crf-build-status').textContent='shipped default loaded — not saved yet';
+    crfiSyncTC();
   });
 }
+const CRFI_TC = <?=json_encode($crfi_tc)?>;
+function crfiGet(){ return crfiAce ? crfiAce.getValue() : document.getElementById('crf-dockerfile').value; }
+function crfiSet(v){
+  if(crfiAce){ crfiAce.setValue(v,-1); }  // ACE change handler updates the textarea + dirty
+  else { document.getElementById('crf-dockerfile').value=v; document.getElementById('crfi-dirty').classList.toggle('on', v!==crfiSaved); }
+}
+function crfiTcRe(k){ const esc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  return new RegExp('\\n?'+esc('# >>> ci-runner-farm toolchain: '+k+' >>>')+'[\\s\\S]*?'+esc('# <<< ci-runner-farm toolchain: '+k+' <<<')+'\\n?','g'); }
+function crfiHasTC(c,k){ return c.indexOf('# >>> ci-runner-farm toolchain: '+k+' >>>')>=0; }
+function crfiInsertTC(c,k){
+  const block=CRFI_TC[k]; if(!block) return c;
+  const lines=c.split('\n'); let idx=-1;
+  for(let i=lines.length-1;i>=0;i--){ if(/^\s*CMD\s/.test(lines[i])){ idx=i; break; } }
+  if(idx<0) return c.replace(/\n*$/,'')+'\n\n'+block+'\n';
+  lines.splice(idx,0,block,''); return lines.join('\n');
+}
+function crfiToolchain(k){
+  const c=crfiGet();
+  if(!crfiHasTC(c,k) && k==='android' && window.swal){
+    swal({title:'Add the Android SDK?',text:'Adds JDK + the Android SDK (~3-4 GB). The first Build will be slow.',type:'warning',showCancelButton:true,confirmButtonText:'Add Android',cancelButtonText:'Cancel'},ok=>{ if(ok){ crfiSet(crfiInsertTC(crfiGet(),k)); crfiSyncTC(); } });
+    return;
+  }
+  crfiSet(crfiHasTC(c,k) ? c.replace(crfiTcRe(k),'\n') : crfiInsertTC(c,k));
+  crfiSyncTC();
+}
+function crfiSyncTC(){ const c=crfiGet(); document.querySelectorAll('.crfi-tc').forEach(el=>el.classList.toggle('on', crfiHasTC(c,el.dataset.tc))); }
+document.querySelector('.crfi-toolchains').addEventListener('keydown',e=>{ if((e.key==='Enter'||e.key===' ')&&e.target.classList.contains('crfi-tc')){ e.preventDefault(); crfiToolchain(e.target.dataset.tc); } });
 function crfiBuildState(state,msg){
   const b=document.getElementById('crfi-build-ball');
   b.style.display=state?'inline-block':'none';
@@ -131,11 +221,13 @@ function crfSaveDf(cb){ crfPost({action:'save-dockerfile',dockerfile:document.ge
     document.getElementById('crfi-df-path').textContent='/boot/config/plugins/ci-runner-farm/Dockerfile'; }
   crfiBuildState(o.ok?'ok':'err', o.ok?'saved':('error: '+(o.error||'')));
   if(typeof cb==='function'&&o.ok) cb(); }); }
-function crfBuild(){ crfiBuildState('busy','saving + building...'); crfSaveDf(function(){ crfPost({action:'build-image'}).then(()=>crfPollBuild()); }); }
+function crfBuild(){ crfiBuildState('busy','saving + building...'); crfSaveDf(function(){ crfPost({action:'build-image'}).then(()=>crfPollBuild()).catch(e=>{ crfiBuildState('err','could not start build — see console'); console.error('ci-runner-farm build:',e); }); }); }
 function crfPollBuild(){ crfPost({action:'build-log'}).then(d=>{ const el=document.getElementById('crf-build-log'); el.innerHTML=crfColorize(d.log||''); el.scrollTop=el.scrollHeight;
   if(d.running){ crfiBuildState('busy','building...'); setTimeout(crfPollBuild,2000); }
-  else { const ok=!/error|failed/i.test((d.log||'').split('\n').slice(-6).join('\n'));
-    crfiBuildState(ok?'ok':'err', ok?'build finished — restart the fleet to use it':'build failed — see log'); crfiInfo(); } }); }
+  else if(d.rc===0){ crfiBuildState('ok','build finished — restart the fleet to use it'); crfiInfo(); }
+  else if(typeof d.rc==='number'){ crfiBuildState('err','build failed (exit '+d.rc+') — see log'); crfiInfo(); }
+  else { crfiBuildState('err','build status unknown (interrupted?) — see log'); crfiInfo(); } })
+  .catch(e=>{ crfiBuildState('err','build status unknown — see console'); console.error('ci-runner-farm build:',e); }); }
 function crfCopyBuildLog(btn){
   const t=document.getElementById('crf-build-log').textContent||'';
   navigator.clipboard.writeText(t).then(()=>{ const o=btn.textContent; btn.textContent='Copied'; setTimeout(()=>btn.textContent=o,1500); }).catch(()=>{});

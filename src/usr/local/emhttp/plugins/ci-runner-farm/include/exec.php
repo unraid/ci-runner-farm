@@ -83,7 +83,8 @@ switch ($action) {
   case 'build-image':
     // launch the build in the background; UI polls 'build-log'
     $log = "$CFGDIR/build.log";
-    exec('nohup ' . escapeshellarg($SCRIPT) . ' build-image > ' . escapeshellarg($log) . ' 2>&1 &');
+    $cmd = escapeshellarg($SCRIPT) . ' build-image > ' . escapeshellarg($log) . ' 2>&1; echo "__BUILD_RC__=$?" >> ' . escapeshellarg($log);
+    exec('nohup sh -c ' . escapeshellarg($cmd) . ' >/dev/null 2>&1 &');
     echo json_encode(['ok' => true, 'action' => 'build-image']);
     break;
 
@@ -92,11 +93,27 @@ switch ($action) {
     echo $out !== '' ? $out : json_encode(['queued' => -1]);
     break;
 
+  case 'stats-json':
+    [$out, $rc] = run(escapeshellarg($SCRIPT) . ' stats-json');
+    echo $out !== '' ? $out : json_encode(['total' => -1]);
+    break;
+
+  case 'cache-usage':
+    [$out, $rc] = run(escapeshellarg($SCRIPT) . ' cache-usage-json');
+    echo $out !== '' ? $out : json_encode(['total' => -1]);
+    break;
+
+  case 'cache-clear':
+    [$out, $rc] = run(escapeshellarg($SCRIPT) . ' cache-clear-pkg');
+    echo $out !== '' ? $out : json_encode(['ok' => $rc === 0]);
+    break;
+
   case 'recycle':
     $n = $_REQUEST['name'] ?? '';
     if (!preg_match('/^ci-runner-[0-9]+$/', $n)) { echo json_encode(['ok'=>false,'error'=>'bad name']); break; }
     [$out, $rc] = run(escapeshellarg($SCRIPT) . ' recycle ' . escapeshellarg($n));
-    echo $out !== '' ? $out : json_encode(['ok' => $rc === 0]);
+    // cmd_recycle emits log lines before its JSON; trust the exit code, not stdout.
+    echo json_encode(['ok' => $rc === 0, 'action' => 'recycle']);
     break;
 
   case 'runner-log':
@@ -128,9 +145,11 @@ switch ($action) {
 
   case 'build-log':
     $log = "$CFGDIR/build.log";
-    $txt = is_file($log) ? shell_exec('tail -n 100 ' . escapeshellarg($log)) : '';
+    $txt = is_file($log) ? (string)shell_exec('tail -n 120 ' . escapeshellarg($log)) : '';
     $running = trim(shell_exec("pgrep -f 'runner-farm.sh build-image' >/dev/null 2>&1 && echo 1 || echo 0")) === '1';
-    echo json_encode(['ok' => true, 'running' => $running, 'log' => $txt]);
+    $rc = (!$running && preg_match('/__BUILD_RC__=(\d+)/', $txt, $m)) ? (int)$m[1] : null;
+    $disp = preg_replace('/\n?__BUILD_RC__=\d+\n?/', "\n", $txt);
+    echo json_encode(['ok' => true, 'running' => $running, 'rc' => $rc, 'log' => $disp]);
     break;
 
   default:
