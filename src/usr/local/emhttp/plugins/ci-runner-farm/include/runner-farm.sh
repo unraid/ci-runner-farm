@@ -1116,14 +1116,25 @@ cmd_queued_json() {
 }
 
 cmd_recycle() {
-  # Deregister + remove one runner; the autoscale daemon respawns it fresh.
-  local name="$1"
+  # Deregister, remove, AND recreate one runner with a fresh registration token.
+  # Recreating (not just removing) keeps the fleet at its configured size even
+  # when autoscaling is off (the default) — otherwise a manual recycle would
+  # permanently shrink a fixed-size fleet by one. Mirrors recreate_stopped_runner:
+  # the warm caches and DinD data root are pool bind mounts keyed by the same
+  # name, so the replacement comes back warm.
+  local name="$1" idx
   echo "$name" | grep -qE "^${NAME_PREFIX}-[0-9]+$" || { echo '{"ok":false,"error":"bad name"}'; return 1; }
+  idx="$(docker inspect -f '{{ index .Config.Labels "net.unraid.ci-runner-farm.index" }}' "$name" 2>/dev/null)"
+  [ -z "$idx" ] && idx="${name##*-}"
   deregister_runner_api "$name"
   if ! docker rm -f "$name" >/dev/null 2>&1; then
-    log "recycle: docker rm failed for $name"; echo '{"ok":false}'; return 1
+    log "recycle: docker rm failed for $name"; echo '{"ok":false,"error":"remove failed"}'; return 1
   fi
-  log "recycled $name (manual, from settings page)"
+  if ! start_one "$idx" >/dev/null 2>&1; then
+    log "recycle: $name removed but its replacement failed to start (idx=$idx)"
+    echo '{"ok":false,"error":"removed but not recreated"}'; return 1
+  fi
+  log "recycled $name (manual, from fleet page)"
   echo '{"ok":true}'
 }
 
