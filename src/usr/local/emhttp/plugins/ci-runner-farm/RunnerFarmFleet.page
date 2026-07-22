@@ -397,7 +397,10 @@ function crfDrawerFill(name){
 function crfDrawerMount(){
   document.querySelectorAll('.crf-bay-drawer').forEach(e=>{ if(e.dataset.for!==window.CRF_DRAWER) e.remove(); });
   if(!window.CRF_DRAWER) return;
-  if(document.querySelector('.crf-bay-drawer[data-for="'+window.CRF_DRAWER+'"]')) return;
+  if(document.querySelector('.crf-bay-drawer[data-for="'+window.CRF_DRAWER+'"]')){
+    crfDrawerFill(window.CRF_DRAWER);
+    return;
+  }
   const row=document.querySelector('#crf-bays-body .crf-bay[data-name="'+window.CRF_DRAWER+'"]');
   if(!row) return;
   const d=document.createElement('div'); d.className='crf-bay-drawer'; d.dataset.for=window.CRF_DRAWER;

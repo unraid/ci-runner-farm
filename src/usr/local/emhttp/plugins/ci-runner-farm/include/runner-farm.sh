@@ -1183,10 +1183,23 @@ cmd_recycle() {
   # reuse the validated args so the runner we start is the one we vetted.
   [ -n "$ACCESS_TOKEN" ] || { echo '{"ok":false,"error":"no GitHub token configured"}'; return 1; }
   build_args "$idx" || { echo '{"ok":false,"error":"cannot provision replacement (check the GitHub token)"}'; return 1; }
-  deregister_runner_api "$name"
+  # Verify the exact target image while the old runner is still intact. A valid
+  # registry login does not prove that a newly configured tag exists, and the
+  # built-in image may have been removed since this runner was started.
+  local image="${ARGS[${#ARGS[@]}-1]}"
+  if [ "$IMAGE_SOURCE" = "remote" ]; then
+    docker pull "$image" >/dev/null 2>&1 || {
+      log "recycle: $name left in place — could not pull replacement image $image"
+      echo '{"ok":false,"error":"cannot pull replacement image"}'; return 1
+    }
+  elif ! docker image inspect "$image" >/dev/null 2>&1; then
+    log "recycle: $name left in place — built-in replacement image $image is unavailable"
+    echo '{"ok":false,"error":"built-in replacement image is unavailable"}'; return 1
+  fi
   if ! docker rm -f "$name" >/dev/null 2>&1; then
     log "recycle: docker rm failed for $name"; echo '{"ok":false,"error":"remove failed"}'; return 1
   fi
+  deregister_runner_api "$name"
   log "recycling $name (manual, from fleet page)"
   if ! docker run "${ARGS[@]}" >/dev/null 2>&1; then
     log "recycle: $name removed but its replacement failed to start (idx=$idx)"
