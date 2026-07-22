@@ -103,6 +103,12 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
   #crf-bays-body .crf-bay{cursor:pointer}
   .crf-recycle{cursor:pointer;color:var(--alt-text-color);font-size:15px;line-height:1;text-align:center;border-radius:4px;padding:1px 2px}
   .crf-recycle:hover{color:var(--crf-busy)}
+  #crf-bays-body .crf-bay:focus-visible,.crf-recycle:focus-visible{outline:2px solid var(--link-text-color,#29b6f6);outline-offset:-2px;border-radius:4px}
+  @media (max-width:860px){
+    .crf-bay{grid-template-columns:22px minmax(80px,1fr) 74px minmax(70px,1.3fr) 26px}
+    .crf-bay > :nth-child(5),.crf-bay > :nth-child(6){display:none}
+    .crf-stat-value{font-size:20px}
+  }
   .crf-bay-drawer{border-top:1px solid var(--table-border-color,var(--border-color));background:var(--shade-bg-color,var(--background-color));padding:8px 12px 8px 44px;font-family:bitstream,monospace;font-size:11.5px;line-height:1.5;white-space:pre-wrap;max-height:190px;overflow:auto;cursor:default}
   .crf-empty{display:flex;align-items:center;gap:14px;padding:18px 16px}
   .crf-empty strong{font-size:13px;color:var(--text-color)}
@@ -180,7 +186,7 @@ function crfLog(o){ crfUserLog=true; document.getElementById('crf-log').innerHTM
 /* Until the user triggers an action, the Fleet log shows live farm activity
    (autoscale daemon log) instead of sitting on a placeholder. */
 function crfFarmLog(){
-  if(crfUserLog) return;
+  if(crfUserLog||document.hidden) return;
   crfPost({action:'farm-log'}).then(d=>{
     if(crfUserLog||!d.log) return;
     const el=document.getElementById('crf-log');
@@ -229,6 +235,7 @@ function crfBar(pct){
   return '<span class="crf-ubar'+cls+'"><span style="width:'+p+'%"></span></span>';
 }
 function crfRefresh(){
+  if(document.hidden) return;
   crfPost({action:'status-json'}).then(d=>{
     window.CRF_LAST=d;
     const warn=document.getElementById('crf-warn');
@@ -278,14 +285,14 @@ function crfRefresh(){
       const cpuPct=running?(100*(r.cpu_pct||0)/cpuMax):0;
       const memPct=running&&r.mem_gb?100*(r.mem_used_mib||0)/(r.mem_gb*1024):0;
       const memTxt=running?((r.mem_used_mib>=1024?( (r.mem_used_mib/1024).toFixed(1)+'g'):(r.mem_used_mib+'m'))+'/'+r.mem_gb+'g'):'&ndash;';
-      return '<div class="crf-bay" data-name="'+crfEsc(r.name)+'">'+
+      return '<div class="crf-bay" data-name="'+crfEsc(r.name)+'" tabindex="0" role="button" aria-expanded="'+(window.CRF_DRAWER===r.name?'true':'false')+'" aria-label="Runner '+crfEsc(r.name)+', toggle log">'+
         '<span class="crf-ball '+ball+'"></span>'+
         '<span class="crf-name">'+crfEsc(r.name)+'</span>'+
         '<span class="crf-phase"><uui-badge variant="'+bvar+'" size="xs"'+dark+'>'+crfEsc(ph)+'</uui-badge></span>'+
         '<span class="'+jobCls+'" title="'+crfEsc(r.job||'')+'">'+jobHtml+'</span>'+
         '<span class="crf-usage">'+crfBar(cpuPct)+'<span class="crf-uval">'+(running?Math.round(r.cpu_pct||0)+'%':'&ndash;')+'</span></span>'+
         '<span class="crf-usage">'+crfBar(memPct)+'<span class="crf-uval">'+memTxt+'</span></span>'+
-        '<span class="crf-recycle" title="Recycle this runner" onclick="crfRecycle(\''+crfEsc(r.name)+'\')">&#10227;</span>'+
+        '<span class="crf-recycle" tabindex="0" role="button" aria-label="Recycle '+crfEsc(r.name)+'" title="Recycle this runner" onclick="crfRecycle(\''+crfEsc(r.name)+'\')">&#10227;</span>'+
       '</div>';
     }).join('');
     crfDrawerMount();
@@ -293,6 +300,7 @@ function crfRefresh(){
 }
 crfRefresh(); setInterval(crfRefresh,5000);
 function crfQueued(){
+  if(document.hidden) return;
   crfPost({action:'queued-json'}).then(d=>{
     const el=document.getElementById('crf-s-q'); if(!el) return;
     const q=(typeof d.queued==='number'&&d.queued>=0)?d.queued:null;
@@ -327,11 +335,30 @@ function crfDrawerMount(){
   d.innerHTML='<span class="crf-muted">loading log...</span>';
   row.after(d); crfDrawerFill(window.CRF_DRAWER);
 }
+function crfToggleDrawer(name){
+  window.CRF_DRAWER = window.CRF_DRAWER===name ? null : name;
+  const row=document.querySelector('#crf-bays-body .crf-bay[data-name="'+name+'"]');
+  if(row) row.setAttribute('aria-expanded', window.CRF_DRAWER===name?'true':'false');
+  crfDrawerMount();
+}
 document.getElementById('crf-bays-body').addEventListener('click',e=>{
   if(e.target.closest('a,.crf-recycle,uui-button,.crf-bay-drawer')) return;
   const row=e.target.closest('.crf-bay[data-name]'); if(!row) return;
-  window.CRF_DRAWER = window.CRF_DRAWER===row.dataset.name ? null : row.dataset.name;
-  crfDrawerMount();
+  crfToggleDrawer(row.dataset.name);
 });
-setInterval(()=>{ if(window.CRF_DRAWER) crfDrawerFill(window.CRF_DRAWER); },5000);
+document.getElementById('crf-bays-body').addEventListener('keydown',e=>{
+  if(e.key!=='Enter'&&e.key!==' ') return;
+  const rc=e.target.closest('.crf-recycle');
+  if(rc){ e.preventDefault(); const b=rc.closest('.crf-bay[data-name]'); if(b) crfRecycle(b.dataset.name); return; }
+  const row=e.target.closest('.crf-bay[data-name]');
+  if(row&&e.target===row){ e.preventDefault(); crfToggleDrawer(row.dataset.name); }
+});
+setInterval(()=>{ if(window.CRF_DRAWER && !document.hidden) crfDrawerFill(window.CRF_DRAWER); },5000);
+/* Pause all polling while the tab is hidden (each poller costs a docker
+   stats + per-runner exec on the NAS); refresh immediately on return. */
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden) return;
+  crfRefresh(); crfQueued(); crfFarmLog();
+  if(window.CRF_DRAWER) crfDrawerFill(window.CRF_DRAWER);
+});
 </script>

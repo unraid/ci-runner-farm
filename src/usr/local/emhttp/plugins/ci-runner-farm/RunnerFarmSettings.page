@@ -47,7 +47,7 @@ if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d=''){ global 
   </div>
   <div class="crfs-tok-input">
     <uui-button variant="outline" size="xs" onclick="window.open('<?=$patUrl?>','_blank','noopener')">Get a pre-scoped PAT &#8599;</uui-button>
-    <span class="crfs-field"><input type="password" id="crf-token" autocomplete="new-password" placeholder="ghp_... (scopes pre-filled)"><button type="button" class="crfs-fx" title="Clear saved token" onclick="crfClearToken()">&times;</button></span>
+    <span class="crfs-field"><input type="password" id="crf-token" autocomplete="new-password" placeholder="ghp_... (scopes pre-filled)"><button type="button" class="crfs-fx" title="Clear saved token" aria-label="Clear saved token" onclick="crfClearToken()">&times;</button></span>
     <uui-button size="xs" onclick="crfSetToken()">Save token</uui-button>
   </div>
 </div>
@@ -60,7 +60,7 @@ if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d=''){ global 
     </span>
   </div>
   <div class="crfs-tok-input">
-    <span class="crfs-field"><input type="password" id="crf-registry-token" autocomplete="new-password" placeholder="registry password / token"><button type="button" class="crfs-fx" title="Clear saved registry token" onclick="crfClearRegistryToken()">&times;</button></span>
+    <span class="crfs-field"><input type="password" id="crf-registry-token" autocomplete="new-password" placeholder="registry password / token"><button type="button" class="crfs-fx" title="Clear saved registry token" aria-label="Clear saved registry token" onclick="crfClearRegistryToken()">&times;</button></span>
     <uui-button size="xs" onclick="crfSetRegistryToken()">Save registry token</uui-button>
   </div>
 </div>
@@ -449,6 +449,7 @@ if (window.jQuery) jQuery(function($){ if ($.fn.fileTreeAttach) $("#CACHE_ROOT")
   .crfs-field{position:relative;display:inline-flex;align-items:center}
   button.crfs-fx{position:absolute;right:4px;border:none!important;background:none!important;box-shadow:none!important;outline:none;width:auto!important;min-width:0!important;height:auto!important;color:var(--alt-text-color)!important;font-size:16px;line-height:1;cursor:pointer;padding:2px 5px!important;margin:0!important;letter-spacing:0}
   button.crfs-fx:hover{color:var(--brand-red,#e22828)!important}
+  button.crfs-fx:focus-visible{outline:2px solid var(--link-text-color,#29b6f6);outline-offset:1px;color:var(--brand-red,#e22828)!important}
   .crfs-mem-warn{display:none;font-size:12px;color:var(--brand-orange,#ff8c2f);padding:4px 0 2px}
   .crfs-mem-warn.on{display:block}
   .crfs-tok-input input[type=button]{margin:0}
