@@ -105,7 +105,8 @@ switch ($action) {
 
   case 'cache-clear':
     [$out, $rc] = run(escapeshellarg($SCRIPT) . ' cache-clear-pkg');
-    echo $out !== '' ? $out : json_encode(['ok' => $rc === 0]);
+    // cmd_cache_clear_pkg logs before its JSON; trust the exit code, not stdout.
+    echo json_encode(['ok' => $rc === 0, 'action' => 'cache-clear']);
     break;
 
   case 'recycle':
@@ -146,7 +147,7 @@ switch ($action) {
   case 'build-log':
     $log = "$CFGDIR/build.log";
     $txt = is_file($log) ? (string)shell_exec('tail -n 120 ' . escapeshellarg($log)) : '';
-    $running = trim(shell_exec("pgrep -f 'runner-farm.sh build-image' >/dev/null 2>&1 && echo 1 || echo 0")) === '1';
+    $running = trim(shell_exec("pgrep -f '[r]unner-farm.sh build-image' >/dev/null 2>&1 && echo 1 || echo 0")) === '1';
     $rc = (!$running && preg_match('/__BUILD_RC__=(\d+)/', $txt, $m)) ? (int)$m[1] : null;
     $disp = preg_replace('/\n?__BUILD_RC__=\d+\n?/', "\n", $txt);
     echo json_encode(['ok' => true, 'running' => $running, 'rc' => $rc, 'log' => $disp]);

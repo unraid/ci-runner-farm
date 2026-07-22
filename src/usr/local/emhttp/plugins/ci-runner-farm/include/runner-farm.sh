@@ -998,18 +998,37 @@ cmd_queued_refresh() {
 # Warm dependency caches under CACHE_ROOT — safe to clear even while runners are
 # up (worst case is a cache miss, not a broken job). Deliberately EXCLUDES work/
 # and docker/, which hold running runners' live workspaces and DinD data.
-CACHE_PKG_DIRS="cargo-registry cargo-git sccache npm yarn pnpm-store ms-playwright registry-mirror"
+CACHE_PKG_DIRS="cargo-registry cargo-git sccache npm yarn pnpm-store ms-playwright"
+
+# Resolve + validate CACHE_ROOT for destructive/expensive ops. realpath -m
+# collapses ../ and . lexically (target need not exist) so the guard checks the
+# real location, not the raw string; the blocklist covers share subpaths too.
+# Echoes the canonical root on success; a reason on stderr and returns 1 otherwise.
+crf_safe_cache_root() {
+  local root
+  root="$(realpath -m -- "$CACHE_ROOT" 2>/dev/null)" || { echo unresolvable >&2; return 1; }
+  case "$root" in
+    ""|"/"|"/mnt" \
+    |"/mnt/user"|"/mnt/user"/*|"/mnt/user0"|"/mnt/user0"/* \
+    |"/mnt/disks"|"/mnt/addons"|"/mnt/rootshare" \
+    |"/boot"|"/boot"/*|"/usr"|"/usr"/*|"/etc"|"/etc"/*|"/var"|"/var"/*|"/root"|"/root"/*|"/bin"*|"/sbin"*|"/lib"*)
+      echo unsafe >&2; return 1 ;;
+    /mnt/*) printf '%s' "$root"; return 0 ;;
+    *) echo not-under-mnt >&2; return 1 ;;
+  esac
+}
 
 cmd_cache_usage_refresh() {
   # du can be slow on a multi-GB cache, so this runs detached and the result is
   # cached; the UI reads the cache and only triggers a refresh when it is stale.
-  local root="$CACHE_ROOT" total=0 pkg=0 d n
+  local root total=0 pkg=0 d n
+  root="$(crf_safe_cache_root 2>/dev/null)" || { echo "$(date +%s) -1 0" > "$RUNDIR/cache-usage.cache"; return 0; }
   [ -d "$root" ] || { echo "$(date +%s) 0 0" > "$RUNDIR/cache-usage.cache"; return 0; }
-  total="$(du -sb "$root" 2>/dev/null | cut -f1)"
+  total="$(du -sb "$root" 2>/dev/null | cut -f1)"; [ -n "$total" ] || total=-1
   for d in $CACHE_PKG_DIRS; do
     [ -d "$root/$d" ] && { n="$(du -sb "$root/$d" 2>/dev/null | cut -f1)"; pkg=$(( pkg + ${n:-0} )); }
   done
-  echo "$(date +%s) ${total:-0} ${pkg:-0}" > "$RUNDIR/cache-usage.cache"
+  echo "$(date +%s) ${total:--1} ${pkg:-0}" > "$RUNDIR/cache-usage.cache"
 }
 
 cmd_cache_usage_json() {
@@ -1028,20 +1047,18 @@ cmd_cache_usage_json() {
 cmd_cache_clear_pkg() {
   # Clear ONLY the warm package caches (never work/ or docker/). Reuses the
   # prune-cache root-shape guard so a misconfigured CACHE_ROOT can't wipe a share.
-  local root="$CACHE_ROOT" d removed=0
-  while [ "${root: -1}" = "/" ]; do root="${root%/}"; done
-  case "$root" in
-    ""|"/"|"/mnt"|"/mnt/user"|"/mnt/user0"|"/mnt/disks"|"/mnt/addons"|"/mnt/rootshare" \
-    |"/boot"|"/boot/"*|"/usr"|"/usr/"*|"/etc"|"/etc/"*|"/var"|"/var/"*|"/root"|"/root/"*|"/bin"*|"/sbin"*|"/lib"*)
-      echo "{\"ok\":false,\"error\":\"unsafe cache root\"}"; return 1 ;;
-    /mnt/*) : ;;
-    *) echo "{\"ok\":false,\"error\":\"cache root not under /mnt\"}"; return 1 ;;
-  esac
+  local root d removed=0 failed=0
+  root="$(crf_safe_cache_root)" || { echo "{\"ok\":false,\"error\":\"unsafe cache root\"}"; return 1; }
   for d in $CACHE_PKG_DIRS; do
-    [ -d "$root/$d" ] && { rm -rf "${root:?}/${d:?}/"* 2>/dev/null; removed=$((removed+1)); }
+    [ -d "$root/$d" ] || continue
+    if rm -rf "${root:?}/${d:?}/"* 2>/dev/null; then removed=$((removed+1)); else failed=$((failed+1)); fi
   done
-  log "package caches cleared ($removed dir(s)) under $root"
   ( "$0" cache-usage-refresh ) >/dev/null 2>&1 &
+  if [ "$failed" -gt 0 ]; then
+    log "cache clear: $failed dir(s) could not be removed under $root"
+    echo "{\"ok\":false,\"error\":\"could not remove $failed dir(s)\",\"cleared\":$removed}"; return 1
+  fi
+  log "package caches cleared ($removed dir(s)) under $root"
   echo "{\"ok\":true,\"cleared\":$removed}"
 }
 
@@ -1049,11 +1066,12 @@ cmd_stats_refresh() {
   # Tally recent workflow-run conclusions across GH_REPOS. Detached + cached so
   # the per-repo API sweep never blocks the UI (see queued for the pattern).
   [ -z "$ACCESS_TOKEN" ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
-  [ -n "$ACCESS_TOKEN" ] || return 0
-  local ok=0 fail=0 cancel=0 other=0 total r body c
+  [ -n "$ACCESS_TOKEN" ] || { echo "$(date +%s) 0 0 0 0 -1" > "$RUNDIR/stats.cache"; return 0; }
+  local ok=0 fail=0 cancel=0 other=0 total got=0 r body c
   for r in $GH_REPOS; do
     body="$(curl -s --max-time 10 -H "Authorization: Bearer $ACCESS_TOKEN" \
       "https://api.github.com/repos/$r/actions/runs?per_page=50")"
+    case "$body" in *'"workflow_runs"'*) got=1 ;; esac
     while IFS= read -r c; do
       case "$c" in
         *'"success"'*)                              ok=$((ok+1)) ;;
@@ -1064,7 +1082,8 @@ cmd_stats_refresh() {
       esac
     done <<< "$(echo "$body" | grep -oE '"conclusion": ?(null|"[a-z_]+")')"
   done
-  total=$((ok+fail+cancel+other))
+  # total=-1 signals "stats unavailable" (bad token / API down) vs a real zero.
+  if [ "$got" = "1" ]; then total=$((ok+fail+cancel+other)); else total=-1; fi
   echo "$(date +%s) $ok $fail $cancel $other $total" > "$RUNDIR/stats.cache"
 }
 
@@ -1214,15 +1233,8 @@ cmd_prune_cache() {
   # as "/mnt/user/", which slips past the exact blocklist into the /mnt/* allow arm
   # and then 'rm -rf /mnt/user/*' wipes every share. Normalize exhaustively and use
   # the normalized value for BOTH the guard and the rm.
-  local root="$CACHE_ROOT"
-  while [ "${root: -1}" = "/" ]; do root="${root%/}"; done
-  case "$root" in
-    ""|"/"|"/mnt"|"/mnt/user"|"/mnt/user0"|"/mnt/disks"|"/mnt/addons"|"/mnt/rootshare" \
-    |"/boot"|"/boot/"*|"/usr"|"/usr/"*|"/etc"|"/etc/"*|"/var"|"/var/"*|"/root"|"/root/"*|"/bin"*|"/sbin"*|"/lib"*)
-      err "refusing to prune-cache: CACHE_ROOT='$CACHE_ROOT' is a system dir or share root"; return 1 ;;
-    /mnt/*) : ;;   # /mnt/<pool>[/...] — the intended shape
-    *) err "refusing to prune-cache: CACHE_ROOT='$CACHE_ROOT' is not under /mnt"; return 1 ;;
-  esac
+  local root
+  root="$(crf_safe_cache_root)" || { err "refusing to prune-cache: CACHE_ROOT='$CACHE_ROOT' is unsafe (system dir, share, or unresolvable)"; return 1; }
   rm -rf "${root:?}/"* && log "cache cleared: $root"
 }
 

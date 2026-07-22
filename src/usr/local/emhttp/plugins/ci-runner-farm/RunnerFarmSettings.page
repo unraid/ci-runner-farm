@@ -364,15 +364,15 @@ function crfTokState(ok){
   ball.className='crf-ball '+(ok?'crf-ball-idle':'crf-ball-error');
 }
 function crfSetToken(){ const t=document.getElementById('crf-token').value; if(!t)return;
-  crfPost({action:'set-token',token:t}).then(o=>{crfTokState(!!o.ok);document.getElementById('crf-token').value='';}); }
-function crfClearToken(){ crfPost({action:'clear-token'}).then(()=>crfTokState(false)); }
+  crfPost({action:'set-token',token:t}).then(o=>{crfTokState(!!o.ok);document.getElementById('crf-token').value='';}).catch(e=>{ crfToast&&crfToast('Save failed'); console.error('ci-runner-farm set-token:',e); }); }
+function crfClearToken(){ crfPost({action:'clear-token'}).then(()=>crfTokState(false)).catch(e=>console.error('ci-runner-farm clear-token:',e)); }
 function crfRegState(ok){
   document.getElementById('crf-regtok').textContent = ok?'Registry token configured':'Registry token not set';
   document.getElementById('crf-regtok-ball').className='crf-ball '+(ok?'crf-ball-idle':'');
 }
 function crfSetRegistryToken(){ const t=document.getElementById('crf-registry-token').value; if(!t)return;
-  crfPost({action:'set-registry-token',token:t}).then(o=>{crfRegState(!!o.ok);document.getElementById('crf-registry-token').value='';}); }
-function crfClearRegistryToken(){ crfPost({action:'clear-registry-token'}).then(()=>crfRegState(false)); }
+  crfPost({action:'set-registry-token',token:t}).then(o=>{crfRegState(!!o.ok);document.getElementById('crf-registry-token').value='';}).catch(e=>console.error('ci-runner-farm set-registry-token:',e)); }
+function crfClearRegistryToken(){ crfPost({action:'clear-registry-token'}).then(()=>crfRegState(false)).catch(e=>console.error('ci-runner-farm clear-registry-token:',e)); }
 // show/hide the remote-only fields (Remote image + registry server/username/token)
 // based on the Image source select. Targets each field's <dd>+<dt> (Unraid
 // markdown forms are MarkdownExtra definition lists). Hide-only (never disable):

@@ -227,7 +227,7 @@ function crfToast(msg){
   clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('crf-toast-show'),2600);
 }
 const CRF_TOAST_MSG={start:'Fleet started',stop:'Fleet stopped',restart:'Fleet restarted',validate:'Validation finished'};
-function crfDoAction(a){ crfPost({action:a}).then(o=>{crfLog(o); crfRefresh(); if(o.ok!==false) crfToast(CRF_TOAST_MSG[a]||a); }); }
+function crfDoAction(a){ crfPost({action:a}).then(o=>{crfLog(o); crfRefresh(); if(o.ok!==false) crfToast(CRF_TOAST_MSG[a]||a); }).catch(e=>{ crfToast((CRF_TOAST_MSG[a]||a)+' failed'); console.error('ci-runner-farm '+a+':',e); }); }
 function crfAction(a){
   /* Stop/Restart kill whatever the runners are building — confirm with the
      live impact when any runner is mid-job (sweetalert ships with the webgui). */
@@ -244,7 +244,7 @@ function crfAction(a){
   }
   crfDoAction(a);
 }
-function crfScale(){ const n=document.getElementById('crf-n').value; crfPost({action:'scale',n}).then(o=>{crfLog(o); crfRefresh(); if(o.ok!==false) crfToast('Scaled to '+n);}); }
+function crfScale(){ const n=document.getElementById('crf-n').value; crfPost({action:'scale',n}).then(o=>{crfLog(o); crfRefresh(); if(o.ok!==false) crfToast('Scaled to '+n);}).catch(e=>{ crfToast('Scale failed'); console.error('ci-runner-farm scale:',e); }); }
 
 function crfElapsed(iso){
   const t=Date.parse(iso); if(isNaN(t)) return null;
@@ -345,16 +345,23 @@ function crfStats(){
   if(!crfFleetActive()) return;
   crfPost({action:'stats-json'}).then(d=>{
     const put=(id,v)=>{const e=document.getElementById(id); if(e) e.textContent=v;};
-    const done=(d.ok||0)+(d.fail||0)+(d.cancel||0)+(d.other||0);
-    put('crf-rs-ok',d.ok??'\u2013'); put('crf-rs-fail',d.fail??'\u2013'); put('crf-rs-cancel',d.cancel??'\u2013');
-    put('crf-rs-rate', done>0 ? Math.round(100*(d.ok||0)/done)+'%' : '\u2013');
-    put('crf-rs-total', (typeof d.total==='number'&&d.total>=0 ? d.total : '\u2013')+' total across your repos');
+    const dash='\u2013';
+    if(!(typeof d.total==='number'&&d.total>=0)){  // no token / API down — signal, don't show a confident 0
+      put('crf-rs-ok',dash); put('crf-rs-fail',dash); put('crf-rs-cancel',dash); put('crf-rs-rate',dash);
+      put('crf-rs-total',dash+' total across your repos'); return;
+    }
+    const settled=(d.ok||0)+(d.fail||0)+(d.cancel||0);
+    put('crf-rs-ok',d.ok??dash); put('crf-rs-fail',d.fail??dash); put('crf-rs-cancel',d.cancel??dash);
+    put('crf-rs-rate', settled>0 ? Math.round(100*(d.ok||0)/settled)+'%' : dash);
+    put('crf-rs-total', d.total+' total across your repos');
   }).catch(()=>{});
 }
 crfStats(); setInterval(crfStats,60000);
 function crfCacheClear(){
   const pkg=(window.CRF_CACHE&&window.CRF_CACHE.pkg)||0;
-  const doIt=()=>crfPost({action:'cache-clear'}).then(o=>{ crfToast(o.ok?'Package caches cleared':('Clear failed'+(o.error?': '+o.error:''))); crfCacheUsage(); });
+  const doIt=()=>crfPost({action:'cache-clear'})
+    .then(o=>{ crfToast(o.ok?'Package caches cleared':('Clear failed'+(o.error?': '+o.error:''))); crfCacheUsage(); })
+    .catch(e=>{ crfToast('Clear failed'); console.error('ci-runner-farm cache-clear:',e); });
   const msg='Removes '+crfBytes(pkg)+' of warm cargo, npm, yarn, pnpm, sccache, and Playwright caches. Running jobs keep working (a cache miss at worst); workspaces and Docker data are left intact.';
   if(window.swal){ swal({title:'Clear package caches?',text:msg,type:'warning',showCancelButton:true,confirmButtonText:'Clear caches',cancelButtonText:'Cancel'},ok=>{ if(ok) doIt(); }); }
   else if(confirm('Clear package caches? '+msg)) doIt();

@@ -181,7 +181,7 @@ function crfiResetDf(){
     if(crfiAce) crfiAce.setValue(d.dockerfile,-1); else document.getElementById('crf-dockerfile').value=d.dockerfile;
     document.getElementById('crf-build-status').textContent='shipped default loaded — not saved yet';
     crfiSyncTC();
-  });
+  }).catch(e=>{ document.getElementById('crf-build-status').textContent='could not load default — see console'; console.error('ci-runner-farm reset:',e); });
 }
 const CRFI_TC = <?=json_encode($crfi_tc)?>;
 function crfiGet(){ return crfiAce ? crfiAce.getValue() : document.getElementById('crf-dockerfile').value; }
@@ -195,9 +195,9 @@ function crfiHasTC(c,k){ return c.indexOf('# >>> ci-runner-farm toolchain: '+k+'
 function crfiInsertTC(c,k){
   const block=CRFI_TC[k]; if(!block) return c;
   const lines=c.split('\n'); let idx=-1;
-  for(let i=lines.length-1;i>=0;i--){ if(/^\s*CMD\s/.test(lines[i])){ idx=i; break; } }
+  for(let i=lines.length-1;i>=0;i--){ if(/^CMD\s/.test(lines[i])){ idx=i; break; } }
   if(idx<0) return c.replace(/\n*$/,'')+'\n\n'+block+'\n';
-  lines.splice(idx,0,block,''); return lines.join('\n');
+  lines.splice(idx,0,block); return lines.join('\n');
 }
 function crfiToolchain(k){
   const c=crfiGet();
@@ -205,8 +205,12 @@ function crfiToolchain(k){
     swal({title:'Add the Android SDK?',text:'Adds JDK + the Android SDK (~3-4 GB). The first Build will be slow.',type:'warning',showCancelButton:true,confirmButtonText:'Add Android',cancelButtonText:'Cancel'},ok=>{ if(ok){ crfiSet(crfiInsertTC(crfiGet(),k)); crfiSyncTC(); } });
     return;
   }
-  crfiSet(crfiHasTC(c,k) ? c.replace(crfiTcRe(k),'\n') : crfiInsertTC(c,k));
-  crfiSyncTC();
+  let next;
+  if(crfiHasTC(c,k)){
+    next=c.replace(crfiTcRe(k),'\n');
+    if(next===c) next=crfiInsertTC(c.replace(new RegExp('# >>> ci-runner-farm toolchain: '+k+' >>>'),''),k); // closing marker was edited away — re-insert clean
+  } else next=crfiInsertTC(c,k);
+  crfiSet(next); crfiSyncTC();
 }
 function crfiSyncTC(){ const c=crfiGet(); document.querySelectorAll('.crfi-tc').forEach(el=>el.classList.toggle('on', crfiHasTC(c,el.dataset.tc))); }
 document.querySelector('.crfi-toolchains').addEventListener('keydown',e=>{ if((e.key==='Enter'||e.key===' ')&&e.target.classList.contains('crfi-tc')){ e.preventDefault(); crfiToolchain(e.target.dataset.tc); } });
@@ -221,12 +225,13 @@ function crfSaveDf(cb){ crfPost({action:'save-dockerfile',dockerfile:document.ge
     document.getElementById('crfi-df-path').textContent='/boot/config/plugins/ci-runner-farm/Dockerfile'; }
   crfiBuildState(o.ok?'ok':'err', o.ok?'saved':('error: '+(o.error||'')));
   if(typeof cb==='function'&&o.ok) cb(); }); }
-function crfBuild(){ crfiBuildState('busy','saving + building...'); crfSaveDf(function(){ crfPost({action:'build-image'}).then(()=>crfPollBuild()).catch(e=>{ crfiBuildState('err','could not start build — see console'); console.error('ci-runner-farm build:',e); }); }); }
+function crfBuild(){ window.__crfBuildNull=0; crfiBuildState('busy','saving + building...'); crfSaveDf(function(){ crfPost({action:'build-image'}).then(()=>crfPollBuild()).catch(e=>{ crfiBuildState('err','could not start build — see console'); console.error('ci-runner-farm build:',e); }); }); }
 function crfPollBuild(){ crfPost({action:'build-log'}).then(d=>{ const el=document.getElementById('crf-build-log'); el.innerHTML=crfColorize(d.log||''); el.scrollTop=el.scrollHeight;
   if(d.running){ crfiBuildState('busy','building...'); setTimeout(crfPollBuild,2000); }
   else if(d.rc===0){ crfiBuildState('ok','build finished — restart the fleet to use it'); crfiInfo(); }
   else if(typeof d.rc==='number'){ crfiBuildState('err','build failed (exit '+d.rc+') — see log'); crfiInfo(); }
-  else { crfiBuildState('err','build status unknown (interrupted?) — see log'); crfiInfo(); } })
+  else if((window.__crfBuildNull=(window.__crfBuildNull||0)+1) < 3){ crfiBuildState('busy','finishing…'); setTimeout(crfPollBuild,1500); }
+  else { window.__crfBuildNull=0; crfiBuildState('err','build status unknown (interrupted?) — see log'); crfiInfo(); } })
   .catch(e=>{ crfiBuildState('err','build status unknown — see console'); console.error('ci-runner-farm build:',e); }); }
 function crfCopyBuildLog(btn){
   const t=document.getElementById('crf-build-log').textContent||'';
