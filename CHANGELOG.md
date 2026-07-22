@@ -5,7 +5,7 @@
 
 ### Features
 
-* **ui:** settings-page facelift — tabbed fleet hub, image builder, cache/stats, native theming ([#33](https://github.com/unraid/ci-runner-farm/issues/33)) ([fc95b61](https://github.com/unraid/ci-runner-farm/commit/fc95b614c61dc8dca99c68358e67ea428c4a0297))
+* **ui:** settings-page facelift — tabbed fleet hub, image builder, cache/stats, native theming (@jmagar) ([#33](https://github.com/unraid/ci-runner-farm/issues/33)) ([fc95b61](https://github.com/unraid/ci-runner-farm/commit/fc95b614c61dc8dca99c68358e67ea428c4a0297))
 
 
 ### Bug Fixes
