@@ -14,6 +14,16 @@ ENV DEBIAN_FRONTEND=noninteractive
 # RUN apt-get update && apt-get install -y --no-install-recommends <your-packages> \
 #  && rm -rf /var/lib/apt/lists/*
 
+# Pre-create the default CACHE_MOUNTS destinations as runner-owned. When these
+# paths are absent from the image, Docker's bind-mount auto-creation makes the
+# missing parent directories root-owned, and a non-root runner (RUN_AS_ROOT=false)
+# can then no longer write beside them — e.g. rustup fails with "could not
+# create bin directory '/home/runner/.cargo/bin': Permission denied".
+RUN mkdir -p /home/runner/.cargo/registry /home/runner/.cargo/git \
+      /home/runner/.cache/sccache /home/runner/.cache/yarn /home/runner/.cache/ms-playwright \
+      /home/runner/.npm /home/runner/.local/share/pnpm/store \
+ && chown -R runner:runner /home/runner/.cargo /home/runner/.cache /home/runner/.npm /home/runner/.local
+
 # DinD: the base entrypoint starts dockerd (START_DOCKER_SERVICE=true) but does
 # NOT wait for it to be ready. Wrap the runner CMD so it waits for docker before
 # the runner accepts jobs — otherwise 'Checking docker version'/services: race a
