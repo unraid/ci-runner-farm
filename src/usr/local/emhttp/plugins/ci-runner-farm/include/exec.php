@@ -85,22 +85,25 @@ switch ($action) {
     $log  = "$CFGDIR/build.log";
     $lock = "$CFGDIR/build.lock";
     @mkdir($CFGDIR, 0755, true);
-    // Serialize builds ATOMICALLY. The detached wrapper takes a non-blocking
-    // flock on fd 9 and only truncates the log + builds if it wins; a second
-    // request whose wrapper loses the race exits at `|| exit 9` before touching
-    // the running build's log. flock releases on process exit (even SIGKILL), so
-    // there is no stale-lock leak. The synchronous probe below is best-effort UX
-    // only — it lets us return a clean "already running" now instead of relying
-    // on the detached wrapper's exit code; the wrapper's flock is the real guard.
-    $probe = 'flock -n ' . escapeshellarg($lock) . ' -c true >/dev/null 2>&1 && echo free || echo busy';
-    if (trim((string)shell_exec($probe)) === 'busy') { echo json_encode(['ok' => false, 'error' => 'a build is already running']); break; }
-    // Truncate happens INSIDE the lock (`: > log`) so it can never clobber a build
-    // that won the race between the probe above and this wrapper acquiring fd 9.
-    $wrapper = 'flock -n 9 || exit 9; : > ' . escapeshellarg($log) . '; '
-             . escapeshellarg($SCRIPT) . ' build-image >> ' . escapeshellarg($log) . ' 2>&1; '
-             . 'echo "__BUILD_RC__=$?" >> ' . escapeshellarg($log);
-    exec('nohup sh -c ' . escapeshellarg($wrapper) . ' 9> ' . escapeshellarg($lock) . ' >/dev/null 2>&1 &');
-    echo json_encode(['ok' => true, 'action' => 'build-image']);
+    // Serialize builds ATOMICALLY and only report success once the lock is ours.
+    // The launcher opens fd 9 on the lock and takes a non-blocking flock IN THIS
+    // synchronous call: lose the race and it prints BUSY (we reject); win it and
+    // the build runs in a nohup'd child that INHERITS fd 9, so the flock is held
+    // for the whole build (released only when that child exits — even on SIGKILL).
+    // There is no probe/launch gap where two callers could both be told the build
+    // started: whoever loses `flock -n 9` is told BUSY. The child truncates the log
+    // under the lock so a poll can't read a prior build's __BUILD_RC__.
+    $inner = ': > ' . escapeshellarg($log) . '; '
+           . escapeshellarg($SCRIPT) . ' build-image >> ' . escapeshellarg($log) . ' 2>&1; '
+           . 'echo "__BUILD_RC__=$?" >> ' . escapeshellarg($log);
+    $launcher = 'exec 9> ' . escapeshellarg($lock) . '; '
+              . 'if flock -n 9; then '
+              .   'nohup sh -c ' . escapeshellarg($inner) . ' </dev/null >/dev/null 2>&1 & '
+              .   'echo STARTED; '
+              . 'else echo BUSY; fi';
+    $out = trim((string)shell_exec('sh -c ' . escapeshellarg($launcher)));
+    if ($out === 'STARTED') { echo json_encode(['ok' => true, 'action' => 'build-image']); }
+    else                    { echo json_encode(['ok' => false, 'error' => 'a build is already running']); }
     break;
 
   case 'queued-json':
