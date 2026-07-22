@@ -55,7 +55,7 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
 <div class="crf-console">
   <div class="crf-console-head">
     <span>Fleet log</span>
-    <uui-button variant="outline" size="sm" onclick="crfCopyLog(this)">Copy</uui-button>
+    <uui-button variant="outline" size="xs" onclick="crfCopyLog(this)">Copy</uui-button>
   </div>
   <div id="crf-log" class="crf-console-body"><span class="crf-muted">Output from fleet actions and image builds appears here.</span></div>
 </div>
@@ -103,7 +103,7 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
   .crf-ball-starting{animation:crf-pulse 1.1s ease-in-out infinite}
   .crf-phase uui-badge:not(:defined){font-size:11px;color:var(--alt-text-color)}
   .crf-console{border:1px solid var(--border-color);border-radius:6px;overflow:hidden;margin:0 0 8px}
-  .crf-console-head{display:flex;align-items:center;justify-content:space-between;padding:3px 6px 3px 12px;min-height:34px;box-sizing:border-box;background:var(--table-header-background-color);font-size:11px;color:var(--alt-text-color)}
+  .crf-console-head{display:flex;align-items:center;justify-content:space-between;padding:3px 6px 3px 12px;min-height:30px;box-sizing:border-box;background:var(--table-header-background-color);font-size:11px;color:var(--alt-text-color)}
   .crf-lg-dim{color:var(--alt-text-color)}
   .crf-lg-ok{color:var(--crf-ok)}
   .crf-lg-warn{color:var(--crf-busy)}
