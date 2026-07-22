@@ -1,0 +1,492 @@
+Menu="RunnerFarm:3"
+Title="Settings"
+Tag="gear"
+---
+<?php
+/* CI Runner Farm settings page - native Unraid markdown form + inline help */
+$plugin   = 'ci-runner-farm';
+/* parse_plugin_cfg reads /boot/config/plugins/$plugin/$plugin.cfg (empty [] if
+   absent). Defaults are NOT stored on flash — they live in $defaults below, so
+   the flash cfg only ever holds what the user actually changed. */
+$cfg      = parse_plugin_cfg($plugin);
+$has_token= file_exists("/boot/config/plugins/$plugin/token");
+$has_regtok = file_exists("/boot/config/plugins/$plugin/registry-token");
+$host_mem_gb = (int)round(((int)preg_replace('/[^0-9]/', '', (string)shell_exec("grep MemTotal /proc/meminfo"))) / 1048576);
+$csrf     = $var['csrf_token'] ?? '';
+/* Single source of truth for every form field's default. Drives both the
+   rendered fallback (via crf_g/crf_sel) and the client-side "Reset to defaults"
+   button (emitted as CRF_DEFAULTS), so the two can never drift apart. */
+$defaults = [
+  'GH_SCOPE'=>'repo', 'GH_OWNER'=>'unraid', 'GH_REPOS'=>'unraid/repo-a unraid/repo-b',
+  'RUNNER_GROUP'=>'', 'RUNNER_COUNT'=>'4', 'RUNNER_LABELS'=>'self-hosted,unraid,build',
+  'RUNNER_CPUS'=>'', 'RUNNER_MEMORY'=>'16g', 'EPHEMERAL'=>'false', 'RUN_AS_ROOT'=>'false',
+  'IMAGE_SOURCE'=>'builtin', 'IMAGE'=>'', 'REGISTRY_SERVER'=>'', 'REGISTRY_USERNAME'=>'',
+  'CACHE_ROOT'=>'/mnt/github-runner', 'WORK_TMPFS_SIZE'=>'8g',
+  'CACHE_MOUNTS'=>'pnpm-store:/home/runner/.local/share/pnpm/store npm:/home/runner/.npm yarn:/home/runner/.cache/yarn ms-playwright:/home/runner/.cache/ms-playwright',
+  'DIND'=>'true', 'SHARE_DOCKER_SOCK'=>'false', 'NETWORK_ISOLATION'=>'off',
+  'IMAGE_AUTOUPDATE'=>'false', 'IMAGE_AUTOUPDATE_INTERVAL'=>'1800', 'IMAGE_DRAIN_TIMEOUT'=>'3600',
+  'AUTOSCALE'=>'false', 'AUTOSCALE_MIN'=>'2', 'AUTOSCALE_MAX'=>'16', 'AUTOSCALE_MIN_IDLE'=>'2',
+  'AUTOSCALE_STEP'=>'2', 'AUTOSCALE_INTERVAL'=>'30', 'AUTOSCALE_IDLE_GRACE'=>'5',
+];
+$patScope = (($cfg['GH_SCOPE'] ?? $defaults['GH_SCOPE']) === 'org') ? 'repo,admin:org' : 'repo';
+$patUrl   = 'https://github.com/settings/tokens/new?description=Unraid+CI+Runner+Farm&scopes='.$patScope;
+/* $defaults is authoritative: the inline $d args at call sites are a fallback
+   for any key not listed above (there are none today). */
+if (!function_exists('crf_g'))   { function crf_g($cfg,$k,$d=''){ global $defaults; return htmlspecialchars($cfg[$k] ?? $defaults[$k] ?? $d, ENT_QUOTES); } }
+if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d=''){ global $defaults; return (($cfg[$k] ?? $defaults[$k] ?? $d) === $val) ? 'selected' : ''; } }
+?>
+<link type="text/css" rel="stylesheet" href="<?autov('/webGui/styles/jquery.filetree.css')?>">
+<script src="<?autov('/webGui/javascript/jquery.filetree.js')?>" charset="utf-8"></script>
+<div class="crfs-tokband<?= $has_token ? '' : ' crfs-tokband-missing' ?>" id="crf-tokband">
+  <div class="crfs-tok-status">
+    <span class="crf-ball <?= $has_token ? 'crf-ball-idle' : 'crf-ball-error' ?>" id="crf-tok-ball"></span>
+    <span class="crfs-tok-text">
+      <strong id="crf-tok"><?= $has_token ? 'GitHub token configured' : 'GitHub token not set' ?></strong>
+      <span class="crfs-tok-sub" id="crf-tok-sub"><?= $has_token ? 'Stored at /boot/config/plugins/ci-runner-farm/token (chmod 600), never in ci-runner-farm.cfg.' : 'The farm cannot register runners until a token is saved.' ?></span>
+    </span>
+  </div>
+  <div class="crfs-tok-input">
+    <uui-button variant="outline" size="xs" onclick="window.open('<?=$patUrl?>','_blank','noopener')">Get a pre-scoped PAT &#8599;</uui-button>
+    <span class="crfs-field"><input type="password" id="crf-token" autocomplete="new-password" placeholder="ghp_... (scopes pre-filled)"><button type="button" class="crfs-fx" title="Clear saved token" aria-label="Clear saved token" onclick="crfClearToken()">&times;</button></span>
+    <uui-button size="xs" onclick="crfSetToken()">Save token</uui-button>
+  </div>
+</div>
+<div class="crfs-tokband crfs-regband" id="crf-remote-auth">
+  <div class="crfs-tok-status">
+    <span class="crf-ball <?= $has_regtok ? 'crf-ball-idle' : '' ?>" id="crf-regtok-ball"></span>
+    <span class="crfs-tok-text">
+      <strong id="crf-regtok"><?= $has_regtok ? 'Registry token configured' : 'Registry token not set' ?></strong>
+      <span class="crfs-tok-sub">Password/token for the private registry (e.g. a PAT with read:packages for ghcr.io). For ghcr.io, leaving it blank reuses the GitHub PAT.</span>
+    </span>
+  </div>
+  <div class="crfs-tok-input">
+    <span class="crfs-field"><input type="password" id="crf-registry-token" autocomplete="new-password" placeholder="registry password / token"><button type="button" class="crfs-fx" title="Clear saved registry token" aria-label="Clear saved registry token" onclick="crfClearRegistryToken()">&times;</button></span>
+    <uui-button size="xs" onclick="crfSetRegistryToken()">Save registry token</uui-button>
+  </div>
+</div>
+
+<form markdown="1" name="ci_runner_farm" method="POST" action="/update.php" target="progressFrame">
+<input type="hidden" name="#file" value="ci-runner-farm/ci-runner-farm.cfg">
+
+### GitHub
+
+_(GitHub scope)_:
+: <select name="GH_SCOPE">
+  <option value="repo" <?=crf_sel($cfg,'GH_SCOPE','repo','repo')?>>repo (per-repository)</option>
+  <option value="org" <?=crf_sel($cfg,'GH_SCOPE','org','repo')?>>org (organization-wide)</option>
+  </select>
+
+:crf_scope_plug:
+> repo = register runners on specific repositories.
+>
+> org = one shared pool available to every repo in the org (recommended when you have more than one repo).
+:end
+
+_(Org owner)_:
+: <input type="text" name="GH_OWNER" value="<?=crf_g($cfg,'GH_OWNER','unraid')?>">
+
+:crf_owner_plug:
+> GitHub organization name. Used only when scope is org (e.g. unraid).
+:end
+
+_(Target repos)_:
+: <input type="text" name="GH_REPOS" value="<?=crf_g($cfg,'GH_REPOS','unraid/repo-a unraid/repo-b')?>">
+
+:crf_repos_plug:
+> Space-separated owner/repo list, used when scope is repo. Runners are spread across these repos round-robin.
+:end
+
+_(Runner group)_:
+: <input type="text" name="RUNNER_GROUP" value="<?=crf_g($cfg,'RUNNER_GROUP')?>">
+
+:crf_group_plug:
+> Optional runner group (org scope) to restrict which repos may use the pool — e.g. exclude public repos so fork PRs never run here.
+:end
+
+### Runners
+
+_(Concurrent runners)_:
+: <input type="number" name="RUNNER_COUNT" min="1" max="20" value="<?=crf_g($cfg,'RUNNER_COUNT','4')?>">
+
+:crf_count_plug:
+> How many runner containers to launch. Each runs one job at a time, so this equals your maximum number of concurrent builds.
+:end
+
+_(Runner labels)_:
+: <input type="text" name="RUNNER_LABELS" value="<?=crf_g($cfg,'RUNNER_LABELS','self-hosted,unraid,build')?>">
+
+:crf_labels_plug:
+> Comma-separated labels that workflows target with runs-on, e.g. self-hosted,unraid,build.
+:end
+
+_(CPUs per runner)_:
+: <input type="text" name="RUNNER_CPUS" value="<?=crf_g($cfg,'RUNNER_CPUS','')?>" placeholder="blank = uncapped">
+
+:crf_cpus_plug:
+> Hard CPU cap per runner. Leave blank for uncapped — the Linux scheduler time-shares CPU fairly across all runners, so a lone build can use the whole box.
+:end
+
+_(Memory per runner)_:
+: <input type="text" name="RUNNER_MEMORY" value="<?=crf_g($cfg,'RUNNER_MEMORY','16g')?>">
+
+:crf_mem_plug:
+> Hard memory cap per runner, e.g. 16g. Kept capped because memory is not time-shared like CPU — an uncapped leak could OOM the host or the other workloads.
+:end
+
+_(Ephemeral)_:
+: <select name="EPHEMERAL">
+  <option value="false" <?=crf_sel($cfg,'EPHEMERAL','false','false')?>>false (persistent, warm cache)</option>
+  <option value="true" <?=crf_sel($cfg,'EPHEMERAL','true','false')?>>true (clean per job)</option>
+  </select>
+
+:crf_ephemeral_plug:
+> false = persistent runner, package caches stay warm between jobs. true = fresh runner re-registered per job (cleanest state, slightly slower first run).
+:end
+
+_(Run jobs as root)_:
+: <select name="RUN_AS_ROOT">
+  <option value="false" <?=crf_sel($cfg,'RUN_AS_ROOT','false','false')?>>false (non-root 'runner', like GitHub-hosted)</option>
+  <option value="true" <?=crf_sel($cfg,'RUN_AS_ROOT','true','false')?>>true (root, legacy)</option>
+  </select>
+
+:crf_runasroot_plug:
+> false (recommended): jobs run as the non-root `runner` user with passwordless sudo, matching GitHub-hosted runners — so tests that assert non-root file permissions behave correctly. Package caches mount under /home/runner for that user. true: jobs run as root (legacy); permission-sensitive tests may behave differently and caches mounted under /home/runner won't be auto-discovered by root tooling.
+:end
+
+### Runner image
+
+_(Image source)_:
+: <select name="IMAGE_SOURCE" onchange="crfImgSrc()">
+  <option value="builtin" <?=crf_sel($cfg,'IMAGE_SOURCE','builtin','builtin')?>>Built-in (build locally)</option>
+  <option value="remote" <?=crf_sel($cfg,'IMAGE_SOURCE','remote','builtin')?>>Remote registry image</option>
+  </select>
+
+:crf_imgsrc_plug:
+> **Built-in** (default): run the image you build with the Runner image builder below &mdash; no registry needed. **Remote**: pull the image named in "Remote image" from a registry (fill in the registry fields too).
+:end
+
+_(Remote image)_:
+: <input type="text" name="IMAGE" value="<?=crf_g($cfg,'IMAGE','')?>" placeholder="ghcr.io/org/image:tag">
+
+:crf_image_plug:
+> Used only when Image source = **Remote**. Full image ref to pull, e.g. `ghcr.io/org/ci-runner-image:latest`. For a private image, also set the registry fields below.
+:end
+
+_(Registry server)_:
+: <input type="text" name="REGISTRY_SERVER" value="<?=crf_g($cfg,'REGISTRY_SERVER','')?>" placeholder="blank = none, e.g. ghcr.io">
+
+:crf_registry_server_plug:
+> Private registry to `docker login` so the host can pull a private runner image (the Runner image above). Blank disables it. Set the username below and the password/token with "Save registry token". For `ghcr.io`, if you leave the registry token blank the GitHub PAT is reused automatically (the PAT must have the `read:packages` scope), and the username defaults to the org/owner.
+:end
+
+_(Registry username)_:
+: <input type="text" name="REGISTRY_USERNAME" value="<?=crf_g($cfg,'REGISTRY_USERNAME','')?>">
+
+:crf_registry_user_plug:
+> Username for the private registry (e.g. your GitHub username for ghcr.io).
+:end
+
+### Storage &amp; caches
+
+_(Cache root)_:
+: <input type="text" id="CACHE_ROOT" name="CACHE_ROOT" autocomplete="off" spellcheck="false" value="<?=crf_g($cfg,'CACHE_ROOT','/mnt/github-runner')?>" data-pickroot="/mnt" data-pickfolders="true" data-pickfilter="HIDE_FILES_FILTER" placeholder="/mnt/github-runner">
+
+:crf_cache_plug:
+> Pool path for warm shared caches (pnpm/npm/yarn), each Docker-in-Docker runner's Docker data root, and (if tmpfs is off) the bind workspaces. Click the field to browse and pick a folder.
+>
+> **Use a real pool dataset (e.g. `/mnt/<pool>/github-runner`), not a `/mnt/user/...` user share.** User shares are FUSE (fuse.shfs), and with Docker-in-Docker on, overlay2 cannot run on FUSE — so `buildx` and `services:` jobs fail with `mount overlay ... invalid argument`. The fleet status below warns you if this path is unsafe.
+:end
+
+_(Workspace tmpfs size)_:
+: <input type="text" name="WORK_TMPFS_SIZE" value="<?=crf_g($cfg,'WORK_TMPFS_SIZE','8g')?>" placeholder="blank = bind to pool">
+
+:crf_tmpfs_plug:
+> Size of the RAM-backed per-job workspace, e.g. 8g — a clean, fast workspace each job while caches stay warm. Blank binds the workspace to the pool instead of RAM.
+:end
+
+_(Cache mounts)_:
+: <input type="text" name="CACHE_MOUNTS" value="<?=crf_g($cfg,'CACHE_MOUNTS','pnpm-store:/home/runner/.local/share/pnpm/store npm:/home/runner/.npm yarn:/home/runner/.cache/yarn ms-playwright:/home/runner/.cache/ms-playwright')?>">
+
+:crf_cache_mounts_plug:
+> Space-separated `host-subdir:container-path` warm caches mounted into every runner (created under the cache root). Defaults cover pnpm/npm/yarn/Playwright — edit for your stack.
+:end
+
+### Docker
+
+_(Docker-in-docker mode)_:
+: <select name="DIND">
+  <option value="true" <?=crf_sel($cfg,'DIND','true','true')?>>true (own daemon per runner, privileged)</option>
+  <option value="false" <?=crf_sel($cfg,'DIND','false','true')?>>false (use host docker.sock)</option>
+  </select>
+
+:crf_dind_plug:
+> Docker-in-docker: each runner runs its own Docker daemon (requires --privileged).
+>
+> Fixes GitHub Actions services: networking (localhost:port becomes reachable from job steps) and "port already allocated" collisions between parallel jobs. Recommended when workflows use services: or service containers.
+>
+> Each runner's `/var/lib/docker` is stored under **Cache root**, so when this is on, Cache root **must** be a real pool dataset (not a `/mnt/user` FUSE share) or `docker build`/`buildx`/`services:` will fail with overlay mount errors.
+:end
+
+_(Share host docker.sock)_:
+: <select name="SHARE_DOCKER_SOCK">
+  <option value="false" <?=crf_sel($cfg,'SHARE_DOCKER_SOCK','false','false')?>>false</option>
+  <option value="true" <?=crf_sel($cfg,'SHARE_DOCKER_SOCK','true','false')?>>true</option>
+  </select>
+
+:crf_sock_plug:
+> Mount the host Docker socket so jobs can start service containers (e.g. postgres for integration tests). PRIVATE repos only — never expose this to public/fork-PR code (root-equivalent host access).
+:end
+
+_(Network isolation)_:
+: <select name="NETWORK_ISOLATION">
+  <option value="off" <?=crf_sel($cfg,'NETWORK_ISOLATION','off','off')?>>off (default docker bridge)</option>
+  <option value="isolate" <?=crf_sel($cfg,'NETWORK_ISOLATION','isolate','off')?>>isolate (dedicated bridge)</option>
+  <option value="strict" <?=crf_sel($cfg,'NETWORK_ISOLATION','strict','off')?>>strict (dedicated bridge + block host/LAN)</option>
+  </select>
+
+:crf_net_plug:
+> Confines the runners at the network layer. Applies on the next **Start**.
+>
+> **off** — runners share the default Docker bridge (legacy behavior).
+>
+> **isolate** — runners run on a dedicated bridge (`ci-runner-net`), so they can't reach your **other Unraid containers**. The shared image cache joins the same network. Low-risk; recommended.
+>
+> **strict** — everything `isolate` does, **plus** firewall rules (Docker's `DOCKER-USER` chain) that stop runners from reaching the **Unraid host and your LAN**, while still allowing the internet and the shared cache. Best when runners might touch less-trusted code. Requires `iptables` on the host; if it can't be applied, Start logs a warning and continues without the egress rules.
+:end
+
+### Image auto-update
+
+_(Auto-update runner image)_:
+: <select name="IMAGE_AUTOUPDATE">
+  <option value="false" <?=crf_sel($cfg,'IMAGE_AUTOUPDATE','false','false')?>>off (update manually)</option>
+  <option value="true" <?=crf_sel($cfg,'IMAGE_AUTOUPDATE','true','false')?>>on (pull on a schedule, roll the fleet)</option>
+  </select>
+
+:crf_imgupd_plug:
+> When on, a daemon checks the runner image on a schedule and, when a newer image is published, recreates each runner on it — **draining** first (waits for the runner's current job to finish, never interrupts a build). The shared image-cache mirror is refreshed in the same pass.
+>
+> Only **remote** images (Image source = Remote) can auto-pull — a built-in image has no upstream, so rebuild it from the Runner image builder instead.
+>
+> Takes effect on the next **Start/Restart** of the fleet (like Autoscaling).
+:end
+
+_(Auto-update: check interval (s))_:
+: <input type="number" name="IMAGE_AUTOUPDATE_INTERVAL" min="300" max="86400" value="<?=crf_g($cfg,'IMAGE_AUTOUPDATE_INTERVAL','1800')?>">
+
+:crf_imgupd_int_plug:
+> Seconds between update checks. Default 1800 (30 min). A check is a cheap registry digest comparison; the fleet only rolls when the image actually changed.
+:end
+
+_(Auto-update: drain timeout (s))_:
+: <input type="number" name="IMAGE_DRAIN_TIMEOUT" min="0" max="86400" value="<?=crf_g($cfg,'IMAGE_DRAIN_TIMEOUT','3600')?>">
+
+:crf_imgupd_drain_plug:
+> How long to wait for a busy runner to finish its current job before recreating it on the new image. If it's still busy after this, it's left on the old image and retried next cycle. `0` = wait forever (never recreate a busy runner). A runner is only ever recreated while idle.
+:end
+
+### Autoscaling
+
+_(Autoscaling)_:
+: <select name="AUTOSCALE">
+  <option value="false" <?=crf_sel($cfg,'AUTOSCALE','false','false')?>>off (fixed at Concurrent runners)</option>
+  <option value="true" <?=crf_sel($cfg,'AUTOSCALE','true','false')?>>on (fleet floats by demand)</option>
+  </select>
+
+:crf_autoscale_plug:
+> When on, a daemon grows/shrinks the fleet by demand instead of using a fixed count. It keeps a warm idle buffer: when idle runners drop below the buffer (jobs are consuming them) it adds runners; when too many sit idle it removes them. Bounded by Min/Max, with grace to avoid flapping. Only ever removes idle runners, never a runner mid-job.
+:end
+
+_(Autoscale: min runners)_:
+: <input type="number" name="AUTOSCALE_MIN" min="0" max="40" value="<?=crf_g($cfg,'AUTOSCALE_MIN','2')?>">
+
+:crf_asmin_plug:
+> The floor — the fleet never drops below this, even fully idle. Keeps a couple warm so the first jobs never wait.
+:end
+
+_(Autoscale: max runners)_:
+: <input type="number" name="AUTOSCALE_MAX" min="1" max="40" value="<?=crf_g($cfg,'AUTOSCALE_MAX','16')?>">
+
+:crf_asmax_plug:
+> The ceiling — the fleet never grows past this. Set it to the most the box can run alongside the other workloads (the host: ~16 leaves CPU/RAM headroom).
+:end
+
+_(Autoscale: warm idle buffer)_:
+: <input type="number" name="AUTOSCALE_MIN_IDLE" min="1" max="20" value="<?=crf_g($cfg,'AUTOSCALE_MIN_IDLE','2')?>">
+
+:crf_asbuf_plug:
+> Keep at least this many idle runners ready. When idle drops below it, scale up — so a burst of jobs finds warm runners instead of queueing. Higher = more headroom but more idle containers.
+:end
+
+_(Autoscale: step)_:
+: <input type="number" name="AUTOSCALE_STEP" min="1" max="10" value="<?=crf_g($cfg,'AUTOSCALE_STEP','2')?>">
+
+:crf_asstep_plug:
+> How many runners to add or remove per adjustment.
+:end
+
+_(Autoscale: check interval (s))_:
+: <input type="number" name="AUTOSCALE_INTERVAL" min="10" max="600" value="<?=crf_g($cfg,'AUTOSCALE_INTERVAL','30')?>">
+
+:crf_asint_plug:
+> Seconds between demand checks. Lower = more responsive, more churn.
+:end
+
+_(Autoscale: scale-down grace)_:
+: <input type="number" name="AUTOSCALE_IDLE_GRACE" min="1" max="60" value="<?=crf_g($cfg,'AUTOSCALE_IDLE_GRACE','5')?>">
+
+:crf_asgrace_plug:
+> How many consecutive over-idle checks before removing runners. Scale-up is immediate; scale-down waits this long to avoid flapping during brief lulls.
+:end
+
+&nbsp;
+: <input type="submit" name="Apply" value="_(Apply)_" style="width:auto">
+  <input type="button" value="_(Reset to defaults)_" onclick="crfResetDefaults()" style="width:auto">
+
+</form>
+
+
+<script>
+const CRF_DEFAULTS = <?=json_encode($defaults)?>;
+// Reset the visible form fields to their built-in defaults. Client-side only —
+// nothing is written to flash until the user clicks Apply.
+function crfResetDefaults(){
+  for (const k in CRF_DEFAULTS){ const el=document.getElementsByName(k)[0]; if(el) el.value=CRF_DEFAULTS[k]; }
+  crfImgSrc();
+  // programmatic .value changes fire no input event, so nudge the advisory
+  // listeners (Min>Max, memory envelope) to re-evaluate against the reset values.
+  ['AUTOSCALE_MIN','AUTOSCALE_MAX','RUNNER_MEMORY','RUNNER_COUNT','AUTOSCALE'].forEach(n=>{ const el=document.getElementsByName(n)[0]; if(el) el.dispatchEvent(new Event('input')); });
+}
+function crfTokState(ok){
+  const band=document.getElementById('crf-tokband'), ball=document.getElementById('crf-tok-ball');
+  document.getElementById('crf-tok').textContent = ok?'GitHub token configured':'GitHub token not set';
+  document.getElementById('crf-tok-sub').textContent = ok?'Stored at /boot/config/plugins/ci-runner-farm/token (chmod 600), never in ci-runner-farm.cfg.':'The farm cannot register runners until a token is saved.';
+  band.classList.toggle('crfs-tokband-missing',!ok);
+  ball.className='crf-ball '+(ok?'crf-ball-idle':'crf-ball-error');
+}
+function crfSetToken(){ const t=document.getElementById('crf-token').value; if(!t)return;
+  crfPost({action:'set-token',token:t}).then(o=>{crfTokState(!!o.ok);document.getElementById('crf-token').value='';}).catch(e=>{ crfToast&&crfToast('Save failed'); console.error('ci-runner-farm set-token:',e); }); }
+function crfClearToken(){ crfPost({action:'clear-token'}).then(()=>crfTokState(false)).catch(e=>console.error('ci-runner-farm clear-token:',e)); }
+function crfRegState(ok){
+  document.getElementById('crf-regtok').textContent = ok?'Registry token configured':'Registry token not set';
+  document.getElementById('crf-regtok-ball').className='crf-ball '+(ok?'crf-ball-idle':'');
+}
+function crfSetRegistryToken(){ const t=document.getElementById('crf-registry-token').value; if(!t)return;
+  crfPost({action:'set-registry-token',token:t}).then(o=>{crfRegState(!!o.ok);document.getElementById('crf-registry-token').value='';}).catch(e=>console.error('ci-runner-farm set-registry-token:',e)); }
+function crfClearRegistryToken(){ crfPost({action:'clear-registry-token'}).then(()=>crfRegState(false)).catch(e=>console.error('ci-runner-farm clear-registry-token:',e)); }
+// show/hide the remote-only fields (Remote image + registry server/username/token)
+// based on the Image source select. Targets each field's <dd>+<dt> (Unraid
+// markdown forms are MarkdownExtra definition lists). Hide-only (never disable):
+// disabled inputs aren't submitted, which would drop the values on Apply;
+// display:none inputs still submit, so values persist when switching modes. If
+// the DOM ever differs, the fields simply stay visible — no harm.
+function crfImgSrc(){
+  const sel=document.getElementsByName('IMAGE_SOURCE')[0];
+  const remote=sel&&sel.value==='remote';
+  const disp=remote?'':'none';
+  ['IMAGE','REGISTRY_SERVER','REGISTRY_USERNAME'].forEach(n=>{
+    const el=document.getElementsByName(n)[0]; if(!el) return;
+    const dd=el.closest('dd'); const row=dd||el.closest('tr');
+    if(row) row.style.display=disp;
+    if(dd&&dd.previousElementSibling) dd.previousElementSibling.style.display=disp;
+  });
+  const auth=document.getElementById('crf-remote-auth'); if(auth) auth.style.display=disp;
+}
+crfImgSrc();
+/* Inline sanity check: a floor above the ceiling is the classic autoscale
+   misconfiguration — warn right at the fields (the daemon clamps it anyway). */
+(function(){
+  const min=document.getElementsByName('AUTOSCALE_MIN')[0], max=document.getElementsByName('AUTOSCALE_MAX')[0];
+  if(!min||!max) return;
+  const w=document.createElement('div'); w.className='crfs-as-warn';
+  w.textContent='Min runners exceeds Max — the autoscaler clamps the floor to Max.';
+  (max.closest('dl')||max.parentElement).after(w);
+  const check=()=>w.classList.toggle('on', (+min.value||0) > (+max.value||0));
+  min.addEventListener('input',check); max.addEventListener('input',check); check();
+})();
+/* Advisory when the worst-case memory envelope (per-runner limit x the
+   effective max fleet size) crowds the host — this box learned that lesson
+   the hard way. Orange advisory, not an error: limits are not reservations. */
+(function(){
+  const HOST_GB=<?=$host_mem_gb?:0?>;
+  if(!HOST_GB) return;
+  const mem=document.getElementsByName('RUNNER_MEMORY')[0], cnt=document.getElementsByName('RUNNER_COUNT')[0],
+        as=document.getElementsByName('AUTOSCALE')[0], asmax=document.getElementsByName('AUTOSCALE_MAX')[0];
+  if(!mem||!cnt) return;
+  const w=document.createElement('div'); w.className='crfs-mem-warn';
+  (mem.closest('dl')||mem.parentElement).after(w);
+  const check=()=>{
+    const g=parseFloat(mem.value)||0;
+    const n=(as&&as.value==='true')?(+((asmax||{}).value)||0):(+cnt.value||0);
+    const worst=g*n;
+    const on=worst>HOST_GB*0.8;
+    w.textContent='Worst case '+n+' \u00d7 '+g+'g = '+worst+'g of the host\u2019s '+HOST_GB+'g \u2014 leaves '+(HOST_GB-worst)+'g for everything else on this box.';
+    w.classList.toggle('on',on);
+  };
+  [mem,cnt,as,asmax].forEach(el=>{ if(el){ el.addEventListener('input',check); el.addEventListener('change',check); } });
+  check();
+})();
+// Native Unraid folder picker on the Cache root path field
+if (window.jQuery) jQuery(function($){ if ($.fn.fileTreeAttach) $("#CACHE_ROOT").fileTreeAttach(); });
+</script>
+
+<style>
+  .crfs-grid{columns:3 300px;column-gap:8px;margin-top:0}
+  @media(max-width:1500px){.crfs-grid{columns:2 300px}}
+  @media(max-width:980px){.crfs-grid{columns:1}}
+  .crfs-card{background:var(--shade-bg-color,transparent);border:1px solid var(--border-color);border-radius:6px;padding:2px 14px 8px;break-inside:avoid;margin:0 0 8px;display:inline-block;width:100%;box-sizing:border-box}
+  .crfs-card h3{margin:8px 0 4px;padding:0;font-size:13px;border:none}
+  .crfs-card dl{margin:0!important;padding:2px 0!important;display:flex;align-items:center;gap:10px;background:none!important}
+  .crfs-card dt{float:none!important;width:44%!important;min-width:110px;text-align:right;font-size:12px;margin:0!important;padding:0!important;background:none!important}
+  .crfs-card dd{float:none!important;flex:1;width:auto!important;margin:0!important;padding:0!important;background:none!important}
+  .crfs-card dd input[type=text],.crfs-card dd input[type=number],.crfs-card dd select{width:100%!important;max-width:none!important;font-size:12px;padding:3px 6px;margin:0}
+  .crfs-actions{display:flex;gap:8px;justify-content:flex-end;padding:4px 0 2px}
+  .crfs-actions input{width:auto!important;margin:0!important}
+  .crfs-tokband{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;border:1px solid var(--border-color);border-radius:6px;background:var(--shade-bg-color,transparent);padding:10px 14px;margin:6px 0 8px}
+  .crfs-tokband-missing{border-color:var(--crf-err);background:color-mix(in srgb,var(--crf-err) 8%,var(--background-color))}
+  .crfs-tok-status{display:flex;align-items:center;gap:12px;min-width:260px}
+  .crfs-tok-text{display:flex;flex-direction:column;gap:2px}
+  .crfs-tok-text strong{font-size:13px;color:var(--text-color)}
+  .crfs-tok-sub{font-size:11px;color:var(--alt-text-color)}
+  .crfs-tok-input{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .crfs-tok-input input[type=password]{width:24em;font-size:12px;padding-right:26px!important;box-sizing:border-box}
+  .crfs-field{position:relative;display:inline-flex;align-items:center}
+  button.crfs-fx{position:absolute;right:4px;border:none!important;background:none!important;box-shadow:none!important;outline:none;width:auto!important;min-width:0!important;height:auto!important;color:var(--alt-text-color)!important;font-size:16px;line-height:1;cursor:pointer;padding:2px 5px!important;margin:0!important;letter-spacing:0}
+  button.crfs-fx:hover{color:var(--brand-red,#e22828)!important}
+  button.crfs-fx:focus-visible{outline:2px solid var(--link-text-color,#29b6f6);outline-offset:1px;color:var(--brand-red,#e22828)!important}
+  .crfs-mem-warn{display:none;font-size:12px;color:var(--brand-orange,#ff8c2f);padding:4px 0 2px}
+  .crfs-mem-warn.on{display:block}
+  .crfs-tok-input input[type=button]{margin:0}
+  .crfs-tok-input uui-button:not(:defined){cursor:pointer;border:1px solid var(--border-color);border-radius:6px;padding:4px 12px;font-size:12px;color:var(--text-color)}
+  .crfs-tok-input a{font-size:12px;white-space:nowrap}
+  .crfs-card .inline_help{font-size:12px;color:var(--alt-text-color);background:var(--shade-bg-color,transparent);border-left:2px solid var(--border-color);border-radius:0;margin:2px 0 6px;padding:6px 10px;line-height:1.45}
+  .crfs-card .inline_help p{margin:4px 0}
+  .crfs-as-warn{display:none;font-size:12px;color:var(--brand-red,#e22828);padding:4px 0 2px;font-weight:bold}
+  .crfs-as-warn.on{display:block}
+</style>
+<script>
+/* Regroup the rendered markdown form (h3 + dl runs) into section cards laid out
+   as a grid, so every setting is visible without scrolling on desktop widths.
+   Runs against the DOM dynamix produced — if the structure ever changes, the
+   guards below just leave the stock vertical layout in place. */
+(function(){
+  const form=document.forms['ci_runner_farm']; if(!form) return;
+  const kids=[...form.children];
+  const heads=kids.filter(n=>/^H[2-4]$/.test(n.tagName));
+  if(heads.length<2) return;
+  const grid=document.createElement('div'); grid.className='crfs-grid';
+  let card=null, actions=null;
+  kids.forEach(n=>{
+    if(n.tagName==='INPUT'&&n.type==='hidden') return;
+    if(/^H[2-4]$/.test(n.tagName)){ card=document.createElement('div'); card.className='crfs-card'; grid.appendChild(card); card.appendChild(n); return; }
+    if(n.querySelector&&n.querySelector('input[type=submit]')){ actions=n; return; }
+    if(card) card.appendChild(n);
+  });
+  form.appendChild(grid);
+  if(actions){
+    const bar=document.createElement('div'); bar.className='crfs-actions';
+    actions.querySelectorAll('input').forEach(b=>bar.appendChild(b));
+    actions.remove();
+    form.appendChild(bar);
+  }
+})();
+</script>

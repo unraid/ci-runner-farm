@@ -82,16 +82,93 @@ switch ($action) {
 
   case 'build-image':
     // launch the build in the background; UI polls 'build-log'
-    $log = "$CFGDIR/build.log";
-    exec('nohup ' . escapeshellarg($SCRIPT) . ' build-image > ' . escapeshellarg($log) . ' 2>&1 &');
-    echo json_encode(['ok' => true, 'action' => 'build-image']);
+    $log  = "$CFGDIR/build.log";
+    $lock = "$CFGDIR/build.lock";
+    @mkdir($CFGDIR, 0755, true);
+    // Serialize builds ATOMICALLY and only report success once the lock is ours.
+    // The launcher opens fd 9 on the lock and takes a non-blocking flock IN THIS
+    // synchronous call: lose the race and it prints BUSY (we reject); win it and
+    // the build runs in a nohup'd child that INHERITS fd 9, so the flock is held
+    // for the whole build (released only when that child exits — even on SIGKILL).
+    // There is no probe/launch gap where two callers could both be told the build
+    // started: whoever loses `flock -n 9` is told BUSY. The child truncates the log
+    // under the lock so a poll can't read a prior build's __BUILD_RC__.
+    $inner = ': > ' . escapeshellarg($log) . '; '
+           . escapeshellarg($SCRIPT) . ' build-image >> ' . escapeshellarg($log) . ' 2>&1; '
+           . 'echo "__BUILD_RC__=$?" >> ' . escapeshellarg($log);
+    $launcher = 'exec 9> ' . escapeshellarg($lock) . '; '
+              . 'if flock -n 9; then '
+              .   'nohup sh -c ' . escapeshellarg($inner) . ' </dev/null >/dev/null 2>&1 & '
+              .   'echo STARTED; '
+              . 'else echo BUSY; fi';
+    $out = trim((string)shell_exec('sh -c ' . escapeshellarg($launcher)));
+    if ($out === 'STARTED') { echo json_encode(['ok' => true, 'action' => 'build-image']); }
+    else                    { echo json_encode(['ok' => false, 'error' => 'a build is already running']); }
+    break;
+
+  case 'queued-json':
+    [$out, $rc] = run(escapeshellarg($SCRIPT) . ' queued-json');
+    echo $out !== '' ? $out : json_encode(['queued' => -1]);
+    break;
+
+  case 'stats-json':
+    [$out, $rc] = run(escapeshellarg($SCRIPT) . ' stats-json');
+    echo $out !== '' ? $out : json_encode(['total' => -1]);
+    break;
+
+  case 'cache-usage':
+    [$out, $rc] = run(escapeshellarg($SCRIPT) . ' cache-usage-json');
+    echo $out !== '' ? $out : json_encode(['total' => -1]);
+    break;
+
+  case 'cache-clear':
+    [$out, $rc] = run(escapeshellarg($SCRIPT) . ' cache-clear-pkg');
+    // cmd_cache_clear_pkg logs before its JSON; trust the exit code, not stdout.
+    echo json_encode(['ok' => $rc === 0, 'action' => 'cache-clear']);
+    break;
+
+  case 'recycle':
+    $n = $_REQUEST['name'] ?? '';
+    if (!preg_match('/^ci-runner-[0-9]+$/', $n)) { echo json_encode(['ok'=>false,'error'=>'bad name']); break; }
+    [$out, $rc] = run(escapeshellarg($SCRIPT) . ' recycle ' . escapeshellarg($n));
+    // cmd_recycle emits log lines before its JSON; trust the exit code, not stdout.
+    echo json_encode(['ok' => $rc === 0, 'action' => 'recycle']);
+    break;
+
+  case 'runner-log':
+    $n = $_REQUEST['name'] ?? '';
+    if (!preg_match('/^ci-runner-[0-9]+$/', $n)) { echo json_encode(['ok'=>false,'error'=>'bad name']); break; }
+    [$out, $rc] = run(escapeshellarg($SCRIPT) . ' logs-tail ' . escapeshellarg($n) . ' 150');
+    echo json_encode(['ok' => true, 'log' => $out]);
+    break;
+
+  case 'image-info':
+    [$out, $rc] = run(escapeshellarg($SCRIPT) . ' image-info-json');
+    echo $out !== '' ? $out : json_encode(['exists' => false]);
+    break;
+
+  case 'get-default-dockerfile':
+    $df = "/usr/local/emhttp/plugins/$PLUGIN/default.Dockerfile";
+    echo json_encode(['ok' => true, 'dockerfile' => is_file($df) ? file_get_contents($df) : '']);
+    break;
+
+  case 'farm-log':
+    // Live farm activity for the Fleet log's idle state: the autoscale daemon
+    // log (or boot.log before the daemon ever ran), minus docker's noisy
+    // per-invocation swap-limit warning.
+    $as = "$CFGDIR/autoscale.log"; $bt = "$CFGDIR/boot.log";
+    $src = is_file($as) ? $as : $bt;
+    $txt = is_file($src) ? shell_exec('tail -n 150 ' . escapeshellarg($src) . " | grep -v 'swap limit capabilities' | tail -n 60") : '';
+    echo json_encode(['ok' => true, 'log' => $txt ?: '']);
     break;
 
   case 'build-log':
     $log = "$CFGDIR/build.log";
-    $txt = is_file($log) ? shell_exec('tail -n 100 ' . escapeshellarg($log)) : '';
-    $running = trim(shell_exec("pgrep -f 'runner-farm.sh build-image' >/dev/null 2>&1 && echo 1 || echo 0")) === '1';
-    echo json_encode(['ok' => true, 'running' => $running, 'log' => $txt]);
+    $txt = is_file($log) ? (string)shell_exec('tail -n 120 ' . escapeshellarg($log)) : '';
+    $running = trim(shell_exec("pgrep -f '[r]unner-farm.sh build-image' >/dev/null 2>&1 && echo 1 || echo 0")) === '1';
+    $rc = (!$running && preg_match('/__BUILD_RC__=(\d+)/', $txt, $m)) ? (int)$m[1] : null;
+    $disp = preg_replace('/\n?__BUILD_RC__=\d+\n?/', "\n", $txt);
+    echo json_encode(['ok' => true, 'running' => $running, 'rc' => $rc, 'log' => $disp]);
     break;
 
   default:

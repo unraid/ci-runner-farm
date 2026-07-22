@@ -33,10 +33,11 @@ dependency caches that stay hot between runs, at zero cost per minute.
 |---|---|
 | **N concurrent runners** | Each runner is its own container, optionally capped with `--cpus` / `--memory` so CI never starves the rest of the host. |
 | **Queue-aware autoscaling** | An optional daemon floats the fleet between a min and max based on how many jobs are waiting — capacity when you need it, idle when you don't. |
-| **Warm shared caches** | pnpm / npm / yarn / Playwright caches (fully configurable) live on a fast pool and are reused across every run. This is the biggest hidden speed win over hosted CI. |
+| **Warm shared caches** | Rust/cargo, npm, yarn, pnpm, and Playwright caches (fully configurable) live on a fast pool and are reused across every run. This is the biggest hidden speed win over hosted CI. |
 | **Docker-in-Docker per runner** | Jobs that use `services:` or `docker compose` just work, with an optional shared pull-through registry mirror so images are pulled once for the whole fleet. |
-| **Bring your own image** | Use the in-plugin image builder, or point at any image you publish to a registry (public or private). |
-| **One webGUI page** | Configure everything, store your token securely, Start/Stop/Restart/Scale, watch live status, and build your runner image — no shell required. |
+| **Bring your own image** | Point at any image you publish to a registry, or build one in-plugin — toggle **Rust / Python / Node·TS / Android** toolchains into the Dockerfile with one click, then Build. |
+| **Live fleet dashboard** | Watch each runner's phase, the repo and **PR # it's building right now**, and live CPU/memory against its cap — plus queue depth, cache usage (one-click clear), recent-run pass rates, per-runner log drawers, and a colorized activity log. |
+| **One webGUI page** | Three tabs — configure, build your image, run and watch the fleet — with your token stored securely on the host. No shell required. |
 
 ---
 
@@ -78,70 +79,85 @@ Unraid always resolves this to the newest published release, and its built-in
 
 ## Setup, step by step
 
-You'll need a GitHub Personal Access Token and a fast pool/share for caches.
-Everything below happens on one page: **Settings → Utilities → CI Runner Farm**.
+Everything lives on one page — **Settings → Utilities → CI Runner Farm** — split
+into three tabs: **Settings** (configure), **Runner image** (build), and
+**Fleet** (run and watch). You'll need a GitHub Personal Access Token and a fast
+pool/share for caches.
 
-### 1. Point it at GitHub and size the fleet
+### 1. Configure the fleet — the *Settings* tab
 
-Choose your **scope** (`repo` or `org`), set the **owner** and target repos, an
-optional **runner group**, and how many **concurrent runners** to run. Add
-**runner labels** (so workflows can target this fleet with `runs-on:`) and
-optional **CPU / memory caps per runner** so CI can't starve the rest of the box.
+The Settings tab holds the whole configuration on one screen:
 
-![GitHub scope, target repos, runner count, labels, and per-runner CPU/memory caps](docs/images/1-settings-github-runners.png)
+- **GitHub** — pick your **scope** (`repo` or `org`), the **owner** and **target
+  repos**, and an optional **runner group**.
+- **Runners** — how many **concurrent runners**, their **labels** (so workflows
+  target this fleet with `runs-on:`), and optional **CPU / memory caps per
+  runner** so CI can't starve the rest of the box.
+- **Runner image** — the **Image source**: **Built-in** (build locally, below),
+  or **Remote** to pull a named image, e.g. `ghcr.io/org/ci-runner-image:latest`
+  (for a private image, set the registry server/username and save a registry
+  token; for `ghcr.io`, a blank registry token reuses your GitHub token).
+- **Storage & caches** — the **warm caches** (host-subdir → container-path
+  mounts; defaults cover cargo/npm/yarn/pnpm/Playwright) and the **workspace
+  root**.
+- **Docker** — **Docker-in-Docker** mode, host-socket sharing, and network
+  isolation.
+- **Autoscaling** and **image auto-update** — optional; see steps below.
 
-### 2. Choose a runner image, caches, and Docker mode
+Save your **Personal Access Token** from the band at the top (`repo` scope; add
+`admin:org` for org runners). It's stored at
+`/boot/config/plugins/ci-runner-farm/token` with `chmod 600` and is **never**
+written into your plugin config — the **Get a pre-scoped PAT** link opens GitHub
+with exactly the right scopes pre-filled.
 
-The **Image source** selector decides where each runner's image comes from:
+![The Settings tab — GitHub scope and targets, per-runner CPU/memory caps, runner image source, warm caches, Docker-in-Docker, autoscaling, and secure token storage, all on one screen](docs/images/settings.png)
 
-- **Built-in** (default) — run the image built by the in-plugin **Runner image
-  builder**, tagged `ci-runner-farm-runner:latest`. The plugin ships a generic
-  starter [`default.Dockerfile`](src/usr/local/emhttp/plugins/ci-runner-farm/default.Dockerfile)
-  (stock runner base + a Docker-in-Docker readiness wrapper); customize it — add
-  language runtimes, browsers, build tools — then **Build** and restart. No
-  registry needed.
-- **Remote** — pull a named image, e.g. `ghcr.io/org/ci-runner-image:latest`.
-  For a private image, set the registry server and username and save a registry
-  token; the host runs `docker login` before provisioning. For `ghcr.io`,
-  leaving the registry token blank reuses your GitHub token (it just needs
-  `read:packages`).
+### 2. Build a runner image — the *Runner image* tab
 
-Below that, configure the **warm caches** (host-subdir → container-path mounts;
-defaults cover pnpm/npm/yarn/Playwright), the **workspace root**, and the
-**Docker-in-Docker mode**.
+Point CI at any registry image, or build one right here. The Runner image tab is
+a syntax-highlighted, in-page Dockerfile editor over a generic
+[starter image](src/usr/local/emhttp/plugins/ci-runner-farm/default.Dockerfile)
+(stock self-hosted runner base + a Docker-in-Docker readiness wrapper). Click the
+**toolchain** pills — **Rust**, **Python**, **Node / TS**, **Android** — to
+splice matching install blocks in or out, then **Save + Build** and watch the
+live build log. Restart the fleet to roll onto the new image. No registry needed.
 
-![Runner image source, warm cache mounts, workspace root, and Docker-in-Docker mode](docs/images/2-runner-image-storage-docker.png)
+![The Runner image tab — a syntax-highlighted Dockerfile editor, one-click Rust / Python / Node·TS / Android toolchain blocks, and a live build log](docs/images/runner-image.png)
 
-### 3. (Optional) Turn on queue-aware autoscaling
+### 3. Run and watch — the *Fleet* tab
 
-Set a **min** and **max** runner count, a **warm idle buffer**, an **autoscale
-step**, a **demand check interval**, and a **scale-down grace** period. The
-daemon adds runners when jobs are queued and removes idle ones once the grace
-window passes — so you keep capacity ready without leaving the whole fleet
-running around the clock.
+The Fleet tab is mission control. **Validate** (no token needed) confirms the
+host can provision, then **Start / Stop / Restart / Scale** the fleet and watch
+live per-runner status: phase, the **repo and PR # each runner is building right
+now** (linked to the GitHub run), and live **CPU / memory** against each runner's
+cap. Click the ↻ on a runner to **recycle** it — deregister, remove, and bring
+back a fresh replacement in place, so the fleet keeps its size.
 
-![Autoscaling controls: min/max runners, idle buffer, step, check interval, scale-down grace](docs/images/3-autoscaling.png)
+The stat tiles track runners up / busy / idle, GitHub **queue** depth, autoscaler
+state, image-update state, and total **cache** usage — with a one-click **Clear
+caches**. A **Recent runs** strip summarizes pass/fail/cancel rates across your
+repos, and the colorized **Fleet log** streams autoscaler and action output.
 
-### 4. Save your token, validate, and start the fleet
+![The Fleet tab — live runner bays showing each runner's current repo/PR and per-runner CPU/memory, stat tiles for queue depth, autoscaler, and cache usage, a recent-runs summary, and a colorized fleet log](docs/images/fleet.png)
 
-Save a GitHub **Personal Access Token** (`repo` scope; add `admin:org` for org
-runners). It's stored at `/boot/config/plugins/ci-runner-farm/token` with
-`chmod 600` and is **never** written into your plugin config. Click **Validate**
-(no token needed) to confirm the host can provision, then use the fleet
-controls — **Start / Stop / Restart / Scale** — and watch live per-runner status
-(state, phase, CPU, memory). The **Runner image builder** panel lets you edit
-the Dockerfile and rebuild right from the page.
+Click any runner to drop down a live **log drawer** streaming that container's
+job output inline:
 
-![Fleet control buttons, live runner status, secure token storage, and the runner image builder](docs/images/4-fleet-control-image-builder.png)
+![A runner's log drawer expanded below its row, streaming the live job log](docs/images/fleet-log-drawer.png)
 
-### 5. Confirm it's running
+### 4. (Optional) Queue-aware autoscaling
 
-Once started, the runners show up as ordinary Docker containers
+On the Settings tab, set a **min** and **max** runner count, a **warm idle
+buffer**, an **autoscale step**, a **demand check interval**, and a **scale-down
+grace** period. The daemon adds runners when jobs are queued and removes idle
+ones once the grace window passes — so you keep capacity ready without leaving
+the whole fleet running around the clock. Its decisions stream into the Fleet
+log.
+
+Once started, the runners also show up as ordinary Docker containers
 (`ci-runner-1…N`), plus the optional `ci-runner-mirror` registry mirror — each
-with the warm-cache bind mounts you configured. Your runners register with
-GitHub and start picking up jobs.
-
-![Running ci-runner containers with warm-cache volume mappings and the registry mirror](docs/images/5-running-containers.png)
+with the warm-cache bind mounts you configured — register with GitHub, and start
+picking up jobs.
 
 ---
 

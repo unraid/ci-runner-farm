@@ -21,6 +21,10 @@ set -uo pipefail
 
 PLUGIN="ci-runner-farm"
 CFGDIR="/boot/config/plugins/${PLUGIN}"
+# Ephemeral runtime caches/locks live on tmpfs, not the USB flash (they are
+# rewritten every 60-300s while a settings tab is open — a flash-wear antipattern).
+RUNDIR="/var/local/emhttp/${PLUGIN}"
+mkdir -p "$RUNDIR" 2>/dev/null || RUNDIR="$CFGDIR"
 CFG="${CFGDIR}/${PLUGIN}.cfg"
 TOKEN_FILE="${CFGDIR}/token"
 REGISTRY_TOKEN_FILE="${CFGDIR}/registry-token"
@@ -848,18 +852,34 @@ start_stopped_managed() {
   done
 }
 
-cmd_start() {
-  [ -z "$ACCESS_TOKEN" ] && { err "no GitHub token configured (set it in the web UI). Use 'validate' to test provisioning without one."; return 1; }
+# Provisioning prerequisites shared by every path that then runs start_one — Start,
+# Scale, and the Fleet recycle button. Validates the cache root (hard guard: aborts
+# on FUSE for DIND, etc.), creates the cache dirs / isolated network / image-cache
+# mirror, (re)applies strict egress rules, and logs in to a remote registry.
+# Returns non-zero (problem already logged) when the cache-root guard fails so
+# callers can bail before provisioning; a registry-login failure is left for
+# start_one to surface per-runner, matching the historical Start behavior.
+provision_preflight() {
   check_cache_root || return 1
-  rm -f "$SECURITY_CACHE"                       # force a fresh public-repo check on an explicit Start
-  local secp; secp="$(public_repo_problem)"
-  [ -n "$secp" ] && err "SECURITY: $secp"       # warn, do not block (operator's call)
   ensure_dirs
   ensure_network
   ensure_mirror
   firewall_clear                                # drop stale rules (e.g. strict -> off/isolate)
   firewall_apply                                # re-add egress rules (no-op unless strict)
-  registry_login
+  # Propagate a real registry-login failure: on Start it avoids launching runners
+  # that can't pull; on the destructive recycle path it aborts BEFORE removing a
+  # runner it then couldn't repull. registry_login is a no-op (returns 0) for the
+  # built-in image or when no remote registry/creds are set, so this only bites an
+  # actually-failed remote auth.
+  registry_login || return 1
+}
+
+cmd_start() {
+  [ -z "$ACCESS_TOKEN" ] && { err "no GitHub token configured (set it in the web UI). Use 'validate' to test provisioning without one."; return 1; }
+  rm -f "$SECURITY_CACHE"                       # force a fresh public-repo check on an explicit Start
+  local secp; secp="$(public_repo_problem)"
+  [ -n "$secp" ] && err "SECURITY: $secp"       # warn, do not block (operator's call)
+  provision_preflight || return 1               # cache-root guard + dirs/network/mirror/firewall/registry
   # If NETWORK_ISOLATION changed while the fleet was up, existing runners are still
   # on the old network — drain + recreate them so the new mode actually applies (a
   # half-isolated fleet is a false sense of security). Runners already on the right
@@ -964,10 +984,264 @@ cmd_status() {
   done
 }
 
-json_escape() { sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+json_escape() { sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\000-\037'; }
+
+cmd_image_info_json() {
+  # Image facts for the settings page's Runner image tab: existence, id, age,
+  # size, base image, and how many managed runners currently run on it.
+  local img; img="$(effective_image)"
+  local id; id="$(docker image inspect -f '{{.Id}}' "$img" 2>/dev/null)"
+  if [ -z "$id" ]; then
+    echo "{\"exists\":false,\"image\":\"$(echo "$img"|json_escape)\",\"source\":\"$(echo "$IMAGE_SOURCE"|json_escape)\"}"
+    return 0
+  fi
+  local created size; created="$(docker image inspect -f '{{.Created}}' "$img")"
+  size="$(docker image inspect -f '{{.Size}}' "$img")"
+  local df="$CFGDIR/Dockerfile"
+  [ -f "$df" ] || df="/usr/local/emhttp/plugins/$PLUGIN/default.Dockerfile"
+  local base; base="$(grep -m1 '^FROM ' "$df" 2>/dev/null | awk '{print $2}')"
+  local inuse=0 c cid
+  for c in $(managed_names); do
+    cid="$(docker inspect -f '{{.Image}}' "$c" 2>/dev/null)"
+    [ "$cid" = "$id" ] && inuse=$((inuse+1))
+  done
+  echo "{\"exists\":true,\"image\":\"$(echo "$img"|json_escape)\",\"id\":\"$(echo "$id" | cut -c8-19)\",\"created\":\"$created\",\"size_mb\":$(( ${size:-0}/1024/1024 )),\"base\":\"$(echo "$base"|json_escape)\",\"in_use\":$inuse,\"dockerfile\":\"$(echo "$df"|json_escape)\",\"source\":\"$(echo "$IMAGE_SOURCE"|json_escape)\"}"
+}
+
+# "1.5GiB" / "512MiB" / "900kB" -> integer MiB (docker stats human units)
+to_mib() {
+  echo "$1" | awk '{
+    v=$0; sub(/[A-Za-z]+$/,"",v); u=$0; sub(/^[0-9.]+/,"",u);
+    if (u ~ /^G/) v*=1024; else if (u ~ /^k/ || u ~ /^K/) v/=1024; else if (u ~ /^B/) v/=1048576;
+    printf "%d", v }'
+}
+
+cmd_queued_refresh() {
+  # Sum queued workflow runs across GH_REPOS into a cache file. Invoked in the
+  # background from cmd_queued_json so the UI poll never blocks on 20+ curls.
+  [ -z "$ACCESS_TOKEN" ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
+  [ -n "$ACCESS_TOKEN" ] || return 0
+  local total=0 r n
+  for r in $GH_REPOS; do
+    n="$(curl -s --max-time 10 -H "Authorization: Bearer $ACCESS_TOKEN" \
+      "https://api.github.com/repos/$r/actions/runs?status=queued&per_page=1" \
+      | grep -m1 -oE '"total_count":[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | head -1)"
+    total=$(( total + ${n:-0} ))
+  done
+  echo "$(date +%s) $total" > "$RUNDIR/queued.cache"
+}
+
+# Warm dependency caches under CACHE_ROOT — safe to clear even while runners are
+# up (worst case is a cache miss, not a broken job). Deliberately EXCLUDES work/
+# and docker/, which hold running runners' live workspaces and DinD data.
+CACHE_PKG_DIRS="cargo-registry cargo-git sccache npm yarn pnpm-store ms-playwright"
+
+# Resolve + validate CACHE_ROOT for destructive/expensive ops. realpath -m
+# collapses ../ and . lexically (target need not exist) so the guard checks the
+# real location, not the raw string; the blocklist covers share subpaths too.
+# Echoes the canonical root on success; a reason on stderr and returns 1 otherwise.
+crf_safe_cache_root() {
+  local root
+  root="$(realpath -m -- "$CACHE_ROOT" 2>/dev/null)" || { echo unresolvable >&2; return 1; }
+  case "$root" in
+    ""|"/"|"/mnt" \
+    |"/mnt/user"|"/mnt/user"/*|"/mnt/user0"|"/mnt/user0"/* \
+    |"/mnt/disks"|"/mnt/addons"|"/mnt/rootshare" \
+    |"/boot"|"/boot"/*|"/usr"|"/usr"/*|"/etc"|"/etc"/*|"/var"|"/var"/*|"/root"|"/root"/*|"/bin"*|"/sbin"*|"/lib"*)
+      echo unsafe >&2; return 1 ;;
+    /mnt/*) printf '%s' "$root"; return 0 ;;
+    *) echo not-under-mnt >&2; return 1 ;;
+  esac
+}
+
+cmd_cache_usage_refresh() {
+  # du can be slow on a multi-GB cache, so this runs detached and the result is
+  # cached; the UI reads the cache and only triggers a refresh when it is stale.
+  local root total=0 pkg=0 d n
+  root="$(crf_safe_cache_root 2>/dev/null)" || { echo "$(date +%s) -1 0" > "$RUNDIR/cache-usage.cache"; return 0; }
+  [ -d "$root" ] || { echo "$(date +%s) 0 0" > "$RUNDIR/cache-usage.cache"; return 0; }
+  total="$(du -sb "$root" 2>/dev/null | cut -f1)"; [ -n "$total" ] || total=-1
+  for d in $CACHE_PKG_DIRS; do
+    [ -d "$root/$d" ] && { n="$(du -sb "$root/$d" 2>/dev/null | cut -f1)"; pkg=$(( pkg + ${n:-0} )); }
+  done
+  echo "$(date +%s) ${total:--1} ${pkg:-0}" > "$RUNDIR/cache-usage.cache"
+}
+
+cmd_cache_usage_json() {
+  local now ts total pkg age=999999
+  now=$(date +%s)
+  if [ -f "$RUNDIR/cache-usage.cache" ]; then
+    read -r ts total pkg < "$RUNDIR/cache-usage.cache"
+    age=$(( now - ${ts:-0} ))
+  fi
+  if [ "$age" -gt 300 ]; then
+    ( flock -n 9 || exit 0; "$0" cache-usage-refresh ) 9>"$RUNDIR/cache-usage.lock" >/dev/null 2>&1 &
+  fi
+  echo "{\"total\":${total:--1},\"pkg\":${pkg:-0},\"age\":$age}"
+}
+
+cmd_cache_clear_pkg() {
+  # Clear ONLY the warm package caches (never work/ or docker/). Reuses the
+  # prune-cache root-shape guard so a misconfigured CACHE_ROOT can't wipe a share.
+  local root d removed=0 failed=0
+  root="$(crf_safe_cache_root)" || { echo "{\"ok\":false,\"error\":\"unsafe cache root\"}"; return 1; }
+  for d in $CACHE_PKG_DIRS; do
+    [ -d "$root/$d" ] || continue
+    if rm -rf "${root:?}/${d:?}/"* 2>/dev/null; then removed=$((removed+1)); else failed=$((failed+1)); fi
+  done
+  ( "$0" cache-usage-refresh ) >/dev/null 2>&1 &
+  if [ "$failed" -gt 0 ]; then
+    log "cache clear: $failed dir(s) could not be removed under $root"
+    echo "{\"ok\":false,\"error\":\"could not remove $failed dir(s)\",\"cleared\":$removed}"; return 1
+  fi
+  log "package caches cleared ($removed dir(s)) under $root"
+  echo "{\"ok\":true,\"cleared\":$removed}"
+}
+
+cmd_stats_refresh() {
+  # Tally recent workflow-run conclusions across GH_REPOS. Detached + cached so
+  # the per-repo API sweep never blocks the UI (see queued for the pattern).
+  [ -z "$ACCESS_TOKEN" ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
+  [ -n "$ACCESS_TOKEN" ] || { echo "$(date +%s) 0 0 0 0 -1" > "$RUNDIR/stats.cache"; return 0; }
+  local ok=0 fail=0 cancel=0 other=0 total got=0 r body c
+  for r in $GH_REPOS; do
+    body="$(curl -s --max-time 10 -H "Authorization: Bearer $ACCESS_TOKEN" \
+      "https://api.github.com/repos/$r/actions/runs?per_page=50")"
+    case "$body" in *'"workflow_runs"'*) got=1 ;; esac
+    while IFS= read -r c; do
+      case "$c" in
+        *'"success"'*)                              ok=$((ok+1)) ;;
+        *'"failure"'*|*'"timed_out"'*|*'"startup_failure"'*) fail=$((fail+1)) ;;
+        *'"cancelled"'*)                            cancel=$((cancel+1)) ;;
+        *null*) : ;;  # in progress / queued — not a completed run
+        ?*)     other=$((other+1)) ;;
+      esac
+    done <<< "$(echo "$body" | grep -oE '"conclusion": ?(null|"[a-z_]+")')"
+  done
+  # total=-1 signals "stats unavailable" (bad token / API down) vs a real zero.
+  if [ "$got" = "1" ]; then total=$((ok+fail+cancel+other)); else total=-1; fi
+  echo "$(date +%s) $ok $fail $cancel $other $total" > "$RUNDIR/stats.cache"
+}
+
+cmd_stats_json() {
+  local now ts ok fail cancel other total age=999999
+  now=$(date +%s)
+  if [ -f "$RUNDIR/stats.cache" ]; then
+    read -r ts ok fail cancel other total < "$RUNDIR/stats.cache"
+    age=$(( now - ${ts:-0} ))
+  fi
+  if [ "$age" -gt 300 ]; then
+    ( flock -n 9 || exit 0; "$0" stats-refresh ) 9>"$RUNDIR/stats.lock" >/dev/null 2>&1 &
+  fi
+  echo "{\"ok\":${ok:-0},\"fail\":${fail:-0},\"cancel\":${cancel:-0},\"other\":${other:-0},\"total\":${total:--1},\"age\":$age}"
+}
+
+cmd_queued_json() {
+  local now ts count age=999999
+  now=$(date +%s)
+  if [ -f "$RUNDIR/queued.cache" ]; then
+    read -r ts count < "$RUNDIR/queued.cache"
+    age=$(( now - ${ts:-0} ))
+  fi
+  # flock, not a plain lock file: the advisory lock is released by the kernel
+  # even on SIGKILL/reboot, so a killed refresh can never wedge future refreshes.
+  if [ "$age" -gt 60 ]; then
+    ( flock -n 9 || exit 0; "$0" queued-refresh ) 9>"$RUNDIR/queued.lock" >/dev/null 2>&1 &
+  fi
+  echo "{\"queued\":${count:--1},\"age\":$age}"
+}
+
+cmd_recycle() {
+  # Deregister, remove, AND recreate one runner with a fresh registration token.
+  # Recreating (not just removing) keeps the fleet at its configured size even
+  # when autoscaling is off (the default) — otherwise a manual recycle would
+  # permanently shrink a fixed-size fleet by one. Mirrors recreate_stopped_runner:
+  # the warm caches and DinD data root are pool bind mounts keyed by the same
+  # name, so the replacement comes back warm.
+  local name="$1" idx
+  echo "$name" | grep -qE "^${NAME_PREFIX}-[0-9]+$" || { echo '{"ok":false,"error":"bad name"}'; return 1; }
+  idx="$(docker inspect -f '{{ index .Config.Labels "net.unraid.ci-runner-farm.index" }}' "$name" 2>/dev/null)"
+  [ -z "$idx" ] && idx="${name##*-}"
+  # Mirror cmd_start's FULL provisioning preflight before removing the old
+  # container: validate the cache root (a DIND fleet moved onto FUSE would recreate
+  # and fail), create the isolated network + cache dirs + mirror, and (re)apply
+  # strict egress rules so the replacement is never started unprotected. A config
+  # change since the last Start therefore can't leave the runner removed-but-not-
+  # replaced, or replaced without its firewall. Abort with the runner intact if a
+  # hard prerequisite (cache root) or the isolated network is unavailable.
+  provision_preflight || { echo '{"ok":false,"error":"provisioning preflight failed (see log)"}'; return 1; }
+  if [ "$NETWORK_ISOLATION" != "off" ] && ! docker network inspect "$RUNNER_NETWORK" >/dev/null 2>&1; then
+    log "recycle: $name left in place — runner network $RUNNER_NETWORK unavailable"
+    echo '{"ok":false,"error":"runner network unavailable"}'; return 1
+  fi
+  # Validate the REPLACEMENT can be fully provisioned BEFORE touching the old
+  # container. build_args assembles everything start_one needs — it mints a fresh
+  # GitHub registration token and resolves the image. A cleared token (no
+  # ACCESS_TOKEN, which build_args silently skips) or a PAT that can no longer mint
+  # one would otherwise let the replacement run unregistered, or fail, only after
+  # the old runner is already gone. Guard the empty-token case explicitly, then
+  # reuse the validated args so the runner we start is the one we vetted.
+  [ -n "$ACCESS_TOKEN" ] || { echo '{"ok":false,"error":"no GitHub token configured"}'; return 1; }
+  build_args "$idx" || { echo '{"ok":false,"error":"cannot provision replacement (check the GitHub token)"}'; return 1; }
+  # Verify the exact target image while the old runner is still intact. A valid
+  # registry login does not prove that a newly configured tag exists, and the
+  # built-in image may have been removed since this runner was started.
+  local image="${ARGS[${#ARGS[@]}-1]}"
+  if [ "$IMAGE_SOURCE" = "remote" ]; then
+    docker pull "$image" >/dev/null 2>&1 || {
+      log "recycle: $name left in place — could not pull replacement image $image"
+      echo '{"ok":false,"error":"cannot pull replacement image"}'; return 1
+    }
+  elif ! docker image inspect "$image" >/dev/null 2>&1; then
+    log "recycle: $name left in place — built-in replacement image $image is unavailable"
+    echo '{"ok":false,"error":"built-in replacement image is unavailable"}'; return 1
+  fi
+  if ! docker rm -f "$name" >/dev/null 2>&1; then
+    log "recycle: docker rm failed for $name"; echo '{"ok":false,"error":"remove failed"}'; return 1
+  fi
+  deregister_runner_api "$name"
+  log "recycling $name (manual, from fleet page)"
+  if ! docker run "${ARGS[@]}" >/dev/null 2>&1; then
+    log "recycle: $name removed but its replacement failed to start (idx=$idx)"
+    echo '{"ok":false,"error":"removed but not recreated"}'; return 1
+  fi
+  echo '{"ok":true}'
+}
+
+cmd_logs_tail() {
+  echo "$1" | grep -qE "^${NAME_PREFIX}-[0-9]+$" || return 1
+  docker logs --tail "${2:-150}" "$1" 2>&1
+}
+
+cmd_usage_refresh() {
+  # docker stats --no-stream is the one slow (~1-2s CPU-sampling) call in the
+  # status path. Run it out-of-band and cache "name cpu_pct mem_mib" per runner
+  # so cmd_status_json never blocks on it — the table paints from fast inspects
+  # and the usage bars fill from this cache.
+  local names; names="$(managed_names)"
+  [ -n "$names" ] || { : > "$RUNDIR/usage.cache"; return 0; }
+  : > "$RUNDIR/usage.cache.tmp"
+  docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' $names 2>/dev/null | \
+  while IFS='|' read -r n cpu mem; do
+    cpu="$(echo "$cpu" | tr -d '%' | grep -oE '^[0-9]+(\.[0-9]+)?' | head -1)"
+    echo "$n ${cpu:-0} $(to_mib "$(echo "$mem" | awk -F' / ' '{print $1}')")"
+  done >> "$RUNDIR/usage.cache.tmp"
+  mv "$RUNDIR/usage.cache.tmp" "$RUNDIR/usage.cache" 2>/dev/null
+}
 
 cmd_status_json() {
   local names; names="$(managed_names)"
+  # Per-runner CPU/mem is read from a background-refreshed cache (see
+  # cmd_usage_refresh) so this call stays fast; trigger a refresh when stale.
+  local usage="" uage=999 nowu
+  nowu=$(date +%s)
+  if [ -f "$RUNDIR/usage.cache" ]; then
+    usage="$(cat "$RUNDIR/usage.cache" 2>/dev/null)"
+    uage=$(( nowu - $(stat -c %Y "$RUNDIR/usage.cache" 2>/dev/null || echo 0) ))
+  fi
+  if [ -n "$names" ] && [ "$uage" -gt 4 ]; then
+    ( flock -n 9 || exit 0; "$0" usage-refresh ) 9>"$RUNDIR/usage.lock" >/dev/null 2>&1 &
+  fi
   local out="["; local first=1
   for c in $names; do
     [ -z "$c" ] && continue
@@ -976,8 +1250,42 @@ cmd_status_json() {
     cpus="$(docker inspect -f '{{.HostConfig.NanoCpus}}' "$c" 2>/dev/null)"
     mem="$(docker inspect -f '{{.HostConfig.Memory}}' "$c" 2>/dev/null)"
     phase="$(runner_phase "$c")"
+    # Current job name (busy runners only): the runner listener logs
+    # "Running job: <name>" when it picks one up — cheap to scrape and lets the
+    # settings page show what each runner is working on.
+    local job="" jrepo="" jpr="" jbranch="" jrun="" jstarted=""
+    if [ "$phase" = "busy" ]; then
+      local jline
+      jline="$(docker logs --timestamps --tail 60 "$c" 2>&1 | grep 'Running job: ' | tail -1 | tr -d '\r')"
+      job="$(echo "$jline" | sed 's/.*Running job: //' | json_escape)"
+      jstarted="$(echo "$jline" | awk '{print $1}' | grep -oE '^[0-9T:.Z-]+' | head -1)"
+      # The newest Worker diag log holds the job message JSON: repository,
+      # ref (PR or branch), and run_id — enough to deep-link the run.
+      # Live job context from any step process's environment inside the
+      # runner (GITHUB_* vars): exact repo, run id, and ref, no log parsing.
+      # Between steps there can briefly be no step process; the next poll
+      # fills the fields in again.
+      local jenv jref
+      jenv="$(docker exec "$c" sh -c 'for p in /proc/[0-9]*/environ; do if tr "\0" "\n" < $p 2>/dev/null | grep -q "^GITHUB_REPOSITORY="; then tr "\0" "\n" < $p | grep -E "^GITHUB_(REPOSITORY|RUN_ID|REF_NAME)="; break; fi; done' 2>/dev/null)"
+      if [ -n "$jenv" ]; then
+        jrepo="$(echo "$jenv" | grep '^GITHUB_REPOSITORY=' | head -1 | cut -d= -f2 | json_escape)"
+        jrun="$(echo "$jenv" | grep '^GITHUB_RUN_ID=' | head -1 | cut -d= -f2 | grep -oE '^[0-9]+' | head -1)"
+        jref="$(echo "$jenv" | grep '^GITHUB_REF_NAME=' | head -1 | cut -d= -f2-)"
+        if echo "$jref" | grep -qE '^[0-9]+/merge$'; then jpr="${jref%%/merge*}"; else jbranch="$(echo "$jref" | json_escape)"; fi
+      fi
+    fi
+    # -1 = usage not yet sampled (first paint / just-started runner); the UI
+    # renders that as a pending "…" instead of a misleading 0%.
+    local urow cpu_pct=-1 mem_used_mib=-1
+    urow="$(echo "$usage" | grep -m1 "^${c} ")"
+    if [ -n "$urow" ]; then
+      cpu_pct="$(echo "$urow" | awk '{print $2}')"
+      mem_used_mib="$(echo "$urow" | awk '{print $3}')"
+    fi
+    case "$cpu_pct" in ''|*[!0-9.-]*) cpu_pct=-1 ;; esac
+    case "$mem_used_mib" in ''|*[!0-9-]*) mem_used_mib=-1 ;; esac
     [ $first -eq 0 ] && out+=","
-    out+="{\"name\":\"$(echo "$c"|json_escape)\",\"state\":\"${st:-unknown}\",\"phase\":\"$phase\",\"cpus\":$(( ${cpus:-0}/1000000000 )),\"mem_gb\":$(( ${mem:-0}/1024/1024/1024 ))}"
+    out+="{\"name\":\"$(echo "$c"|json_escape)\",\"state\":\"${st:-unknown}\",\"phase\":\"$phase\",\"job\":\"${job}\",\"job_started\":\"${jstarted}\",\"repo\":\"${jrepo}\",\"pr\":\"${jpr}\",\"branch\":\"${jbranch}\",\"run_id\":\"${jrun}\",\"cpus\":$(( ${cpus:-0}/1000000000 )),\"mem_gb\":$(( ${mem:-0}/1024/1024/1024 )),\"cpu_pct\":${cpu_pct:-0},\"mem_used_mib\":${mem_used_mib:-0}}"
     first=0
   done
   out+="]"
@@ -1033,15 +1341,8 @@ cmd_prune_cache() {
   # as "/mnt/user/", which slips past the exact blocklist into the /mnt/* allow arm
   # and then 'rm -rf /mnt/user/*' wipes every share. Normalize exhaustively and use
   # the normalized value for BOTH the guard and the rm.
-  local root="$CACHE_ROOT"
-  while [ "${root: -1}" = "/" ]; do root="${root%/}"; done
-  case "$root" in
-    ""|"/"|"/mnt"|"/mnt/user"|"/mnt/user0"|"/mnt/disks"|"/mnt/addons"|"/mnt/rootshare" \
-    |"/boot"|"/boot/"*|"/usr"|"/usr/"*|"/etc"|"/etc/"*|"/var"|"/var/"*|"/root"|"/root/"*|"/bin"*|"/sbin"*|"/lib"*)
-      err "refusing to prune-cache: CACHE_ROOT='$CACHE_ROOT' is a system dir or share root"; return 1 ;;
-    /mnt/*) : ;;   # /mnt/<pool>[/...] — the intended shape
-    *) err "refusing to prune-cache: CACHE_ROOT='$CACHE_ROOT' is not under /mnt"; return 1 ;;
-  esac
+  local root
+  root="$(crf_safe_cache_root)" || { err "refusing to prune-cache: CACHE_ROOT='$CACHE_ROOT' is unsafe (system dir, share, or unresolvable)"; return 1; }
   rm -rf "${root:?}/"* && log "cache cleared: $root"
 }
 
@@ -1094,6 +1395,17 @@ case "${1:-status}" in
   scale)        cmd_scale "${2:?usage: scale <N>}" ;;
   status)       cmd_status ;;
   status-json)  cmd_status_json ;;
+  image-info-json) cmd_image_info_json ;;
+  queued-json)  cmd_queued_json ;;
+  queued-refresh) cmd_queued_refresh ;;
+  cache-usage-json) cmd_cache_usage_json ;;
+  cache-usage-refresh) cmd_cache_usage_refresh ;;
+  usage-refresh) cmd_usage_refresh ;;
+  cache-clear-pkg) cmd_cache_clear_pkg ;;
+  stats-json)   cmd_stats_json ;;
+  stats-refresh) cmd_stats_refresh ;;
+  recycle)      cmd_recycle "${2:?usage: recycle <name>}" ;;
+  logs-tail)    cmd_logs_tail "${2:?usage: logs-tail <name> [n]}" "${3:-150}" ;;
   logs)         cmd_logs "${2:-1}" "${3:-100}" ;;
   validate)         cmd_validate ;;
   build-image)      cmd_build_image ;;
