@@ -866,8 +866,12 @@ provision_preflight() {
   ensure_mirror
   firewall_clear                                # drop stale rules (e.g. strict -> off/isolate)
   firewall_apply                                # re-add egress rules (no-op unless strict)
-  registry_login
-  return 0
+  # Propagate a real registry-login failure: on Start it avoids launching runners
+  # that can't pull; on the destructive recycle path it aborts BEFORE removing a
+  # runner it then couldn't repull. registry_login is a no-op (returns 0) for the
+  # built-in image or when no remote registry/creds are set, so this only bites an
+  # actually-failed remote auth.
+  registry_login || return 1
 }
 
 cmd_start() {
