@@ -207,6 +207,15 @@ autoscale_tick() {
   statef="${CFGDIR}/autoscale.state"; over=0
   [ -f "$statef" ] && over=$(cat "$statef" 2>/dev/null || echo 0)
 
+  # runner churn (crash, reap, or ephemeral exit) can drop the fleet below the
+  # floor between ticks; the grow branch below only ever adds STEP to the
+  # current count, so enforce AUTOSCALE_MIN unconditionally first.
+  if [ "$cur" -lt "$AUTOSCALE_MIN" ]; then
+    log "autoscale: count $cur < min $AUTOSCALE_MIN -> grow to $AUTOSCALE_MIN"
+    cmd_scale "$AUTOSCALE_MIN" >/dev/null; echo 0 > "$statef"
+    return 0
+  fi
+
   if [ "$idle" -lt "$AUTOSCALE_MIN_IDLE" ] && [ "$cur" -lt "$AUTOSCALE_MAX" ]; then
     target=$(( cur + AUTOSCALE_STEP )); [ "$target" -gt "$AUTOSCALE_MAX" ] && target=$AUTOSCALE_MAX
     log "autoscale: idle=$idle/$cur < buffer $AUTOSCALE_MIN_IDLE -> grow to $target"
@@ -714,7 +723,6 @@ build_args() {
     --label "net.unraid.ci-runner-farm.index=${idx}"
     -e RUNNER_NAME="$(host)-${name}"
     -e LABELS="$RUNNER_LABELS"
-    -e EPHEMERAL="$EPHEMERAL"
     -e DISABLE_AUTO_UPDATE="true"
     -e DISABLE_AUTOMATIC_DEREGISTRATION="true"   # we deregister host-side (deregister_runner_api)
     -e RUN_AS_ROOT="$RUN_AS_ROOT"
@@ -722,6 +730,10 @@ build_args() {
     -e RUNNER_WORKDIR="/_work"
     -e npm_config_cache="/home/runner/.npm"
   )
+  # myoung34 entrypoints enable ephemeral mode when the EPHEMERAL env var is
+  # PRESENT (any value, including "false") — so only pass it when it is true,
+  # otherwise EPHEMERAL="false" silently produces one-job-then-exit runners.
+  [ "$EPHEMERAL" = "true" ] && ARGS+=( -e EPHEMERAL="true" )
   # warm caches mounted into the runner, configurable via CACHE_MOUNTS
   local m
   for m in $CACHE_MOUNTS; do
