@@ -37,12 +37,12 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
 </div>
 
 <div class="crf-toolbar">
-  <uui-button size="sm" onclick="crfAction('start')">Start</uui-button>
-  <uui-button variant="secondary" size="sm" onclick="crfAction('stop')">Stop</uui-button>
-  <uui-button variant="secondary" size="sm" onclick="crfAction('restart')">Restart</uui-button>
-  <uui-button variant="outline" size="sm" onclick="crfAction('validate')">Validate (no token)</uui-button>
+  <uui-button size="xs" onclick="crfAction('start')">Start</uui-button>
+  <uui-button variant="secondary" size="xs" onclick="crfAction('stop')">Stop</uui-button>
+  <uui-button variant="secondary" size="xs" onclick="crfAction('restart')">Restart</uui-button>
+  <uui-button variant="outline" size="xs" onclick="crfAction('validate')">Validate (no token)</uui-button>
   <span class="crf-scale">Scale to <input type="number" id="crf-n" min="0" max="20" value="4">
-  <uui-button variant="secondary" size="sm" onclick="crfScale()">Scale</uui-button></span>
+  <uui-button variant="secondary" size="xs" onclick="crfScale()">Scale</uui-button></span>
 </div>
 
 <div class="crf-bays">
@@ -76,7 +76,7 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
   .crf-c-ok{color:var(--crf-ok)}.crf-c-busy{color:var(--crf-busy)}
   .crf-toolbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0 0 8px}
   .crf-scale{margin-left:auto;display:flex;align-items:center;gap:6px;color:var(--alt-text-color);font-size:13px}
-  .crf-scale input[type=number]{width:4em;height:32px;box-sizing:border-box;border-radius:6px;padding:0 8px;font-size:13px;margin:0}
+  .crf-scale input[type=number]{width:4em;height:26px;box-sizing:border-box;border-radius:6px;padding:0 8px;font-size:12px;margin:0}
   uui-button:not(:defined),uui-brand-button:not(:defined){cursor:pointer;border:1px solid var(--border-color);border-radius:6px;padding:5px 12px;font-size:13px;color:var(--text-color)}
   .crf-bays{border:1px solid var(--border-color);border-radius:6px;overflow:hidden;margin:0 0 8px}
   .crf-bay{display:grid;grid-template-columns:22px minmax(110px,1fr) 88px minmax(120px,1.6fr) 165px 200px;gap:8px;align-items:center;padding:4px 10px;border-top:1px solid var(--table-border-color,var(--border-color))}
@@ -96,8 +96,8 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
   .crf-ubar.crf-mid>span{background:var(--crf-busy)}
   .crf-ubar.crf-hot>span{background:var(--crf-err)}
   .crf-uval{font-family:bitstream,monospace;font-size:11px;color:var(--text-color);white-space:nowrap}
-  .crf-spark{width:52px;height:14px;flex:none}
-  .crf-spark polyline{fill:none;stroke:var(--crf-ok);stroke-width:1.5;vector-effect:non-scaling-stroke}
+  .crf-spark{width:52px;height:14px;flex:none;background:var(--shade-bg-color,transparent);border:1px solid var(--table-border-color,var(--border-color));border-radius:3px;box-sizing:border-box;display:inline-block}
+  .crf-spark polyline{fill:none;stroke:var(--crf-ok);stroke-width:1.75;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}
   .crf-u-mid .crf-spark polyline{stroke:var(--crf-busy)}
   .crf-u-hot .crf-spark polyline{stroke:var(--crf-err)}
   .crf-elapsed{font-size:11px;color:var(--alt-text-color);margin-left:6px;font-family:bitstream,monospace}
@@ -224,9 +224,9 @@ function crfHist(name,cpu,mem){
   return h;
 }
 function crfSpark(vals){
-  if(!vals||vals.length<2) return '';
-  const w=52,ht=14,n=vals.length;
-  const pts=vals.map((v,i)=>((i*(w/(n-1))).toFixed(1))+','+((ht-1-(Math.max(0,Math.min(100,v))/100)*(ht-2)).toFixed(1))).join(' ');
+  if(!vals||vals.length<2) return '<span class="crf-spark"></span>';
+  const w=52,ht=14,n=vals.length,pad=2.5;
+  const pts=vals.map((v,i)=>((i*(w/(n-1))).toFixed(1))+','+((ht-pad-(Math.max(0,Math.min(100,v))/100)*(ht-2*pad)).toFixed(1))).join(' ');
   return '<svg class="crf-spark" viewBox="0 0 '+w+' '+ht+'" preserveAspectRatio="none"><polyline points="'+pts+'"/></svg>';
 }
 function crfElapsed(iso){
@@ -295,8 +295,8 @@ function crfRefresh(){
         '<span class="crf-name">'+crfEsc(r.name)+'</span>'+
         '<span class="crf-phase"><uui-badge variant="'+bvar+'" size="xs"'+dark+'>'+crfEsc(ph)+'</uui-badge></span>'+
         '<span class="'+jobCls+'" title="'+crfEsc(r.job||'')+'">'+jobHtml+'</span>'+
-        '<span class="crf-usage">'+crfBar(cpuPct)+'<span class="crf-uval">'+(running?Math.round(r.cpu_pct||0)+'%':'&ndash;')+'</span></span>'+
-        '<span class="crf-usage">'+crfBar(memPct)+'<span class="crf-uval">'+memTxt+'</span></span>'+
+        '<span class="crf-usage'+(cpuPct>90?' crf-u-hot':cpuPct>60?' crf-u-mid':'')+'">'+crfSpark(hist.cpu)+crfBar(cpuPct)+'<span class="crf-uval">'+(running?Math.round(r.cpu_pct||0)+'%':'&ndash;')+'</span></span>'+
+        '<span class="crf-usage'+(memPct>90?' crf-u-hot':memPct>60?' crf-u-mid':'')+'">'+crfSpark(hist.mem)+crfBar(memPct)+'<span class="crf-uval">'+memTxt+'</span></span>'+
       '</div>';
     }).join('');
   }).catch(()=>{});
