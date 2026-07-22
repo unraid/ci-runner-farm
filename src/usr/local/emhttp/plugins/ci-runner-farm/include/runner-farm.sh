@@ -1146,6 +1146,19 @@ cmd_recycle() {
   echo "$name" | grep -qE "^${NAME_PREFIX}-[0-9]+$" || { echo '{"ok":false,"error":"bad name"}'; return 1; }
   idx="$(docker inspect -f '{{ index .Config.Labels "net.unraid.ci-runner-farm.index" }}' "$name" 2>/dev/null)"
   [ -z "$idx" ] && idx="${name##*-}"
+  # start_one relies on provisioning prerequisites that cmd_start normally creates
+  # (cache dirs, the isolated network, the image-cache mirror). Create them BEFORE
+  # removing the old container so a config change since the last Start — e.g.
+  # NETWORK_ISOLATION off->isolate, which creates ci-runner-net only on Start —
+  # can't leave the runner removed-but-not-replaced. Verify the network is actually
+  # up (don't just trust ensure_network's return) and abort with the runner intact.
+  ensure_dirs
+  ensure_network
+  if [ "$NETWORK_ISOLATION" != "off" ] && ! docker network inspect "$RUNNER_NETWORK" >/dev/null 2>&1; then
+    log "recycle: $name left in place — runner network $RUNNER_NETWORK unavailable"
+    echo '{"ok":false,"error":"runner network unavailable"}'; return 1
+  fi
+  ensure_mirror
   deregister_runner_api "$name"
   if ! docker rm -f "$name" >/dev/null 2>&1; then
     log "recycle: docker rm failed for $name"; echo '{"ok":false,"error":"remove failed"}'; return 1
