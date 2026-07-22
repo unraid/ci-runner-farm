@@ -993,9 +993,12 @@ cmd_status_json() {
     # Current job name (busy runners only): the runner listener logs
     # "Running job: <name>" when it picks one up — cheap to scrape and lets the
     # settings page show what each runner is working on.
-    local job="" jrepo="" jpr="" jbranch="" jrun=""
+    local job="" jrepo="" jpr="" jbranch="" jrun="" jstarted=""
     if [ "$phase" = "busy" ]; then
-      job="$(docker logs --tail 60 "$c" 2>&1 | grep -oE 'Running job: .*' | tail -1 | sed 's/^Running job: //' | tr -d '\r' | json_escape)"
+      local jline
+      jline="$(docker logs --timestamps --tail 60 "$c" 2>&1 | grep 'Running job: ' | tail -1 | tr -d '\r')"
+      job="$(echo "$jline" | sed 's/.*Running job: //' | json_escape)"
+      jstarted="$(echo "$jline" | awk '{print $1}' | grep -oE '^[0-9T:.Z-]+' | head -1)"
       # The newest Worker diag log holds the job message JSON: repository,
       # ref (PR or branch), and run_id — enough to deep-link the run.
       # Live job context from any step process's environment inside the
@@ -1018,7 +1021,7 @@ cmd_status_json() {
       mem_used_mib="$(to_mib "$(echo "$srow" | cut -d'|' -f3 | awk -F' / ' '{print $1}')")"
     fi
     [ $first -eq 0 ] && out+=","
-    out+="{\"name\":\"$(echo "$c"|json_escape)\",\"state\":\"${st:-unknown}\",\"phase\":\"$phase\",\"job\":\"${job}\",\"repo\":\"${jrepo}\",\"pr\":\"${jpr}\",\"branch\":\"${jbranch}\",\"run_id\":\"${jrun}\",\"cpus\":$(( ${cpus:-0}/1000000000 )),\"mem_gb\":$(( ${mem:-0}/1024/1024/1024 )),\"cpu_pct\":${cpu_pct:-0},\"mem_used_mib\":${mem_used_mib:-0}}"
+    out+="{\"name\":\"$(echo "$c"|json_escape)\",\"state\":\"${st:-unknown}\",\"phase\":\"$phase\",\"job\":\"${job}\",\"job_started\":\"${jstarted}\",\"repo\":\"${jrepo}\",\"pr\":\"${jpr}\",\"branch\":\"${jbranch}\",\"run_id\":\"${jrun}\",\"cpus\":$(( ${cpus:-0}/1000000000 )),\"mem_gb\":$(( ${mem:-0}/1024/1024/1024 )),\"cpu_pct\":${cpu_pct:-0},\"mem_used_mib\":${mem_used_mib:-0}}"
     first=0
   done
   out+="]"

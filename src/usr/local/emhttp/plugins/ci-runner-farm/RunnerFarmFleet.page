@@ -79,7 +79,7 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
   .crf-scale input[type=number]{width:4em;height:32px;box-sizing:border-box;border-radius:6px;padding:0 8px;font-size:13px;margin:0}
   uui-button:not(:defined),uui-brand-button:not(:defined){cursor:pointer;border:1px solid var(--border-color);border-radius:6px;padding:5px 12px;font-size:13px;color:var(--text-color)}
   .crf-bays{border:1px solid var(--border-color);border-radius:6px;overflow:hidden;margin:0 0 8px}
-  .crf-bay{display:grid;grid-template-columns:22px minmax(110px,1fr) 88px minmax(120px,1.6fr) 120px 155px;gap:8px;align-items:center;padding:4px 10px;border-top:1px solid var(--table-border-color,var(--border-color))}
+  .crf-bay{display:grid;grid-template-columns:22px minmax(110px,1fr) 88px minmax(120px,1.6fr) 165px 200px;gap:8px;align-items:center;padding:4px 10px;border-top:1px solid var(--table-border-color,var(--border-color))}
   .crf-bay:first-child{border-top:none}
   .crf-bay-head{background:var(--table-header-background-color);font-size:11px;color:var(--alt-text-color);padding:5px 10px}
   #crf-bays-body .crf-bay:hover{background:var(--hover-table-row-background-color)}
@@ -96,6 +96,17 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
   .crf-ubar.crf-mid>span{background:var(--crf-busy)}
   .crf-ubar.crf-hot>span{background:var(--crf-err)}
   .crf-uval{font-family:bitstream,monospace;font-size:11px;color:var(--text-color);white-space:nowrap}
+  .crf-spark{width:52px;height:14px;flex:none}
+  .crf-spark polyline{fill:none;stroke:var(--crf-ok);stroke-width:1.5;vector-effect:non-scaling-stroke}
+  .crf-u-mid .crf-spark polyline{stroke:var(--crf-busy)}
+  .crf-u-hot .crf-spark polyline{stroke:var(--crf-err)}
+  .crf-elapsed{font-size:11px;color:var(--alt-text-color);margin-left:6px;font-family:bitstream,monospace}
+  .crf-el-warn{color:var(--crf-busy)}
+  .crf-el-hot{color:var(--crf-err);font-weight:bold}
+  .crf-empty{display:flex;align-items:center;gap:14px;padding:18px 16px}
+  .crf-empty strong{font-size:13px;color:var(--text-color)}
+  .crf-toast{position:fixed;right:18px;bottom:48px;z-index:9999;background:var(--inverse-background-color,#222);color:var(--inverse-text-color,#fff);border:1px solid var(--border-color);border-radius:6px;padding:9px 16px;font-size:13px;opacity:0;transform:translateY(6px);transition:opacity .2s,transform .2s;pointer-events:none}
+  .crf-toast-show{opacity:1;transform:none}
   .crf-ball{width:12px;height:12px;border-radius:50%;background:var(--disabled-text-color,#888);display:inline-block}
   .crf-ball-idle{background:var(--crf-ok)}
   .crf-ball-busy{background:var(--crf-busy);animation:crf-pulse 1.6s ease-in-out infinite}
@@ -119,7 +130,7 @@ const CRF_CSRF = "<?=$crf_csrf?>";
 const CRF_URL  = "/plugins/ci-runner-farm/include/exec.php";
 const CRF_UUI_BASE = "<?=$crf_uui_base?>";
 const CRF_UTIL_CSS = "<?=$crf_util_css?>";
-const CRF_DARK = /Theme--(black|gray)\b/.test(document.documentElement.className);
+function crfDark(){ return /Theme--(black|gray)\b/.test(document.documentElement.className); }
 /* Force-register @unraid/ui (see header comment). Resolves both hashed asset
    names at runtime; merges the standalone Tailwind utilities (which the uui
    bundle ships without) with the uui tokens, rescoped for shadow DOM. */
@@ -133,10 +144,11 @@ window.CRF_UUI = (async () => {
       .replace(/\.unapi\.dark\b/g, ':host(.dark)')
       .replace(/\.unapi\b/g, ':host')
       .replace(/:root\b/g, ':host')
-      .replace(/\.dark\b/g, ':host(.dark)');
+      .replace(/\.dark\b/g, ':host(.dark)')
+      + '\n:host([size="xs"]) .inline-flex{font-size:12px;line-height:1.2;padding:3px 10px;gap:4px}';
     const mod = await import(CRF_UUI_BASE + man['src/register.ts'].file);
     mod.registerAllComponents({ sharedCssContent: css });
-    if (CRF_DARK) document.querySelectorAll('uui-button,uui-brand-button,uui-badge,uui-card-wrapper').forEach(e => e.classList.add('dark'));
+    if (crfDark()) document.querySelectorAll('uui-button,uui-brand-button,uui-badge,uui-card-wrapper').forEach(e => e.classList.add('dark'));
     return true;
   } catch (e) { console.warn('ci-runner-farm: @unraid/ui unavailable, using fallback styling', e); return false; }
 })();
@@ -174,11 +186,53 @@ function crfFarmLog(){
   }).catch(()=>{});
 }
 crfFarmLog(); setInterval(crfFarmLog,10000);
-function crfAction(a){ crfPost({action:a}).then(o=>{crfLog(o); crfRefresh();}); }
-function crfScale(){ crfPost({action:'scale',n:document.getElementById('crf-n').value}).then(o=>{crfLog(o); crfRefresh();}); }
+/* Lightweight theme-following toast for action feedback. */
+function crfToast(msg){
+  let t=document.getElementById('crf-toast');
+  if(!t){ t=document.createElement('div'); t.id='crf-toast'; t.className='crf-toast'; document.body.appendChild(t); }
+  t.textContent=msg; t.classList.add('crf-toast-show');
+  clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('crf-toast-show'),2600);
+}
+const CRF_TOAST_MSG={start:'Fleet started',stop:'Fleet stopped',restart:'Fleet restarted',validate:'Validation finished'};
+function crfDoAction(a){ crfPost({action:a}).then(o=>{crfLog(o); crfRefresh(); if(o.ok!==false) crfToast(CRF_TOAST_MSG[a]||a); }); }
+function crfAction(a){
+  /* Stop/Restart kill whatever the runners are building — confirm with the
+     live impact when any runner is mid-job (sweetalert ships with the webgui). */
+  if((a==='stop'||a==='restart')&&window.swal){
+    const busy=((window.CRF_LAST||{}).runners||[]).filter(r=>r.state==='running'&&r.phase==='busy');
+    if(busy.length){
+      const lines=busy.map(r=>r.name+(r.job?' — '+r.job:'')).join('\n');
+      swal({title:(a==='stop'?'Stop':'Restart')+' the fleet?',
+        text:busy.length+' runner'+(busy.length>1?'s are':' is')+' mid-job:\n'+lines+'\n\nTheir jobs will fail and re-queue.',
+        type:'warning',showCancelButton:true,confirmButtonText:a==='stop'?'Stop fleet':'Restart fleet',cancelButtonText:'Cancel'},
+        ok=>{ if(ok) crfDoAction(a); });
+      return;
+    }
+  }
+  crfDoAction(a);
+}
+function crfScale(){ const n=document.getElementById('crf-n').value; crfPost({action:'scale',n}).then(o=>{crfLog(o); crfRefresh(); if(o.ok!==false) crfToast('Scaled to '+n);}); }
 function crfCopyLog(btn){
   const t=document.getElementById('crf-log').textContent||'';
   navigator.clipboard.writeText(t).then(()=>{ const old=btn.textContent; btn.textContent='Copied'; setTimeout(()=>btn.textContent=old,1500); }).catch(()=>{});
+}
+const CRF_HIST={};
+function crfHist(name,cpu,mem){
+  const h=CRF_HIST[name]=CRF_HIST[name]||{cpu:[],mem:[]};
+  h.cpu.push(cpu); h.mem.push(mem);
+  if(h.cpu.length>30){h.cpu.shift(); h.mem.shift();}
+  return h;
+}
+function crfSpark(vals){
+  if(!vals||vals.length<2) return '';
+  const w=52,ht=14,n=vals.length;
+  const pts=vals.map((v,i)=>((i*(w/(n-1))).toFixed(1))+','+((ht-1-(Math.max(0,Math.min(100,v))/100)*(ht-2)).toFixed(1))).join(' ');
+  return '<svg class="crf-spark" viewBox="0 0 '+w+' '+ht+'" preserveAspectRatio="none"><polyline points="'+pts+'"/></svg>';
+}
+function crfElapsed(iso){
+  const t=Date.parse(iso); if(isNaN(t)) return null;
+  const m=Math.floor((Date.now()-t)/60000);
+  return {m, txt: m<1?'<1m': m<60? m+'m' : Math.floor(m/60)+'h'+String(m%60).padStart(2,'0')};
 }
 function crfBar(pct){
   const p=Math.max(0,Math.min(100,Math.round(pct)));
@@ -187,6 +241,7 @@ function crfBar(pct){
 }
 function crfRefresh(){
   crfPost({action:'status-json'}).then(d=>{
+    window.CRF_LAST=d;
     const warn=document.getElementById('crf-warn');
     if(warn){ if(d.warning){ warn.textContent='⚠ '+d.warning; warn.style.display='block'; } else { warn.textContent=''; warn.style.display='none'; } }
     const sec=document.getElementById('crf-sec');
@@ -200,16 +255,23 @@ function crfRefresh(){
     put('crf-s-as',d.autoscale||'off'); put('crf-s-iu',d.image_autoupdate||'off');
     const tb=document.getElementById('crf-bays-body'); if(!tb) return;
     if(!rs.length){
-      tb.innerHTML='<div class="crf-bay"><span class="crf-ball"></span><span class="crf-muted">no managed runners (configured: '+crfEsc(d.configured||0)+')</span><span></span><span></span><span></span><span></span></div>';
+      tb.innerHTML='<div class="crf-empty"><span class="crf-ball"></span>'+
+        '<div><strong>No managed runners</strong><div class="crf-muted">Configured for '+crfEsc(d.configured||0)+' — start the fleet to register them with GitHub.</div></div>'+
+        '<uui-button size="sm"'+(crfDark()?' class="dark"':'')+' onclick="crfAction(\'start\')">Start the fleet</uui-button></div>';
       return;
     }
-    const dark=CRF_DARK?' class="dark"':'';
+    const dark=crfDark()?' class="dark"':'';
     tb.innerHTML=rs.map(r=>{
       const running=r.state==='running';
       const ph=running?r.phase:'exited';
       const ball=running?('crf-ball-'+r.phase):'crf-ball';
       const bvar=ph==='busy'?'orange':ph==='idle'?'green':ph==='error'?'red':'gray';
       let jobHtml;
+      let elapsedHtml='';
+      if(running&&r.phase==='busy'&&r.job_started){
+        const e=crfElapsed(r.job_started);
+        if(e) elapsedHtml=' <span class="crf-elapsed'+(e.m>=120?' crf-el-hot':e.m>=30?' crf-el-warn':'')+'" title="running for '+e.txt+'">'+e.txt+'</span>';
+      }
       if(running&&r.phase==='busy'){
         const repoShort=r.repo?crfEsc(String(r.repo).split('/').pop()):'';
         const runOk=/^\d+$/.test(r.run_id||'');
@@ -218,6 +280,7 @@ function crfRefresh(){
         jobHtml=(runOk&&r.repo)?'<a href="https://github.com/'+crfEsc(r.repo)+'/actions/runs/'+r.run_id+'" target="_blank" rel="noopener" title="open run">'+core+'</a>':core;
         if(/^\d+$/.test(r.pr||'')&&r.repo) jobHtml+='<a class="crf-ref" href="https://github.com/'+crfEsc(r.repo)+'/pull/'+r.pr+'" target="_blank" rel="noopener">#'+r.pr+'</a>';
         else if(r.branch) jobHtml+='<span class="crf-ref">'+crfEsc(r.branch)+'</span>';
+        jobHtml+=elapsedHtml;
       } else {
         jobHtml=crfEsc(running?'waiting for jobs':r.state);
       }
@@ -225,6 +288,7 @@ function crfRefresh(){
       const cpuMax=(r.cpus&&r.cpus>0)?r.cpus*100:100;
       const cpuPct=running?(100*(r.cpu_pct||0)/cpuMax):0;
       const memPct=running&&r.mem_gb?100*(r.mem_used_mib||0)/(r.mem_gb*1024):0;
+      const hist=crfHist(r.name,cpuPct,memPct);
       const memTxt=running?((r.mem_used_mib>=1024?( (r.mem_used_mib/1024).toFixed(1)+'g'):(r.mem_used_mib+'m'))+'/'+r.mem_gb+'g'):'&ndash;';
       return '<div class="crf-bay">'+
         '<span class="crf-ball '+ball+'"></span>'+
