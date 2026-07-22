@@ -29,9 +29,9 @@ jobs:
         with:
           token: ${{ secrets.UNRAID_BOT_GITHUB_ADMIN_TOKEN || github.token }}
 
-  # On the open release PR, regenerate the self-contained .plg so its version
-  # entities and embedded payload match the version release-please just bumped,
-  # then commit it back onto the PR branch.
+  # On the open release PR, restore author credits dropped by release-please's
+  # conventional-commit parser and regenerate the self-contained .plg, then
+  # commit both updates back onto the PR branch.
   prepare-plugin-release-pr:
     needs: release-please
     if: ${{ needs.release-please.outputs.pr != '' }}
@@ -56,19 +56,45 @@ jobs:
           chmod +x build-plg.sh
           INTERNAL_VERSION="$version" ./build-plg.sh
 
-      - name: Commit plugin release metadata
+      - name: Credit release authors
+        env:
+          GH_TOKEN: ${{ secrets.UNRAID_BOT_GITHUB_ADMIN_TOKEN || github.token }}
+          PYTHONDONTWRITEBYTECODE: "1"
+          PR_NUMBER: ${{ fromJSON(needs.release-please.outputs.pr).number }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/test_credit_release_authors.py
+          body="$RUNNER_TEMP/release-pr-body.md"
+          gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .body > "$body"
+          python3 .github/scripts/credit_release_authors.py CHANGELOG.md --pr-body "$body"
+
+      - name: Commit prepared release files
         shell: bash
         run: |
           set -euo pipefail
           if [[ -z "$(git status --porcelain)" ]]; then
-            echo "Plugin release metadata is already current"
+            echo "Prepared release files are already current"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add VERSION ci-runner-farm.plg
-          git commit -m "chore(release): prepare plugin metadata"
+          git add CHANGELOG.md VERSION ci-runner-farm.plg
+          git commit -m "chore(release): prepare release files"
           git push origin HEAD:${{ fromJSON(needs.release-please.outputs.pr).headBranchName }}
+
+      - name: Update release PR body
+        env:
+          GH_TOKEN: ${{ secrets.UNRAID_BOT_GITHUB_ADMIN_TOKEN || github.token }}
+          PR_NUMBER: ${{ fromJSON(needs.release-please.outputs.pr).number }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          body="$RUNNER_TEMP/release-pr-body.md"
+          jq -n --rawfile body "$body" '{body: $body}' |
+            gh api --method PATCH "repos/$REPO/pulls/$PR_NUMBER" --input - >/dev/null
 
   validate-plugin-release:
     needs: release-please
