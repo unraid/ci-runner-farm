@@ -85,6 +85,11 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
   #crf-bays-body .crf-bay:hover{background:var(--hover-table-row-background-color)}
   .crf-name{font-family:bitstream,monospace;font-size:13px;color:var(--text-color)}
   .crf-job{font-size:12px;color:var(--alt-text-color);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .crf-job a{color:var(--alt-text-color);text-decoration:none}
+  .crf-job a:hover{color:var(--link-text-color);text-decoration:underline}
+  .crf-repo{color:var(--text-color)}
+  .crf-ref{font-size:11px;border:1px solid var(--border-color);border-radius:8px;padding:0 6px;margin-left:6px;color:var(--link-text-color);text-decoration:none;white-space:nowrap}
+  .crf-ref:hover{border-color:var(--link-text-color)}
   .crf-usage{display:flex;align-items:center;gap:6px;min-width:0}
   .crf-ubar{flex:1;height:6px;border-radius:3px;background:var(--usage-bar-background-color,var(--border-color));overflow:hidden;min-width:40px}
   .crf-ubar>span{display:block;height:100%;background:var(--crf-ok);transition:width .6s ease,background-color .6s ease}
@@ -204,7 +209,18 @@ function crfRefresh(){
       const ph=running?r.phase:'exited';
       const ball=running?('crf-ball-'+r.phase):'crf-ball';
       const bvar=ph==='busy'?'orange':ph==='idle'?'green':ph==='error'?'red':'gray';
-      const job=running&&r.phase==='busy'?(r.job||'&mdash;'):(running&&r.phase==='idle'?'waiting for jobs':r.state);
+      let jobHtml;
+      if(running&&r.phase==='busy'){
+        const repoShort=r.repo?crfEsc(String(r.repo).split('/').pop()):'';
+        const runOk=/^\d+$/.test(r.run_id||'');
+        const jobTxt=crfEsc(r.job||'\u2014');
+        const core=(repoShort?'<span class="crf-repo" title="'+crfEsc(r.repo)+'">'+repoShort+'</span> \u00b7 ':'')+jobTxt;
+        jobHtml=(runOk&&r.repo)?'<a href="https://github.com/'+crfEsc(r.repo)+'/actions/runs/'+r.run_id+'" target="_blank" rel="noopener" title="open run">'+core+'</a>':core;
+        if(/^\d+$/.test(r.pr||'')&&r.repo) jobHtml+='<a class="crf-ref" href="https://github.com/'+crfEsc(r.repo)+'/pull/'+r.pr+'" target="_blank" rel="noopener">#'+r.pr+'</a>';
+        else if(r.branch) jobHtml+='<span class="crf-ref">'+crfEsc(r.branch)+'</span>';
+      } else {
+        jobHtml=crfEsc(running?'waiting for jobs':r.state);
+      }
       const jobCls=running&&r.phase==='busy'&&r.job?'crf-job':'crf-job crf-muted';
       const cpuMax=(r.cpus&&r.cpus>0)?r.cpus*100:100;
       const cpuPct=running?(100*(r.cpu_pct||0)/cpuMax):0;
@@ -214,7 +230,7 @@ function crfRefresh(){
         '<span class="crf-ball '+ball+'"></span>'+
         '<span class="crf-name">'+crfEsc(r.name)+'</span>'+
         '<span class="crf-phase"><uui-badge variant="'+bvar+'" size="xs"'+dark+'>'+crfEsc(ph)+'</uui-badge></span>'+
-        '<span class="'+jobCls+'" title="'+crfEsc(r.job||'')+'">'+(r.job?crfEsc(job):job)+'</span>'+
+        '<span class="'+jobCls+'" title="'+crfEsc(r.job||'')+'">'+jobHtml+'</span>'+
         '<span class="crf-usage">'+crfBar(cpuPct)+'<span class="crf-uval">'+(running?Math.round(r.cpu_pct||0)+'%':'&ndash;')+'</span></span>'+
         '<span class="crf-usage">'+crfBar(memPct)+'<span class="crf-uval">'+memTxt+'</span></span>'+
       '</div>';

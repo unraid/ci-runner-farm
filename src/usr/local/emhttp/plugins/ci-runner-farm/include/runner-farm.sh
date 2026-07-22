@@ -993,9 +993,23 @@ cmd_status_json() {
     # Current job name (busy runners only): the runner listener logs
     # "Running job: <name>" when it picks one up — cheap to scrape and lets the
     # settings page show what each runner is working on.
-    local job=""
+    local job="" jrepo="" jpr="" jbranch="" jrun=""
     if [ "$phase" = "busy" ]; then
       job="$(docker logs --tail 60 "$c" 2>&1 | grep -oE 'Running job: .*' | tail -1 | sed 's/^Running job: //' | tr -d '\r' | json_escape)"
+      # The newest Worker diag log holds the job message JSON: repository,
+      # ref (PR or branch), and run_id — enough to deep-link the run.
+      # Live job context from any step process's environment inside the
+      # runner (GITHUB_* vars): exact repo, run id, and ref, no log parsing.
+      # Between steps there can briefly be no step process; the next poll
+      # fills the fields in again.
+      local jenv jref
+      jenv="$(docker exec "$c" sh -c 'for p in /proc/[0-9]*/environ; do if tr "\0" "\n" < $p 2>/dev/null | grep -q "^GITHUB_REPOSITORY="; then tr "\0" "\n" < $p | grep -E "^GITHUB_(REPOSITORY|RUN_ID|REF_NAME)="; break; fi; done' 2>/dev/null)"
+      if [ -n "$jenv" ]; then
+        jrepo="$(echo "$jenv" | grep '^GITHUB_REPOSITORY=' | head -1 | cut -d= -f2 | json_escape)"
+        jrun="$(echo "$jenv" | grep '^GITHUB_RUN_ID=' | head -1 | cut -d= -f2 | grep -oE '^[0-9]+' | head -1)"
+        jref="$(echo "$jenv" | grep '^GITHUB_REF_NAME=' | head -1 | cut -d= -f2-)"
+        if echo "$jref" | grep -qE '^[0-9]+/merge$'; then jpr="${jref%%/merge*}"; else jbranch="$(echo "$jref" | json_escape)"; fi
+      fi
     fi
     local srow cpu_pct="0" mem_used_mib="0"
     srow="$(echo "$statsraw" | grep "^${c}|" | head -1)"
@@ -1004,7 +1018,7 @@ cmd_status_json() {
       mem_used_mib="$(to_mib "$(echo "$srow" | cut -d'|' -f3 | awk -F' / ' '{print $1}')")"
     fi
     [ $first -eq 0 ] && out+=","
-    out+="{\"name\":\"$(echo "$c"|json_escape)\",\"state\":\"${st:-unknown}\",\"phase\":\"$phase\",\"job\":\"${job}\",\"cpus\":$(( ${cpus:-0}/1000000000 )),\"mem_gb\":$(( ${mem:-0}/1024/1024/1024 )),\"cpu_pct\":${cpu_pct:-0},\"mem_used_mib\":${mem_used_mib:-0}}"
+    out+="{\"name\":\"$(echo "$c"|json_escape)\",\"state\":\"${st:-unknown}\",\"phase\":\"$phase\",\"job\":\"${job}\",\"repo\":\"${jrepo}\",\"pr\":\"${jpr}\",\"branch\":\"${jbranch}\",\"run_id\":\"${jrun}\",\"cpus\":$(( ${cpus:-0}/1000000000 )),\"mem_gb\":$(( ${mem:-0}/1024/1024/1024 )),\"cpu_pct\":${cpu_pct:-0},\"mem_used_mib\":${mem_used_mib:-0}}"
     first=0
   done
   out+="]"
