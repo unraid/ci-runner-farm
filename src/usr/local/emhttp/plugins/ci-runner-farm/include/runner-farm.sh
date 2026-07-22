@@ -147,12 +147,15 @@ busy_count() {
   echo "$b"
 }
 
-# remove up to $1 IDLE runners (highest index first), never below MIN, never busy ones
+# remove up to $1 IDLE runners (highest index first), never below the effective
+# floor (MIN clamped to MAX), never busy ones
 scale_down_idle() {
-  local want="$1" removed=0 c
+  local want="$1" removed=0 c floor
+  floor=$AUTOSCALE_MIN
+  [ "$floor" -gt "$AUTOSCALE_MAX" ] && floor=$AUTOSCALE_MAX
   for c in $(managed_names | sort -rV); do
     [ "$removed" -ge "$want" ] && break
-    [ "$(current_count)" -le "$AUTOSCALE_MIN" ] && break
+    [ "$(current_count)" -le "$floor" ] && break
     if ! runner_busy "$c"; then
       log "autoscale: removing idle $c"
       remove_runner "$c"
@@ -225,7 +228,7 @@ autoscale_tick() {
     target=$(( cur + AUTOSCALE_STEP )); [ "$target" -gt "$AUTOSCALE_MAX" ] && target=$AUTOSCALE_MAX
     log "autoscale: idle=$idle/$cur < buffer $AUTOSCALE_MIN_IDLE -> grow to $target"
     cmd_scale "$target" >/dev/null; echo 0 > "$statef"
-  elif [ "$idle" -gt $(( AUTOSCALE_MIN_IDLE + AUTOSCALE_STEP )) ] && [ "$cur" -gt "$AUTOSCALE_MIN" ]; then
+  elif [ "$idle" -gt $(( AUTOSCALE_MIN_IDLE + AUTOSCALE_STEP )) ] && [ "$cur" -gt "$floor" ]; then
     over=$(( over + 1 )); echo "$over" > "$statef"
     if [ "$over" -ge "$AUTOSCALE_IDLE_GRACE" ]; then
       log "autoscale: idle=$idle/$cur high for $over checks -> shrink by $AUTOSCALE_STEP"
