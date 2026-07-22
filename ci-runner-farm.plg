@@ -2,13 +2,13 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name          "ci-runner-farm">
 <!ENTITY author        "Lime Technology">
-<!ENTITY version       "2026.07.22.0628.0-1.5.0">
-<!ENTITY pluginVersion "1.5.0">
-<!ENTITY releaseTag    "v1.5.0">
+<!ENTITY version       "2026.07.22.0629.0-1.5.1">
+<!ENTITY pluginVersion "1.5.1">
+<!ENTITY releaseTag    "v1.5.1">
 <!ENTITY pluginURL     "https://github.com/unraid/ci-runner-farm/releases/latest/download/ci-runner-farm.plg">
-<!ENTITY packageName   "ci-runner-farm-2026.07.22.0628.0-1.5.0.tgz">
-<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/v1.5.0/ci-runner-farm-2026.07.22.0628.0-1.5.0.tgz">
-<!ENTITY packageMD5    "9ce0cdcfd8075e7076a3852714ff3fab">
+<!ENTITY packageName   "ci-runner-farm-2026.07.22.0629.0-1.5.1.tgz">
+<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/v1.5.1/ci-runner-farm-2026.07.22.0629.0-1.5.1.tgz">
+<!ENTITY packageMD5    "aadc2973beedcb32717c724dd190e42e">
 <!ENTITY plgdir        "/usr/local/emhttp/plugins/&name;">
 <!ENTITY cfgdir        "/boot/config/plugins/&name;">
 ]>
@@ -22,8 +22,8 @@
 
 <CHANGES>
 ### &version;
-### Features
-* **default-image:** add runner HEALTHCHECK to the shipped starter Dockerfile ([#27](https://github.com/unraid/ci-runner-farm/issues/27)) ([ea6c88d](https://github.com/unraid/ci-runner-farm/commit/ea6c88d0cbb9e8f683610d2c7bd632224fa13367))
+### Bug Fixes
+* honor EPHEMERAL=false, enforce autoscale MIN floor, runner-owned cache dirs ([#30](https://github.com/unraid/ci-runner-farm/issues/30)) ([a605b80](https://github.com/unraid/ci-runner-farm/commit/a605b80193cd93ba37ee9849c8ea52ba3110cd45))
 </CHANGES>
 
 <!-- plugin package: Unraid downloads it to flash and verifies the MD5 -->
@@ -40,11 +40,11 @@ PLGDIR="/usr/local/emhttp/plugins/ci-runner-farm"
 CFGDIR="/boot/config/plugins/ci-runner-farm"
 mkdir -p "$CFGDIR" "$PLGDIR"
 # Sweep any older package versions off flash, keeping this build's package.
-find "$CFGDIR" -maxdepth 1 -name 'ci-runner-farm-*.tgz' ! -name 'ci-runner-farm-2026.07.22.0628.0-1.5.0.tgz' -delete 2>/dev/null || true
+find "$CFGDIR" -maxdepth 1 -name 'ci-runner-farm-*.tgz' ! -name 'ci-runner-farm-2026.07.22.0629.0-1.5.1.tgz' -delete 2>/dev/null || true
 # Extract ONLY into the plugin dir; --no-same-owner forces root ownership;
 # --no-overwrite-dir leaves existing dir metadata alone. System dirs untouched.
 # The .tgz is kept on flash so the on-boot reinstall works without a download.
-tar -xzf "$CFGDIR/ci-runner-farm-2026.07.22.0628.0-1.5.0.tgz" --no-same-owner --no-overwrite-dir -C "$PLGDIR"
+tar -xzf "$CFGDIR/ci-runner-farm-2026.07.22.0629.0-1.5.1.tgz" --no-same-owner --no-overwrite-dir -C "$PLGDIR"
 chown -R root:root "$PLGDIR"
 find "$PLGDIR" -type d -exec chmod 0755 {} +
 find "$PLGDIR" -type f -exec chmod 0644 {} +
@@ -54,6 +54,36 @@ chmod 0755 "$PLGDIR/include/runner-farm.sh"
 # Config defaults are NOT seeded to flash — the settings page and runner-farm.sh
 # both fall back to built-in defaults, so flash only ever holds what the user set.
 [ -f "$CFGDIR/Dockerfile" ] || cp "$PLGDIR/default.Dockerfile" "$CFGDIR/Dockerfile"
+# Migrate saved Dockerfiles seeded before the cache-ownership fix: without
+# runner-owned CACHE_MOUNTS destinations baked into the image, Docker's
+# bind-mount auto-creation leaves root-owned parents and a non-root runner
+# fails writing beside them (rustup: "could not create bin directory
+# '/home/runner/.cargo/bin'"). Patch only files that still carry the stock
+# packages marker and lack the fix; customized files without the marker get a
+# notice instead.
+DF="$CFGDIR/Dockerfile"
+if [ -f "$DF" ] && ! grep -q 'mkdir -p /home/runner/.cargo/registry' "$DF"; then
+  if grep -q '^#  && rm -rf /var/lib/apt/lists/\*' "$DF"; then
+    BLK=$(mktemp)
+    cat > "$BLK" <<'EOF_CACHEDIRS'
+
+# Pre-create the default CACHE_MOUNTS destinations as runner-owned. When these
+# paths are absent from the image, Docker's bind-mount auto-creation makes the
+# missing parent directories root-owned, and a non-root runner (RUN_AS_ROOT=false)
+# can then no longer write beside them — e.g. rustup fails with "could not
+# create bin directory '/home/runner/.cargo/bin': Permission denied".
+RUN mkdir -p /home/runner/.cargo/registry /home/runner/.cargo/git \
+      /home/runner/.cache/sccache /home/runner/.cache/yarn /home/runner/.cache/ms-playwright \
+      /home/runner/.npm /home/runner/.local/share/pnpm/store \
+ && chown -R runner:runner /home/runner/.cargo /home/runner/.cache /home/runner/.npm /home/runner/.local
+EOF_CACHEDIRS
+    sed -i "\@^#  && rm -rf /var/lib/apt/lists/\*@r $BLK" "$DF"
+    rm -f "$BLK"
+    echo "ci-runner-farm: patched saved Dockerfile to pre-create runner-owned cache dirs (press Build to rebuild the runner image)."
+  else
+    echo "ci-runner-farm: NOTE - saved $DF lacks the runner-owned cache-dir block from default.Dockerfile; merge it manually so non-root runners can write beside the cache mounts."
+  fi
+fi
 ( docker pull myoung34/github-runner:latest >/dev/null 2>&1 & ) || true
 # Bring the fleet + autoscaler up. Runs on manual install AND on every boot
 # (rc.local reinstalls plugins), detached so it waits for dockerd+array without
@@ -61,7 +91,7 @@ chmod 0755 "$PLGDIR/include/runner-farm.sh"
 ( nohup "$PLGDIR/include/runner-farm.sh" boot-autostart >>"$CFGDIR/boot.log" 2>&1 & ) || true
 echo ""
 echo "+=============================================================+"
-echo "| ci-runner-farm 2026.07.22.0628.0-1.5.0 installed.                         "
+echo "| ci-runner-farm 2026.07.22.0629.0-1.5.1 installed.                         "
 echo "| Settings > Utilities > CI Runner Farm                        "
 echo "| Set a GitHub PAT, then Start (or Validate without a token).  "
 echo "+=============================================================+"
