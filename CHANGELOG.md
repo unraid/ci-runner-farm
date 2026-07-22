@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1](https://github.com/unraid/ci-runner-farm/compare/v1.5.0...v1.5.1) (2026-07-22)
+
+
+### Bug Fixes
+
+* honor EPHEMERAL=false, enforce autoscale MIN floor, runner-owned cache dirs ([#30](https://github.com/unraid/ci-runner-farm/issues/30)) ([a605b80](https://github.com/unraid/ci-runner-farm/commit/a605b80193cd93ba37ee9849c8ea52ba3110cd45))
+
 ## [1.5.0](https://github.com/unraid/ci-runner-farm/compare/v1.4.3...v1.5.0) (2026-07-12)
 
 
