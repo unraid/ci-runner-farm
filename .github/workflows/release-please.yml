@@ -25,7 +25,7 @@ jobs:
     steps:
       - id: release
         name: Release Please
-        uses: googleapis/release-please-action@8b8fd2cc23b2e18957157a9d923d75aa0c6f6ad5
+        uses: googleapis/release-please-action@0dfd8538845b8e92600d271a895a5372865d4062
         with:
           token: ${{ secrets.UNRAID_BOT_GITHUB_ADMIN_TOKEN || github.token }}
 
