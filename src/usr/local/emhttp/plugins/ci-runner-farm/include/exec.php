@@ -83,7 +83,16 @@ switch ($action) {
   case 'build-image':
     // launch the build in the background; UI polls 'build-log'
     $log = "$CFGDIR/build.log";
-    $cmd = escapeshellarg($SCRIPT) . ' build-image > ' . escapeshellarg($log) . ' 2>&1; echo "__BUILD_RC__=$?" >> ' . escapeshellarg($log);
+    // Refuse a second concurrent build: they'd share this one log file and race,
+    // and a fresh poll could read the previous build's __BUILD_RC__. If one is
+    // already running, report it so the UI keeps polling that build's progress.
+    $running = trim(shell_exec("pgrep -f '[r]unner-farm.sh build-image' >/dev/null 2>&1 && echo 1 || echo 0")) === '1';
+    if ($running) { echo json_encode(['ok' => false, 'error' => 'a build is already running']); break; }
+    @mkdir($CFGDIR, 0755, true);
+    // Truncate up-front so a poll landing before the build's first write can't see
+    // the prior build's __BUILD_RC__ and report a stale completion.
+    file_put_contents($log, '');
+    $cmd = escapeshellarg($SCRIPT) . ' build-image >> ' . escapeshellarg($log) . ' 2>&1; echo "__BUILD_RC__=$?" >> ' . escapeshellarg($log);
     exec('nohup sh -c ' . escapeshellarg($cmd) . ' >/dev/null 2>&1 &');
     echo json_encode(['ok' => true, 'action' => 'build-image']);
     break;

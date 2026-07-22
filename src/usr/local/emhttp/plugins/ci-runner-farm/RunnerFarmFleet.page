@@ -187,10 +187,18 @@ function crfPost(p){
    (all tabs share one document, so document.hidden stays false on Settings/Image
    while Fleet's pollers would otherwise keep hitting docker on the NAS). */
 function crfFleetActive(){ const b=document.getElementById('crf-bays-body'); return !document.hidden && !!b && b.offsetParent!==null; }
+/* Copy text to the clipboard, feature-detecting the async Clipboard API (absent
+   in insecure contexts — Unraid's LAN webGUI is often plain HTTP, where
+   navigator.clipboard is undefined and .writeText would throw synchronously) and
+   falling back to execCommand('copy'). Shared by every tab (one document). */
+function crfCopyText(t){
+  if(navigator.clipboard&&navigator.clipboard.writeText) return navigator.clipboard.writeText(t);
+  return new Promise((res,rej)=>{ try{ const ta=document.createElement('textarea'); ta.value=t; ta.setAttribute('readonly',''); ta.style.position='fixed'; ta.style.top='-1000px'; ta.style.opacity='0'; document.body.appendChild(ta); ta.select(); const ok=document.execCommand('copy'); document.body.removeChild(ta); ok?res():rej(new Error('copy rejected')); }catch(e){ rej(e); } });
+}
 /* Copy the text content of an element to the clipboard, with button feedback. */
 function crfCopyFrom(id, btn){
   const t=(document.getElementById(id)||{}).textContent||'';
-  navigator.clipboard.writeText(t).then(()=>{ const o=btn.textContent; btn.textContent='Copied'; setTimeout(()=>btn.textContent=o,1500); }).catch(()=>{});
+  crfCopyText(t).then(()=>{ const o=btn.textContent; btn.textContent='Copied'; setTimeout(()=>btn.textContent=o,1500); }).catch(()=>{ const o=btn.textContent; btn.textContent='Copy failed'; setTimeout(()=>btn.textContent=o,1500); });
 }
 function crfEsc(s){ return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 /* Semantic log tinting: escape first, then dim structural prefixes and tint
@@ -416,7 +424,10 @@ document.getElementById('crf-bays-body').addEventListener('keydown',e=>{
   const row=e.target.closest('.crf-bay[data-name]');
   if(row&&e.target===row){ e.preventDefault(); crfToggleDrawer(row.dataset.name); }
 });
-setInterval(()=>{ if(window.CRF_DRAWER && !document.hidden) crfDrawerFill(window.CRF_DRAWER); },5000);
+/* No separate drawer-refresh timer: crfRefresh() rebuilds the bays and calls
+   crfDrawerMount() every cycle (and is itself gated by crfFleetActive()), which
+   re-fills the open drawer. A second interval here double-fetched runner-log and
+   ignored the sub-tab guard, so it kept hitting docker on the NAS off-tab. */
 /* Pause all polling while the tab is hidden (each poller costs a docker
    stats + per-runner exec on the NAS); refresh immediately on return. */
 document.addEventListener('visibilitychange',()=>{

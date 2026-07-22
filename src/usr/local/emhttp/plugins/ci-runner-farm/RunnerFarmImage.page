@@ -161,7 +161,8 @@ crfiInfo();
 let crfiAce=null, crfiSaved='';
 (function(){
   const ta=document.getElementById('crf-dockerfile');
-  if(!window.ace){ ta.style.display='block'; ta.rows=18; return; }
+  if(!window.ace){ ta.style.display='block'; ta.rows=18; crfiSaved=ta.value;
+    ta.addEventListener('input',()=>{ document.getElementById('crfi-dirty').classList.toggle('on', ta.value!==crfiSaved); }); return; }
   ace.config.set('basePath','/plugins/dynamix/javascript/ace');
   crfiAce=ace.edit('crfi-ace');
   const dark=crfDark();  // shared helper defined on the Fleet tab
@@ -178,7 +179,7 @@ crfiSyncTC();
 function crfiResetDf(){
   crfPost({action:'get-default-dockerfile'}).then(d=>{
     if(!d.dockerfile) return;
-    if(crfiAce) crfiAce.setValue(d.dockerfile,-1); else document.getElementById('crf-dockerfile').value=d.dockerfile;
+    crfiSet(d.dockerfile);  // via crfiSet so the dirty marker updates in both the ACE and textarea-fallback paths
     document.getElementById('crf-build-status').textContent='shipped default loaded — not saved yet';
     crfiSyncTC();
   }).catch(e=>{ document.getElementById('crf-build-status').textContent='could not load default — see console'; console.error('ci-runner-farm reset:',e); });
@@ -224,8 +225,8 @@ function crfSaveDf(cb){ crfPost({action:'save-dockerfile',dockerfile:document.ge
   if(o.ok){ crfiSaved=document.getElementById('crf-dockerfile').value; document.getElementById('crfi-dirty').classList.remove('on');
     document.getElementById('crfi-df-path').textContent='/boot/config/plugins/ci-runner-farm/Dockerfile'; }
   crfiBuildState(o.ok?'ok':'err', o.ok?'saved':('error: '+(o.error||'')));
-  if(typeof cb==='function'&&o.ok) cb(); }); }
-function crfBuild(){ window.__crfBuildNull=0; crfiBuildState('busy','saving + building...'); crfSaveDf(function(){ crfPost({action:'build-image'}).then(()=>crfPollBuild()).catch(e=>{ crfiBuildState('err','could not start build — see console'); console.error('ci-runner-farm build:',e); }); }); }
+  if(typeof cb==='function'&&o.ok) cb(); }).catch(e=>{ crfiBuildState('err','could not save Dockerfile — see console'); console.error('ci-runner-farm save-dockerfile:',e); }); }
+function crfBuild(){ window.__crfBuildNull=0; crfiBuildState('busy','saving + building...'); crfSaveDf(function(){ crfPost({action:'build-image'}).then(o=>{ if(o&&o.ok===false){ crfiBuildState('err', o.error||'could not start build'); return; } crfPollBuild(); }).catch(e=>{ crfiBuildState('err','could not start build — see console'); console.error('ci-runner-farm build:',e); }); }); }
 function crfPollBuild(){ crfPost({action:'build-log'}).then(d=>{ const el=document.getElementById('crf-build-log'); el.innerHTML=crfColorize(d.log||''); el.scrollTop=el.scrollHeight;
   if(d.running){ crfiBuildState('busy','building...'); setTimeout(crfPollBuild,2000); }
   else if(d.rc===0){ crfiBuildState('ok','build finished — restart the fleet to use it'); crfiInfo(); }
@@ -235,6 +236,6 @@ function crfPollBuild(){ crfPost({action:'build-log'}).then(d=>{ const el=docume
   .catch(e=>{ crfiBuildState('err','build status unknown — see console'); console.error('ci-runner-farm build:',e); }); }
 function crfCopyBuildLog(btn){
   const t=document.getElementById('crf-build-log').textContent||'';
-  navigator.clipboard.writeText(t).then(()=>{ const o=btn.textContent; btn.textContent='Copied'; setTimeout(()=>btn.textContent=o,1500); }).catch(()=>{});
+  crfCopyText(t).then(()=>{ const o=btn.textContent; btn.textContent='Copied'; setTimeout(()=>btn.textContent=o,1500); }).catch(()=>{ const o=btn.textContent; btn.textContent='Copy failed'; setTimeout(()=>btn.textContent=o,1500); });
 }
 </script>
