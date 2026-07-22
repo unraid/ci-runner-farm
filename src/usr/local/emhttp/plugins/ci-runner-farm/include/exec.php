@@ -82,18 +82,24 @@ switch ($action) {
 
   case 'build-image':
     // launch the build in the background; UI polls 'build-log'
-    $log = "$CFGDIR/build.log";
-    // Refuse a second concurrent build: they'd share this one log file and race,
-    // and a fresh poll could read the previous build's __BUILD_RC__. If one is
-    // already running, report it so the UI keeps polling that build's progress.
-    $running = trim(shell_exec("pgrep -f '[r]unner-farm.sh build-image' >/dev/null 2>&1 && echo 1 || echo 0")) === '1';
-    if ($running) { echo json_encode(['ok' => false, 'error' => 'a build is already running']); break; }
+    $log  = "$CFGDIR/build.log";
+    $lock = "$CFGDIR/build.lock";
     @mkdir($CFGDIR, 0755, true);
-    // Truncate up-front so a poll landing before the build's first write can't see
-    // the prior build's __BUILD_RC__ and report a stale completion.
-    file_put_contents($log, '');
-    $cmd = escapeshellarg($SCRIPT) . ' build-image >> ' . escapeshellarg($log) . ' 2>&1; echo "__BUILD_RC__=$?" >> ' . escapeshellarg($log);
-    exec('nohup sh -c ' . escapeshellarg($cmd) . ' >/dev/null 2>&1 &');
+    // Serialize builds ATOMICALLY. The detached wrapper takes a non-blocking
+    // flock on fd 9 and only truncates the log + builds if it wins; a second
+    // request whose wrapper loses the race exits at `|| exit 9` before touching
+    // the running build's log. flock releases on process exit (even SIGKILL), so
+    // there is no stale-lock leak. The synchronous probe below is best-effort UX
+    // only — it lets us return a clean "already running" now instead of relying
+    // on the detached wrapper's exit code; the wrapper's flock is the real guard.
+    $probe = 'flock -n ' . escapeshellarg($lock) . ' -c true >/dev/null 2>&1 && echo free || echo busy';
+    if (trim((string)shell_exec($probe)) === 'busy') { echo json_encode(['ok' => false, 'error' => 'a build is already running']); break; }
+    // Truncate happens INSIDE the lock (`: > log`) so it can never clobber a build
+    // that won the race between the probe above and this wrapper acquiring fd 9.
+    $wrapper = 'flock -n 9 || exit 9; : > ' . escapeshellarg($log) . '; '
+             . escapeshellarg($SCRIPT) . ' build-image >> ' . escapeshellarg($log) . ' 2>&1; '
+             . 'echo "__BUILD_RC__=$?" >> ' . escapeshellarg($log);
+    exec('nohup sh -c ' . escapeshellarg($wrapper) . ' 9> ' . escapeshellarg($lock) . ' >/dev/null 2>&1 &');
     echo json_encode(['ok' => true, 'action' => 'build-image']);
     break;
 
