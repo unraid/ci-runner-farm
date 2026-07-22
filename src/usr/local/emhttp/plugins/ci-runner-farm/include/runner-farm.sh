@@ -147,12 +147,15 @@ busy_count() {
   echo "$b"
 }
 
-# remove up to $1 IDLE runners (highest index first), never below MIN, never busy ones
+# remove up to $1 IDLE runners (highest index first), never below the effective
+# floor (MIN clamped to MAX), never busy ones
 scale_down_idle() {
-  local want="$1" removed=0 c
+  local want="$1" removed=0 c floor
+  floor=$AUTOSCALE_MIN
+  [ "$floor" -gt "$AUTOSCALE_MAX" ] && floor=$AUTOSCALE_MAX
   for c in $(managed_names | sort -rV); do
     [ "$removed" -ge "$want" ] && break
-    [ "$(current_count)" -le "$AUTOSCALE_MIN" ] && break
+    [ "$(current_count)" -le "$floor" ] && break
     if ! runner_busy "$c"; then
       log "autoscale: removing idle $c"
       remove_runner "$c"
@@ -207,11 +210,25 @@ autoscale_tick() {
   statef="${CFGDIR}/autoscale.state"; over=0
   [ -f "$statef" ] && over=$(cat "$statef" 2>/dev/null || echo 0)
 
+  # runner churn (crash, reap, or ephemeral exit) can drop the fleet below the
+  # floor between ticks; the grow branch below only ever adds STEP to the
+  # current count, so enforce AUTOSCALE_MIN unconditionally first. Clamp the
+  # floor to AUTOSCALE_MAX so a floor misconfigured above the ceiling can
+  # never bypass the resource cap.
+  local floor
+  floor=$AUTOSCALE_MIN
+  [ "$floor" -gt "$AUTOSCALE_MAX" ] && floor=$AUTOSCALE_MAX
+  if [ "$cur" -lt "$floor" ]; then
+    log "autoscale: count $cur < floor $floor -> grow to $floor"
+    cmd_scale "$floor" >/dev/null; echo 0 > "$statef"
+    return 0
+  fi
+
   if [ "$idle" -lt "$AUTOSCALE_MIN_IDLE" ] && [ "$cur" -lt "$AUTOSCALE_MAX" ]; then
     target=$(( cur + AUTOSCALE_STEP )); [ "$target" -gt "$AUTOSCALE_MAX" ] && target=$AUTOSCALE_MAX
     log "autoscale: idle=$idle/$cur < buffer $AUTOSCALE_MIN_IDLE -> grow to $target"
     cmd_scale "$target" >/dev/null; echo 0 > "$statef"
-  elif [ "$idle" -gt $(( AUTOSCALE_MIN_IDLE + AUTOSCALE_STEP )) ] && [ "$cur" -gt "$AUTOSCALE_MIN" ]; then
+  elif [ "$idle" -gt $(( AUTOSCALE_MIN_IDLE + AUTOSCALE_STEP )) ] && [ "$cur" -gt "$floor" ]; then
     over=$(( over + 1 )); echo "$over" > "$statef"
     if [ "$over" -ge "$AUTOSCALE_IDLE_GRACE" ]; then
       log "autoscale: idle=$idle/$cur high for $over checks -> shrink by $AUTOSCALE_STEP"
@@ -714,7 +731,6 @@ build_args() {
     --label "net.unraid.ci-runner-farm.index=${idx}"
     -e RUNNER_NAME="$(host)-${name}"
     -e LABELS="$RUNNER_LABELS"
-    -e EPHEMERAL="$EPHEMERAL"
     -e DISABLE_AUTO_UPDATE="true"
     -e DISABLE_AUTOMATIC_DEREGISTRATION="true"   # we deregister host-side (deregister_runner_api)
     -e RUN_AS_ROOT="$RUN_AS_ROOT"
@@ -722,6 +738,10 @@ build_args() {
     -e RUNNER_WORKDIR="/_work"
     -e npm_config_cache="/home/runner/.npm"
   )
+  # myoung34 entrypoints enable ephemeral mode when the EPHEMERAL env var is
+  # PRESENT (any value, including "false") — so only pass it when it is true,
+  # otherwise EPHEMERAL="false" silently produces one-job-then-exit runners.
+  [ "$EPHEMERAL" = "true" ] && ARGS+=( -e EPHEMERAL="true" )
   # warm caches mounted into the runner, configurable via CACHE_MOUNTS
   local m
   for m in $CACHE_MOUNTS; do

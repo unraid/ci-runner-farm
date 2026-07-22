@@ -145,6 +145,36 @@ chmod 0755 "\$PLGDIR/include/runner-farm.sh"
 # Config defaults are NOT seeded to flash — the settings page and runner-farm.sh
 # both fall back to built-in defaults, so flash only ever holds what the user set.
 [ -f "\$CFGDIR/Dockerfile" ] || cp "\$PLGDIR/default.Dockerfile" "\$CFGDIR/Dockerfile"
+# Migrate saved Dockerfiles seeded before the cache-ownership fix: without
+# runner-owned CACHE_MOUNTS destinations baked into the image, Docker's
+# bind-mount auto-creation leaves root-owned parents and a non-root runner
+# fails writing beside them (rustup: "could not create bin directory
+# '/home/runner/.cargo/bin'"). Patch only files that still carry the stock
+# packages marker and lack the fix; customized files without the marker get a
+# notice instead.
+DF="\$CFGDIR/Dockerfile"
+if [ -f "\$DF" ] && ! grep -q 'mkdir -p /home/runner/.cargo/registry' "\$DF"; then
+  if grep -q '^#  && rm -rf /var/lib/apt/lists/\\*' "\$DF"; then
+    BLK=\$(mktemp)
+    cat > "\$BLK" <<'EOF_CACHEDIRS'
+
+# Pre-create the default CACHE_MOUNTS destinations as runner-owned. When these
+# paths are absent from the image, Docker's bind-mount auto-creation makes the
+# missing parent directories root-owned, and a non-root runner (RUN_AS_ROOT=false)
+# can then no longer write beside them — e.g. rustup fails with "could not
+# create bin directory '/home/runner/.cargo/bin': Permission denied".
+RUN mkdir -p /home/runner/.cargo/registry /home/runner/.cargo/git \\
+      /home/runner/.cache/sccache /home/runner/.cache/yarn /home/runner/.cache/ms-playwright \\
+      /home/runner/.npm /home/runner/.local/share/pnpm/store \\
+ && chown -R runner:runner /home/runner/.cargo /home/runner/.cache /home/runner/.npm /home/runner/.local
+EOF_CACHEDIRS
+    sed -i "\\@^#  && rm -rf /var/lib/apt/lists/\\*@r \$BLK" "\$DF"
+    rm -f "\$BLK"
+    echo "ci-runner-farm: patched saved Dockerfile to pre-create runner-owned cache dirs (press Build to rebuild the runner image)."
+  else
+    echo "ci-runner-farm: NOTE - saved \$DF lacks the runner-owned cache-dir block from default.Dockerfile; merge it manually so non-root runners can write beside the cache mounts."
+  fi
+fi
 ( docker pull myoung34/github-runner:latest >/dev/null 2>&1 & ) || true
 # Bring the fleet + autoscaler up. Runs on manual install AND on every boot
 # (rc.local reinstalls plugins), detached so it waits for dockerd+array without
