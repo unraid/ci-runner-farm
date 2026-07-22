@@ -67,7 +67,7 @@ $crf_csrf = $var['csrf_token'] ?? '';
   #crf-bays-body .crf-bay:hover{background:var(--hover-table-row-background-color)}
   .crf-name{font-family:bitstream,monospace;font-size:13px;color:var(--text-color)}
   .crf-job{font-size:12px;color:var(--alt-text-color);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .crf-limits{font-family:bitstream,monospace;font-size:12px;color:var(--alt-text-color);text-align:right}
+  .crf-limits{font-family:bitstream,monospace;font-size:12px;color:var(--text-color);text-align:right}
   .crf-ball{width:12px;height:12px;border-radius:50%;background:var(--disabled-text-color,#888);display:inline-block}
   .crf-ball-idle{background:var(--crf-ok)}
   .crf-ball-busy{background:var(--crf-busy);animation:crf-pulse 1.6s ease-in-out infinite}
