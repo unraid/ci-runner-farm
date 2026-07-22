@@ -946,6 +946,28 @@ cmd_status() {
 
 json_escape() { sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 
+cmd_image_info_json() {
+  # Image facts for the settings page's Runner image tab: existence, id, age,
+  # size, base image, and how many managed runners currently run on it.
+  local img; img="$(effective_image)"
+  local id; id="$(docker image inspect -f '{{.Id}}' "$img" 2>/dev/null)"
+  if [ -z "$id" ]; then
+    echo "{\"exists\":false,\"image\":\"$(echo "$img"|json_escape)\",\"source\":\"${IMAGE_SOURCE}\"}"
+    return 0
+  fi
+  local created size; created="$(docker image inspect -f '{{.Created}}' "$img")"
+  size="$(docker image inspect -f '{{.Size}}' "$img")"
+  local df="$CFGDIR/Dockerfile"
+  [ -f "$df" ] || df="/usr/local/emhttp/plugins/$PLUGIN/default.Dockerfile"
+  local base; base="$(grep -m1 '^FROM ' "$df" 2>/dev/null | awk '{print $2}')"
+  local inuse=0 c cid
+  for c in $(managed_names); do
+    cid="$(docker inspect -f '{{.Image}}' "$c" 2>/dev/null)"
+    [ "$cid" = "$id" ] && inuse=$((inuse+1))
+  done
+  echo "{\"exists\":true,\"image\":\"$(echo "$img"|json_escape)\",\"id\":\"$(echo "$id" | cut -c8-19)\",\"created\":\"$created\",\"size_mb\":$(( ${size:-0}/1024/1024 )),\"base\":\"$(echo "$base"|json_escape)\",\"in_use\":$inuse,\"dockerfile\":\"$(echo "$df"|json_escape)\",\"source\":\"${IMAGE_SOURCE}\"}"
+}
+
 cmd_status_json() {
   local names; names="$(managed_names)"
   local out="["; local first=1
@@ -1081,6 +1103,7 @@ case "${1:-status}" in
   scale)        cmd_scale "${2:?usage: scale <N>}" ;;
   status)       cmd_status ;;
   status-json)  cmd_status_json ;;
+  image-info-json) cmd_image_info_json ;;
   logs)         cmd_logs "${2:-1}" "${3:-100}" ;;
   validate)         cmd_validate ;;
   build-image)      cmd_build_image ;;

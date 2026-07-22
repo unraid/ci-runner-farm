@@ -87,6 +87,16 @@ switch ($action) {
     echo json_encode(['ok' => true, 'action' => 'build-image']);
     break;
 
+  case 'image-info':
+    [$out, $rc] = run(escapeshellarg($SCRIPT) . ' image-info-json');
+    echo $out !== '' ? $out : json_encode(['exists' => false]);
+    break;
+
+  case 'get-default-dockerfile':
+    $df = "/usr/local/emhttp/plugins/$PLUGIN/default.Dockerfile";
+    echo json_encode(['ok' => true, 'dockerfile' => is_file($df) ? file_get_contents($df) : '']);
+    break;
+
   case 'farm-log':
     // Live farm activity for the Fleet log's idle state: the autoscale daemon
     // log (or boot.log before the daemon ever ran), minus docker's noisy
