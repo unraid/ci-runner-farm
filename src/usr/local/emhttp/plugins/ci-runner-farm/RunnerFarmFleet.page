@@ -38,11 +38,11 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
 
 <div class="crf-toolbar">
   <uui-brand-button onclick="crfAction('start')">Start</uui-brand-button>
-  <uui-button variant="secondary" onclick="crfAction('stop')">Stop</uui-button>
-  <uui-button variant="secondary" onclick="crfAction('restart')">Restart</uui-button>
-  <uui-button variant="outline" onclick="crfAction('validate')">Validate (no token)</uui-button>
+  <uui-button variant="secondary" size="sm" onclick="crfAction('stop')">Stop</uui-button>
+  <uui-button variant="secondary" size="sm" onclick="crfAction('restart')">Restart</uui-button>
+  <uui-button variant="outline" size="sm" onclick="crfAction('validate')">Validate (no token)</uui-button>
   <span class="crf-scale">Scale to <input type="number" id="crf-n" min="0" max="20" value="4">
-  <uui-button variant="secondary" onclick="crfScale()">Scale</uui-button></span>
+  <uui-button variant="secondary" size="sm" onclick="crfScale()">Scale</uui-button></span>
 </div>
 
 <div class="crf-bays">
@@ -67,27 +67,28 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
   .crf-banner{margin:8px 0;padding:10px 12px;border-radius:4px;font-size:13px;line-height:1.4}
   .crf-banner-sec{border:1px solid var(--crf-busy);background:color-mix(in srgb,var(--crf-busy) 12%,var(--background-color));color:var(--text-color);font-weight:bold}
   .crf-banner-warn{border:1px solid var(--crf-err);background:color-mix(in srgb,var(--crf-err) 12%,var(--background-color));color:var(--text-color)}
-  .crf-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:8px 0 12px}
-  .crf-stat-inner{display:flex;flex-direction:column;gap:2px;padding:8px 12px}
+  .crf-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin:6px 0 8px}
+  .crf-stat-inner{display:flex;flex-direction:column;gap:1px;padding:5px 10px}
   uui-card-wrapper.crf-stat:not(:defined){background:var(--shade-bg-color,var(--table-header-background-color));border:1px solid var(--border-color);border-radius:6px;display:block}
   .crf-stat-label{font-size:11px;color:var(--alt-text-color)}
-  .crf-stat-value{font-size:20px;color:var(--text-color)}
-  .crf-stat-small{font-size:13px;color:var(--text-color);margin-top:3px}
+  .crf-stat-value{font-size:17px;color:var(--text-color)}
+  .crf-stat-small{font-size:12px;color:var(--text-color);margin-top:2px}
   .crf-c-ok{color:var(--crf-ok)}.crf-c-busy{color:var(--crf-busy)}
-  .crf-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .crf-toolbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0}
   .crf-scale{margin-left:auto;display:flex;align-items:center;gap:6px;color:var(--alt-text-color);font-size:13px}
   .crf-scale input[type=number]{width:4em}
   uui-button:not(:defined),uui-brand-button:not(:defined){cursor:pointer;border:1px solid var(--border-color);border-radius:6px;padding:5px 12px;font-size:13px;color:var(--text-color)}
   .crf-bays{border:1px solid var(--border-color);border-radius:6px;overflow:hidden;margin:6px 0 12px}
-  .crf-bay{display:grid;grid-template-columns:24px minmax(110px,1fr) 96px minmax(120px,1.6fr) 130px 170px;gap:10px;align-items:center;padding:8px 12px;border-top:1px solid var(--table-border-color,var(--border-color))}
+  .crf-bay{display:grid;grid-template-columns:22px minmax(110px,1fr) 88px minmax(120px,1.6fr) 120px 155px;gap:8px;align-items:center;padding:4px 10px;border-top:1px solid var(--table-border-color,var(--border-color))}
   .crf-bay:first-child{border-top:none}
-  .crf-bay-head{background:var(--table-header-background-color);font-size:11px;color:var(--alt-text-color);padding:6px 12px}
+  .crf-bay-head{background:var(--table-header-background-color);font-size:11px;color:var(--alt-text-color);padding:4px 10px}
   #crf-bays-body .crf-bay:hover{background:var(--hover-table-row-background-color)}
   .crf-name{font-family:bitstream,monospace;font-size:13px;color:var(--text-color)}
   .crf-job{font-size:12px;color:var(--alt-text-color);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .crf-usage{display:flex;align-items:center;gap:8px;min-width:0}
-  .crf-ubar{flex:1;height:8px;border-radius:4px;background:var(--usage-bar-background-color,var(--border-color));overflow:hidden;min-width:40px}
-  .crf-ubar>span{display:block;height:100%;background:var(--usage-bar-used-background-color,var(--crf-busy));transition:width .6s ease}
+  .crf-usage{display:flex;align-items:center;gap:6px;min-width:0}
+  .crf-ubar{flex:1;height:6px;border-radius:3px;background:var(--usage-bar-background-color,var(--border-color));overflow:hidden;min-width:40px}
+  .crf-ubar>span{display:block;height:100%;background:var(--crf-ok);transition:width .6s ease,background-color .6s ease}
+  .crf-ubar.crf-mid>span{background:var(--crf-busy)}
   .crf-ubar.crf-hot>span{background:var(--crf-err)}
   .crf-uval{font-family:bitstream,monospace;font-size:11px;color:var(--text-color);white-space:nowrap}
   .crf-ball{width:12px;height:12px;border-radius:50%;background:var(--disabled-text-color,#888);display:inline-block}
@@ -98,7 +99,7 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
   .crf-phase uui-badge:not(:defined){font-size:11px;color:var(--alt-text-color)}
   .crf-console{border:1px solid var(--border-color);border-radius:6px;overflow:hidden;margin:0 0 12px}
   .crf-console-head{display:flex;align-items:center;justify-content:space-between;padding:3px 8px 3px 12px;background:var(--table-header-background-color);font-size:11px;color:var(--alt-text-color)}
-  .crf-console-body{white-space:pre-wrap;font-family:bitstream,monospace;font-size:12px;line-height:1.55;min-height:120px;max-height:240px;overflow:auto;background:var(--shade-bg-color,var(--background-color));color:var(--text-color);padding:8px 12px}
+  .crf-console-body{white-space:pre-wrap;font-family:bitstream,monospace;font-size:12px;line-height:1.5;min-height:90px;max-height:200px;overflow:auto;background:var(--shade-bg-color,var(--background-color));color:var(--text-color);padding:6px 10px}
   .crf-builder-wrap textarea{width:100%;font-family:bitstream,monospace;font-size:12px;background:var(--input-bg-color);color:var(--text-color);border:1px solid var(--textarea-border-color,var(--input-border-color))}
   @keyframes crf-pulse{0%,100%{opacity:1}50%{opacity:.35}}
   @media (prefers-reduced-motion:reduce){.crf-ball-busy,.crf-ball-starting{animation:none}}
@@ -155,9 +156,10 @@ function crfCopyLog(btn){
   const t=document.getElementById('crf-log').textContent||'';
   navigator.clipboard.writeText(t).then(()=>{ const old=btn.textContent; btn.textContent='Copied'; setTimeout(()=>btn.textContent=old,1500); }).catch(()=>{});
 }
-function crfBar(pct,hot){
+function crfBar(pct){
   const p=Math.max(0,Math.min(100,Math.round(pct)));
-  return '<span class="crf-ubar'+(hot?' crf-hot':'')+'"><span style="width:'+p+'%"></span></span>';
+  const cls=p>90?' crf-hot':p>60?' crf-mid':'';
+  return '<span class="crf-ubar'+cls+'"><span style="width:'+p+'%"></span></span>';
 }
 function crfRefresh(){
   crfPost({action:'status-json'}).then(d=>{
@@ -194,8 +196,8 @@ function crfRefresh(){
         '<span class="crf-name">'+crfEsc(r.name)+'</span>'+
         '<span class="crf-phase"><uui-badge variant="'+bvar+'" size="xs"'+dark+'>'+crfEsc(ph)+'</uui-badge></span>'+
         '<span class="'+jobCls+'" title="'+crfEsc(r.job||'')+'">'+(r.job?crfEsc(job):job)+'</span>'+
-        '<span class="crf-usage">'+crfBar(cpuPct,cpuPct>90)+'<span class="crf-uval">'+(running?Math.round(r.cpu_pct||0)+'%':'&ndash;')+'</span></span>'+
-        '<span class="crf-usage">'+crfBar(memPct,memPct>90)+'<span class="crf-uval">'+memTxt+'</span></span>'+
+        '<span class="crf-usage">'+crfBar(cpuPct)+'<span class="crf-uval">'+(running?Math.round(r.cpu_pct||0)+'%':'&ndash;')+'</span></span>'+
+        '<span class="crf-usage">'+crfBar(memPct)+'<span class="crf-uval">'+memTxt+'</span></span>'+
       '</div>';
     }).join('');
   }).catch(()=>{});
