@@ -304,15 +304,17 @@ function crfRefresh(){
       }
       const jobCls=running&&r.phase==='busy'&&r.job?'crf-job':'crf-job crf-muted';
       const cpuMax=(r.cpus&&r.cpus>0)?r.cpus*100:100;
-      const cpuPct=running?(100*(r.cpu_pct||0)/cpuMax):0;
-      const memPct=running&&r.mem_gb?100*(r.mem_used_mib||0)/(r.mem_gb*1024):0;
-      const memTxt=running?((r.mem_used_mib>=1024?( (r.mem_used_mib/1024).toFixed(1)+'g'):(r.mem_used_mib+'m'))+'/'+r.mem_gb+'g'):'&ndash;';
+      const cpuKnown=running&&r.cpu_pct>=0, memKnown=running&&r.mem_used_mib>=0&&r.mem_gb;
+      const cpuPct=cpuKnown?(100*r.cpu_pct/cpuMax):0;
+      const memPct=memKnown?100*r.mem_used_mib/(r.mem_gb*1024):0;
+      const cpuTxt=cpuKnown?Math.round(r.cpu_pct)+'%':(running?'…':'&ndash;');
+      const memTxt=memKnown?((r.mem_used_mib>=1024?( (r.mem_used_mib/1024).toFixed(1)+'g'):(r.mem_used_mib+'m'))+'/'+r.mem_gb+'g'):(running?'…':'&ndash;');
       return '<div class="crf-bay" data-name="'+crfEsc(r.name)+'" tabindex="0" role="button" aria-expanded="'+(window.CRF_DRAWER===r.name?'true':'false')+'" aria-label="Runner '+crfEsc(r.name)+', toggle log">'+
         '<span class="crf-ball '+ball+'"></span>'+
         '<span class="crf-name">'+crfEsc(r.name)+'</span>'+
         '<span class="crf-phase"><uui-badge variant="'+bvar+'" size="xs"'+dark+'>'+crfEsc(ph)+'</uui-badge></span>'+
         '<span class="'+jobCls+'" title="'+crfEsc(r.job||'')+'">'+jobHtml+'</span>'+
-        '<span class="crf-usage">'+crfBar(cpuPct)+'<span class="crf-uval">'+(running?Math.round(r.cpu_pct||0)+'%':'&ndash;')+'</span></span>'+
+        '<span class="crf-usage">'+crfBar(cpuPct)+'<span class="crf-uval">'+cpuTxt+'</span></span>'+
         '<span class="crf-usage">'+crfBar(memPct)+'<span class="crf-uval">'+memTxt+'</span></span>'+
         '<span class="crf-recycle" tabindex="0" role="button" aria-label="Recycle '+crfEsc(r.name)+'" title="Recycle this runner">&#10227;</span>'+
       '</div>';

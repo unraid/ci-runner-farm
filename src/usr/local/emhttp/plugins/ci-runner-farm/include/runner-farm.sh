@@ -1132,12 +1132,35 @@ cmd_logs_tail() {
   docker logs --tail "${2:-150}" "$1" 2>&1
 }
 
+cmd_usage_refresh() {
+  # docker stats --no-stream is the one slow (~1-2s CPU-sampling) call in the
+  # status path. Run it out-of-band and cache "name cpu_pct mem_mib" per runner
+  # so cmd_status_json never blocks on it — the table paints from fast inspects
+  # and the usage bars fill from this cache.
+  local names; names="$(managed_names)"
+  [ -n "$names" ] || { : > "$RUNDIR/usage.cache"; return 0; }
+  : > "$RUNDIR/usage.cache.tmp"
+  docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' $names 2>/dev/null | \
+  while IFS='|' read -r n cpu mem; do
+    cpu="$(echo "$cpu" | tr -d '%' | grep -oE '^[0-9]+(\.[0-9]+)?' | head -1)"
+    echo "$n ${cpu:-0} $(to_mib "$(echo "$mem" | awk -F' / ' '{print $1}')")"
+  done >> "$RUNDIR/usage.cache.tmp"
+  mv "$RUNDIR/usage.cache.tmp" "$RUNDIR/usage.cache" 2>/dev/null
+}
+
 cmd_status_json() {
   local names; names="$(managed_names)"
-  # One batched docker stats call for live per-runner usage (CPU%% and memory).
-  # --no-stream costs ~1s; the UI polls every 5s so that is acceptable.
-  local statsraw=""
-  [ -n "$names" ] && statsraw="$(docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' $names 2>/dev/null)"
+  # Per-runner CPU/mem is read from a background-refreshed cache (see
+  # cmd_usage_refresh) so this call stays fast; trigger a refresh when stale.
+  local usage="" uage=999 nowu
+  nowu=$(date +%s)
+  if [ -f "$RUNDIR/usage.cache" ]; then
+    usage="$(cat "$RUNDIR/usage.cache" 2>/dev/null)"
+    uage=$(( nowu - $(stat -c %Y "$RUNDIR/usage.cache" 2>/dev/null || echo 0) ))
+  fi
+  if [ -n "$names" ] && [ "$uage" -gt 4 ]; then
+    ( flock -n 9 || exit 0; "$0" usage-refresh ) 9>"$RUNDIR/usage.lock" >/dev/null 2>&1 &
+  fi
   local out="["; local first=1
   for c in $names; do
     [ -z "$c" ] && continue
@@ -1170,12 +1193,16 @@ cmd_status_json() {
         if echo "$jref" | grep -qE '^[0-9]+/merge$'; then jpr="${jref%%/merge*}"; else jbranch="$(echo "$jref" | json_escape)"; fi
       fi
     fi
-    local srow cpu_pct="0" mem_used_mib="0"
-    srow="$(echo "$statsraw" | grep "^${c}|" | head -1)"
-    if [ -n "$srow" ]; then
-      cpu_pct="$(echo "$srow" | cut -d'|' -f2 | tr -d '%' | grep -oE '^[0-9]+(\.[0-9]+)?' | head -1)"
-      mem_used_mib="$(to_mib "$(echo "$srow" | cut -d'|' -f3 | awk -F' / ' '{print $1}')")"
+    # -1 = usage not yet sampled (first paint / just-started runner); the UI
+    # renders that as a pending "…" instead of a misleading 0%.
+    local urow cpu_pct=-1 mem_used_mib=-1
+    urow="$(echo "$usage" | grep -m1 "^${c} ")"
+    if [ -n "$urow" ]; then
+      cpu_pct="$(echo "$urow" | awk '{print $2}')"
+      mem_used_mib="$(echo "$urow" | awk '{print $3}')"
     fi
+    case "$cpu_pct" in ''|*[!0-9.-]*) cpu_pct=-1 ;; esac
+    case "$mem_used_mib" in ''|*[!0-9-]*) mem_used_mib=-1 ;; esac
     [ $first -eq 0 ] && out+=","
     out+="{\"name\":\"$(echo "$c"|json_escape)\",\"state\":\"${st:-unknown}\",\"phase\":\"$phase\",\"job\":\"${job}\",\"job_started\":\"${jstarted}\",\"repo\":\"${jrepo}\",\"pr\":\"${jpr}\",\"branch\":\"${jbranch}\",\"run_id\":\"${jrun}\",\"cpus\":$(( ${cpus:-0}/1000000000 )),\"mem_gb\":$(( ${mem:-0}/1024/1024/1024 )),\"cpu_pct\":${cpu_pct:-0},\"mem_used_mib\":${mem_used_mib:-0}}"
     first=0
@@ -1292,6 +1319,7 @@ case "${1:-status}" in
   queued-refresh) cmd_queued_refresh ;;
   cache-usage-json) cmd_cache_usage_json ;;
   cache-usage-refresh) cmd_cache_usage_refresh ;;
+  usage-refresh) cmd_usage_refresh ;;
   cache-clear-pkg) cmd_cache_clear_pkg ;;
   stats-json)   cmd_stats_json ;;
   stats-refresh) cmd_stats_refresh ;;
