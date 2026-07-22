@@ -79,7 +79,7 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
   .crf-scale input[type=number]{width:4em;height:26px;box-sizing:border-box;border-radius:6px;padding:0 8px;font-size:12px;margin:0}
   uui-button:not(:defined),uui-brand-button:not(:defined){cursor:pointer;border:1px solid var(--border-color);border-radius:6px;padding:5px 12px;font-size:13px;color:var(--text-color)}
   .crf-bays{border:1px solid var(--border-color);border-radius:6px;overflow:hidden;margin:0 0 8px}
-  .crf-bay{display:grid;grid-template-columns:22px minmax(110px,1fr) 88px minmax(120px,1.6fr) 165px 200px;gap:8px;align-items:center;padding:4px 10px;border-top:1px solid var(--table-border-color,var(--border-color))}
+  .crf-bay{display:grid;grid-template-columns:22px minmax(110px,1fr) 88px minmax(120px,1.6fr) 120px 160px;gap:8px;align-items:center;padding:4px 10px;border-top:1px solid var(--table-border-color,var(--border-color))}
   .crf-bay:first-child{border-top:none}
   .crf-bay-head{background:var(--table-header-background-color);font-size:11px;color:var(--alt-text-color);padding:5px 10px}
   #crf-bays-body .crf-bay:hover{background:var(--hover-table-row-background-color)}
@@ -96,10 +96,6 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
   .crf-ubar.crf-mid>span{background:var(--crf-busy)}
   .crf-ubar.crf-hot>span{background:var(--crf-err)}
   .crf-uval{font-family:bitstream,monospace;font-size:11px;color:var(--text-color);white-space:nowrap}
-  .crf-spark{width:52px;height:14px;flex:none;background:var(--shade-bg-color,transparent);border:1px solid var(--table-border-color,var(--border-color));border-radius:3px;box-sizing:border-box;display:inline-block}
-  .crf-spark polyline{fill:none;stroke:var(--crf-ok);stroke-width:1.75;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}
-  .crf-u-mid .crf-spark polyline{stroke:var(--crf-busy)}
-  .crf-u-hot .crf-spark polyline{stroke:var(--crf-err)}
   .crf-elapsed{font-size:11px;color:var(--alt-text-color);margin-left:6px;font-family:bitstream,monospace}
   .crf-el-warn{color:var(--crf-busy)}
   .crf-el-hot{color:var(--crf-err);font-weight:bold}
@@ -216,19 +212,6 @@ function crfCopyLog(btn){
   const t=document.getElementById('crf-log').textContent||'';
   navigator.clipboard.writeText(t).then(()=>{ const old=btn.textContent; btn.textContent='Copied'; setTimeout(()=>btn.textContent=old,1500); }).catch(()=>{});
 }
-const CRF_HIST={};
-function crfHist(name,cpu,mem){
-  const h=CRF_HIST[name]=CRF_HIST[name]||{cpu:[],mem:[]};
-  h.cpu.push(cpu); h.mem.push(mem);
-  if(h.cpu.length>30){h.cpu.shift(); h.mem.shift();}
-  return h;
-}
-function crfSpark(vals){
-  if(!vals||vals.length<2) return '<span class="crf-spark"></span>';
-  const w=52,ht=14,n=vals.length,pad=2.5;
-  const pts=vals.map((v,i)=>((i*(w/(n-1))).toFixed(1))+','+((ht-pad-(Math.max(0,Math.min(100,v))/100)*(ht-2*pad)).toFixed(1))).join(' ');
-  return '<svg class="crf-spark" viewBox="0 0 '+w+' '+ht+'" preserveAspectRatio="none"><polyline points="'+pts+'"/></svg>';
-}
 function crfElapsed(iso){
   const t=Date.parse(iso); if(isNaN(t)) return null;
   const m=Math.floor((Date.now()-t)/60000);
@@ -288,15 +271,14 @@ function crfRefresh(){
       const cpuMax=(r.cpus&&r.cpus>0)?r.cpus*100:100;
       const cpuPct=running?(100*(r.cpu_pct||0)/cpuMax):0;
       const memPct=running&&r.mem_gb?100*(r.mem_used_mib||0)/(r.mem_gb*1024):0;
-      const hist=crfHist(r.name,cpuPct,memPct);
       const memTxt=running?((r.mem_used_mib>=1024?( (r.mem_used_mib/1024).toFixed(1)+'g'):(r.mem_used_mib+'m'))+'/'+r.mem_gb+'g'):'&ndash;';
       return '<div class="crf-bay">'+
         '<span class="crf-ball '+ball+'"></span>'+
         '<span class="crf-name">'+crfEsc(r.name)+'</span>'+
         '<span class="crf-phase"><uui-badge variant="'+bvar+'" size="xs"'+dark+'>'+crfEsc(ph)+'</uui-badge></span>'+
         '<span class="'+jobCls+'" title="'+crfEsc(r.job||'')+'">'+jobHtml+'</span>'+
-        '<span class="crf-usage'+(cpuPct>90?' crf-u-hot':cpuPct>60?' crf-u-mid':'')+'">'+crfSpark(hist.cpu)+crfBar(cpuPct)+'<span class="crf-uval">'+(running?Math.round(r.cpu_pct||0)+'%':'&ndash;')+'</span></span>'+
-        '<span class="crf-usage'+(memPct>90?' crf-u-hot':memPct>60?' crf-u-mid':'')+'">'+crfSpark(hist.mem)+crfBar(memPct)+'<span class="crf-uval">'+memTxt+'</span></span>'+
+        '<span class="crf-usage">'+crfBar(cpuPct)+'<span class="crf-uval">'+(running?Math.round(r.cpu_pct||0)+'%':'&ndash;')+'</span></span>'+
+        '<span class="crf-usage">'+crfBar(memPct)+'<span class="crf-uval">'+memTxt+'</span></span>'+
       '</div>';
     }).join('');
   }).catch(()=>{});

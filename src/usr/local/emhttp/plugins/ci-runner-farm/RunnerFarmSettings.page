@@ -45,8 +45,8 @@ if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d=''){ global 
     </span>
   </div>
   <div class="crfs-tok-input">
-    <a href="<?=$patUrl?>" target="_blank" rel="noopener">Create a pre-scoped PAT &#8599;</a>
-    <input type="password" id="crf-token" autocomplete="new-password" placeholder="ghp_... (scopes pre-filled by the link)">
+    <uui-button variant="outline" size="xs" onclick="window.open('<?=$patUrl?>','_blank','noopener')">Get a pre-scoped PAT &#8599;</uui-button>
+    <input type="password" id="crf-token" autocomplete="new-password" placeholder="ghp_... (scopes pre-filled)">
     <uui-button size="xs" onclick="crfSetToken()">Save token</uui-button>
     <uui-button variant="ghost" size="xs" onclick="crfClearToken()">Clear</uui-button>
   </div>
