@@ -1174,15 +1174,24 @@ cmd_recycle() {
     log "recycle: $name left in place — runner network $RUNNER_NETWORK unavailable"
     echo '{"ok":false,"error":"runner network unavailable"}'; return 1
   fi
+  # Validate the REPLACEMENT can be fully provisioned BEFORE touching the old
+  # container. build_args assembles everything start_one needs — it mints a fresh
+  # GitHub registration token and resolves the image. A cleared token (no
+  # ACCESS_TOKEN, which build_args silently skips) or a PAT that can no longer mint
+  # one would otherwise let the replacement run unregistered, or fail, only after
+  # the old runner is already gone. Guard the empty-token case explicitly, then
+  # reuse the validated args so the runner we start is the one we vetted.
+  [ -n "$ACCESS_TOKEN" ] || { echo '{"ok":false,"error":"no GitHub token configured"}'; return 1; }
+  build_args "$idx" || { echo '{"ok":false,"error":"cannot provision replacement (check the GitHub token)"}'; return 1; }
   deregister_runner_api "$name"
   if ! docker rm -f "$name" >/dev/null 2>&1; then
     log "recycle: docker rm failed for $name"; echo '{"ok":false,"error":"remove failed"}'; return 1
   fi
-  if ! start_one "$idx" >/dev/null 2>&1; then
+  log "recycling $name (manual, from fleet page)"
+  if ! docker run "${ARGS[@]}" >/dev/null 2>&1; then
     log "recycle: $name removed but its replacement failed to start (idx=$idx)"
     echo '{"ok":false,"error":"removed but not recreated"}'; return 1
   fi
-  log "recycled $name (manual, from fleet page)"
   echo '{"ok":true}'
 }
 
