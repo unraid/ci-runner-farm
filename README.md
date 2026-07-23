@@ -33,7 +33,7 @@ dependency caches that stay hot between runs, at zero cost per minute.
 |---|---|
 | **N concurrent runners** | Each runner is its own container, optionally capped with `--cpus` / `--memory` so CI never starves the rest of the host. |
 | **Queue-aware autoscaling** | An optional daemon floats the fleet between a min and max based on how many jobs are waiting — capacity when you need it, idle when you don't. |
-| **Warm shared caches** | Rust/cargo, npm, yarn, pnpm, and Playwright caches (fully configurable) live on a fast pool and are reused across every run. This is the biggest hidden speed win over hosted CI. |
+| **Warm shared caches** | npm, yarn, pnpm, and Playwright caches by default (fully configurable — add cargo, sccache, and more) live on a fast pool and are reused across every run. This is the biggest hidden speed win over hosted CI. |
 | **Docker-in-Docker per runner** | Jobs that use `services:` or `docker compose` just work, with an optional shared pull-through registry mirror so images are pulled once for the whole fleet. |
 | **Bring your own image** | Point at any image you publish to a registry, or build one in-plugin — toggle **Rust / Python / Node·TS / Android** toolchains into the Dockerfile with one click, then Build. |
 | **Live fleet dashboard** | Watch each runner's phase, the repo and **PR # it's building right now**, and live CPU/memory against its cap — plus queue depth, cache usage (one-click clear), recent-run pass rates, per-runner log drawers, and a colorized activity log. |
@@ -80,9 +80,10 @@ Unraid always resolves this to the newest published release, and its built-in
 ## Setup, step by step
 
 Everything lives on one page — **Settings → Utilities → CI Runner Farm** — split
-into three tabs: **Settings** (configure), **Runner image** (build), and
-**Fleet** (run and watch). You'll need a GitHub Personal Access Token and a fast
-pool/share for caches.
+into three tabs: **Fleet** (run and watch, the default view), **Runner image**
+(build), and **Settings** (configure). The steps below follow setup order, so
+they start on the **Settings** tab (rightmost). You'll need a GitHub Personal
+Access Token and a fast pool/share for caches.
 
 ### 1. Configure the fleet — the *Settings* tab
 
@@ -98,8 +99,8 @@ The Settings tab holds the whole configuration on one screen:
   (for a private image, set the registry server/username and save a registry
   token; for `ghcr.io`, a blank registry token reuses your GitHub token).
 - **Storage & caches** — the **warm caches** (host-subdir → container-path
-  mounts; defaults cover cargo/npm/yarn/pnpm/Playwright) and the **workspace
-  root**.
+  mounts; defaults cover pnpm/npm/yarn/Playwright) and the **workspace tmpfs
+  size**.
 - **Docker** — **Docker-in-Docker** mode, host-socket sharing, and network
   isolation.
 - **Autoscaling** and **image auto-update** — optional; see steps below.

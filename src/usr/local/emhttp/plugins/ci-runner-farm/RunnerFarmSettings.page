@@ -3,7 +3,10 @@ Title="Settings"
 Tag="gear"
 ---
 <?php
-/* CI Runner Farm settings page - native Unraid markdown form + inline help */
+include_once '/usr/local/emhttp/plugins/ci-runner-farm/include/crf-core.php';
+/* CI Runner Farm settings page - native Unraid markdown form + inline help.
+   The crf* JS core (crfPost etc.) + shared .crf-* styles come from
+   include/crf-core.php (above, shared by all tabs via include_once). */
 $plugin   = 'ci-runner-farm';
 /* parse_plugin_cfg reads /boot/config/plugins/$plugin/$plugin.cfg (empty [] if
    absent). Defaults are NOT stored on flash — they live in $defaults below, so
@@ -21,10 +24,11 @@ $defaults = [
   'RUNNER_GROUP'=>'', 'RUNNER_COUNT'=>'4', 'RUNNER_LABELS'=>'self-hosted,unraid,build',
   'RUNNER_CPUS'=>'', 'RUNNER_MEMORY'=>'16g', 'EPHEMERAL'=>'false', 'RUN_AS_ROOT'=>'false',
   'IMAGE_SOURCE'=>'builtin', 'IMAGE'=>'', 'REGISTRY_SERVER'=>'', 'REGISTRY_USERNAME'=>'',
-  'CACHE_ROOT'=>'/mnt/github-runner', 'WORK_TMPFS_SIZE'=>'8g',
+  'CACHE_ROOT'=>'/mnt/cache/github-runner', 'WORK_TMPFS_SIZE'=>'8g',
   'CACHE_MOUNTS'=>'pnpm-store:/home/runner/.local/share/pnpm/store npm:/home/runner/.npm yarn:/home/runner/.cache/yarn ms-playwright:/home/runner/.cache/ms-playwright',
-  'DIND'=>'true', 'SHARE_DOCKER_SOCK'=>'false', 'NETWORK_ISOLATION'=>'off',
+  'DIND'=>'true', 'SHARE_DOCKER_SOCK'=>'false', 'SHARED_IMAGE_CACHE'=>'true', 'NETWORK_ISOLATION'=>'off',
   'IMAGE_AUTOUPDATE'=>'false', 'IMAGE_AUTOUPDATE_INTERVAL'=>'1800', 'IMAGE_DRAIN_TIMEOUT'=>'3600',
+  'DASHBOARD_WIDGET_ENABLE'=>'true',
   'AUTOSCALE'=>'false', 'AUTOSCALE_MIN'=>'2', 'AUTOSCALE_MAX'=>'16', 'AUTOSCALE_MIN_IDLE'=>'2',
   'AUTOSCALE_STEP'=>'2', 'AUTOSCALE_INTERVAL'=>'30', 'AUTOSCALE_IDLE_GRACE'=>'5',
 ];
@@ -67,6 +71,12 @@ if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d=''){ global 
 
 <form markdown="1" name="ci_runner_farm" method="POST" action="/update.php" target="progressFrame">
 <input type="hidden" name="#file" value="ci-runner-farm/ci-runner-farm.cfg">
+<!-- After /update.php writes the cfg, run the reconciler: migrate any RUNNING runner
+     still on the previous baked config (image/resources/mounts/DinD/mirror/network) onto
+     the new one, draining busy runners so no in-flight job is killed. Detaches instantly
+     (see cmd_reconcile_config); the Fleet tab shows a "migrating" count until it settles. -->
+<input type="hidden" name="#command" value="/usr/local/emhttp/plugins/ci-runner-farm/include/runner-farm.sh">
+<input type="hidden" name="#arg[1]" value="reconcile-config">
 
 ### GitHub
 
@@ -189,12 +199,12 @@ _(Registry username)_:
 ### Storage &amp; caches
 
 _(Cache root)_:
-: <input type="text" id="CACHE_ROOT" name="CACHE_ROOT" autocomplete="off" spellcheck="false" value="<?=crf_g($cfg,'CACHE_ROOT','/mnt/github-runner')?>" data-pickroot="/mnt" data-pickfolders="true" data-pickfilter="HIDE_FILES_FILTER" placeholder="/mnt/github-runner">
+: <input type="text" id="CACHE_ROOT" name="CACHE_ROOT" autocomplete="off" spellcheck="false" value="<?=crf_g($cfg,'CACHE_ROOT','/mnt/cache/github-runner')?>" data-pickroot="/mnt" data-pickfolders="true" data-pickfilter="HIDE_FILES_FILTER" placeholder="/mnt/cache/github-runner">
 
 :crf_cache_plug:
 > Pool path for warm shared caches (pnpm/npm/yarn), each Docker-in-Docker runner's Docker data root, and (if tmpfs is off) the bind workspaces. Click the field to browse and pick a folder.
 >
-> **Use a real pool dataset (e.g. `/mnt/<pool>/github-runner`), not a `/mnt/user/...` user share.** User shares are FUSE (fuse.shfs), and with Docker-in-Docker on, overlay2 cannot run on FUSE — so `buildx` and `services:` jobs fail with `mount overlay ... invalid argument`. The fleet status below warns you if this path is unsafe.
+> **Use a dedicated subdirectory of a pool dataset (e.g. `/mnt/<pool>/github-runner`), not a bare pool/disk root and not a `/mnt/user/...` user share.** A bare mount root (`/mnt/cache`, `/mnt/disk1`) is rejected because clearing caches deletes under this path — it must not sit on top of your appdata, VMs, or other shares. User shares are FUSE (fuse.shfs), and with Docker-in-Docker on, overlay2 cannot run on FUSE — so `buildx` and `services:` jobs fail with `mount overlay ... invalid argument`. The fleet status below warns you if this path is unsafe.
 :end
 
 _(Workspace tmpfs size)_:
@@ -237,6 +247,16 @@ _(Share host docker.sock)_:
 > Mount the host Docker socket so jobs can start service containers (e.g. postgres for integration tests). PRIVATE repos only — never expose this to public/fork-PR code (root-equivalent host access).
 :end
 
+_(Shared image cache)_:
+: <select name="SHARED_IMAGE_CACHE">
+  <option value="true" <?=crf_sel($cfg,'SHARED_IMAGE_CACHE','true','true')?>>true (pull-through registry mirror)</option>
+  <option value="false" <?=crf_sel($cfg,'SHARED_IMAGE_CACHE','false','true')?>>false</option>
+</select>
+
+:crf_mirror_plug:
+> Runs a shared `registry:2` pull-through cache (Docker-in-Docker only) so images used across the fleet are pulled from Docker Hub once, not once per runner. Bound to the Docker bridge gateway, not the LAN — so it is not exposed off the host, though (being on the bridge gateway) it is reachable unauthenticated by any container on the default Docker bridge, not only this plugin's runners. It only caches public Docker Hub images. Turn off if you don't want the extra container.
+:end
+
 _(Network isolation)_:
 : <select name="NETWORK_ISOLATION">
   <option value="off" <?=crf_sel($cfg,'NETWORK_ISOLATION','off','off')?>>off (default docker bridge)</option>
@@ -251,7 +271,7 @@ _(Network isolation)_:
 >
 > **isolate** — runners run on a dedicated bridge (`ci-runner-net`), so they can't reach your **other Unraid containers**. The shared image cache joins the same network. Low-risk; recommended.
 >
-> **strict** — everything `isolate` does, **plus** firewall rules (Docker's `DOCKER-USER` chain) that stop runners from reaching the **Unraid host and your LAN**, while still allowing the internet and the shared cache. Best when runners might touch less-trusted code. Requires `iptables` on the host; if it can't be applied, Start logs a warning and continues without the egress rules.
+> **strict** — everything `isolate` does, **plus** IPv4 firewall rules (Docker's `DOCKER-USER`/`INPUT` chains) that block runners from reaching the **Unraid host and your LAN** while still allowing the internet and the shared cache. Treat this as **defense-in-depth against accidental egress** (a build script phoning home by mistake), **not a hard boundary**: with Docker-in-Docker on (the default) runners are **privileged** and determined malicious code could break out and remove these rules, and the rules are IPv4-only. For genuinely untrusted code, prefer non-privileged runners and treat strict as an extra layer, not the wall. Requires `iptables`; if it can't be applied, Start logs a warning and continues without the egress rules.
 :end
 
 ### Image auto-update
@@ -338,6 +358,18 @@ _(Autoscale: scale-down grace)_:
 > How many consecutive over-idle checks before removing runners. Scale-up is immediate; scale-down waits this long to avoid flapping during brief lulls.
 :end
 
+### Dashboard
+
+_(Main Dashboard tile)_:
+: <select name="DASHBOARD_WIDGET_ENABLE">
+  <option value="true" <?=crf_sel($cfg,'DASHBOARD_WIDGET_ENABLE','true','true')?>>true (show the tile)</option>
+  <option value="false" <?=crf_sel($cfg,'DASHBOARD_WIDGET_ENABLE','false','true')?>>false</option>
+  </select>
+
+:crf_dashwidget_plug:
+> Show the CI Runner Farm status tile on the Unraid **Main → Dashboard** (up/busy/idle counts, pushed live). The tile broadcasts only aggregate counts — never repo/branch/job detail. Turn off to hide it.
+:end
+
 &nbsp;
 : <input type="submit" name="Apply" value="_(Apply)_" style="width:auto">
   <input type="button" value="_(Reset to defaults)_" onclick="crfResetDefaults()" style="width:auto">
@@ -414,12 +446,18 @@ crfImgSrc();
   if(!mem||!cnt) return;
   const w=document.createElement('div'); w.className='crfs-mem-warn';
   (mem.closest('dl')||mem.parentElement).after(w);
+  // Docker memory caps carry a unit suffix (g/m/k/t); parse it so "512m" isn't read
+  // as 512 GB and misfire the advisory. A bare number is treated as GB (the field's
+  // convention \u2014 the default is g-suffixed).
+  const parseMemGb=(v)=>{ const m=String(v||'').trim().match(/^([0-9]*\.?[0-9]+)\s*([kmgt]?)b?$/i); if(!m) return 0;
+    return parseFloat(m[1]) * ({k:1/1048576,m:1/1024,g:1,t:1024}[(m[2]||'g').toLowerCase()]||1); };
+  const fmt=(x)=>x.toFixed(1).replace(/\.0$/,'');
   const check=()=>{
-    const g=parseFloat(mem.value)||0;
+    const g=parseMemGb(mem.value);
     const n=(as&&as.value==='true')?(+((asmax||{}).value)||0):(+cnt.value||0);
     const worst=g*n;
     const on=worst>HOST_GB*0.8;
-    w.textContent='Worst case '+n+' \u00d7 '+g+'g = '+worst+'g of the host\u2019s '+HOST_GB+'g \u2014 leaves '+(HOST_GB-worst)+'g for everything else on this box.';
+    w.textContent='Worst case '+n+' \u00d7 '+fmt(g)+'g = '+fmt(worst)+'g of the host\u2019s '+HOST_GB+'g \u2014 leaves '+fmt(HOST_GB-worst)+'g for everything else on this box.';
     w.classList.toggle('on',on);
   };
   [mem,cnt,as,asmax].forEach(el=>{ if(el){ el.addEventListener('input',check); el.addEventListener('change',check); } });
