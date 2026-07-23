@@ -94,6 +94,7 @@ IMAGE_AUTOUPDATE="false"             # true => a daemon periodically pulls the r
 IMAGE_AUTOUPDATE_INTERVAL="1800"     # seconds between update checks (default 30 min)
 IMAGE_DRAIN_TIMEOUT="3600"           # max seconds to wait for a busy runner to finish its job
                                      # before leaving it on the old image this cycle (0 = wait forever)
+# shellcheck disable=SC2034  # consumed only by RunnerFarmDashboard.page's Cond, never inside this script
 DASHBOARD_WIDGET_ENABLE="true"       # show the Main->Dashboard status tile (read only by RunnerFarmDashboard.page's Cond)
 # ----------------------------------------------------------------------------
 
@@ -1106,7 +1107,9 @@ cmd_reconcile_drain() {
     [ "$announced" = 0 ] && { log "reconcile: config changed — migrating runners onto it as they go idle"; announced=1; }
     with_fleet_lock wait reconcile_stale_runners
     [ "$(count_stale_runners)" -eq 0 ] && break
-    [ "$(date +%s)" -ge "$deadline" ] && { log "reconcile: $(count_stale_runners) runner(s) still on the old config after the drain timeout (finishing jobs or wedged in startup) — they'll migrate on their next idle, or Restart the fleet to force it now"; break; }
+    # IMAGE_DRAIN_TIMEOUT=0 means "wait forever" (per the settings help), so only enforce
+    # the deadline when it's positive — matching drain_and_recreate's `limit -gt 0` guard.
+    [ "${IMAGE_DRAIN_TIMEOUT:-3600}" -gt 0 ] && [ "$(date +%s)" -ge "$deadline" ] && { log "reconcile: $(count_stale_runners) runner(s) still on the old config after the drain timeout (finishing jobs or wedged in startup) — they'll migrate on their next idle, or Restart the fleet to force it now"; break; }
     sleep 15
   done
   lost="$([ -f "$RUNDIR/reconcile.shrink" ] && grep -c . "$RUNDIR/reconcile.shrink" 2>/dev/null || echo 0)"

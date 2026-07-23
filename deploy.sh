@@ -24,5 +24,6 @@ ssh "$HOST" "
   find '$DEST' -type d -exec chmod 0755 {} +
   find '$DEST' -type f -exec chmod 0644 {} +
   chmod 0755 '$DEST/include/runner-farm.sh'
+  find '$DEST/nchan' -type f -exec chmod 0755 {} + 2>/dev/null || true  # monitor_nchan execs the publisher
   echo '[deploy] done:'; ls -la '$DEST'
 "

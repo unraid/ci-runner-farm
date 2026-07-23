@@ -25,6 +25,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
 
       - name: Shell syntax (bash -n)
         run: |
@@ -39,7 +41,11 @@ jobs:
       - name: PHP syntax (php -l)
         run: |
           set -e
-          for f in $(git ls-files '*.php'); do
+          # *.php plus the .page files, which are PHP under a small "key=val ... ---" header
+          # (php -l treats the header as literal text). RunnerFarmSettings.page holds the
+          # $defaults array, so a syntax error there must not slip past this gate.
+          for f in $(git ls-files '*.php' 'src/usr/local/emhttp/plugins/*/*.page'); do
+            grep -q '<?php' "$f" || continue
             echo "php -l $f"
             php -l "$f"
           done
