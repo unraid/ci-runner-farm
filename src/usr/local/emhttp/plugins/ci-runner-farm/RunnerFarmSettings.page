@@ -205,6 +205,8 @@ _(Cache root)_:
 > Pool path for warm shared caches (pnpm/npm/yarn), each Docker-in-Docker runner's Docker data root, and (if tmpfs is off) the bind workspaces. Click the field to browse and pick a folder.
 >
 > **Use a dedicated subdirectory of a pool dataset (e.g. `/mnt/<pool>/github-runner`), not a bare pool/disk root and not a `/mnt/user/...` user share.** A bare mount root (`/mnt/cache`, `/mnt/disk1`) is rejected because clearing caches deletes under this path — it must not sit on top of your appdata, VMs, or other shares. User shares are FUSE (fuse.shfs), and with Docker-in-Docker on, overlay2 cannot run on FUSE — so `buildx` and `services:` jobs fail with `mount overlay ... invalid argument`. The fleet status below warns you if this path is unsafe.
+>
+> A `/mnt/user/<name>` path **is** fine when `<name>` is a symlink (or share) that resolves to a dedicated pool dataset rather than a FUSE share — the path is canonicalized before it is checked, so it is validated (and caches/DinD land) at the real pool location.
 :end
 
 _(Workspace tmpfs size)_:
