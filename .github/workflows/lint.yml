@@ -52,3 +52,6 @@ jobs:
 
       - name: Config parity
         run: bash tests/config-parity.sh
+
+      - name: Path guards
+        run: bash tests/safe-paths.sh

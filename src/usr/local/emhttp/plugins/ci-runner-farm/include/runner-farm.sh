@@ -754,7 +754,7 @@ ensure_mirror() {
       # the publish on every interface (Docker's allocator treats the port as globally
       # taken), so give an actionable error up front instead of a doomed docker run.
       if command -v ss >/dev/null 2>&1 && ss -ltnH 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${MIRROR_PORT}$"; then
-        err "shared image cache: host port ${MIRROR_PORT} is already in use by another service — set MIRROR_PORT in the plugin config to a free port"
+        err "shared image cache: host port ${MIRROR_PORT} is already in use by another service — set MIRROR_PORT to a free port in /boot/config/plugins/ci-runner-farm/ci-runner-farm.cfg, then Restart the fleet"
         return 1
       fi
       log "starting shared image cache ($MIRROR_NAME) on ${gwip:-127.0.0.1}:$MIRROR_PORT"
@@ -1147,13 +1147,19 @@ cmd_start() {
   [ -n "$secp" ] && err "SECURITY: $secp"       # warn, do not block (operator's call)
   provision_preflight || return 1               # cache-root guard + dirs/network/mirror/firewall/registry
   # If NETWORK_ISOLATION changed while the fleet was up, existing runners are still
-  # on the old network — drain + recreate them so the new mode actually applies (a
-  # half-isolated fleet is a false sense of security). Runners already on the right
-  # network match and are left untouched, so a normal Start recreates nothing.
-  local c
+  # on the old network — they must be recreated so the new mode actually applies (a
+  # half-isolated fleet is a false sense of security). Do this in the BACKGROUND: a
+  # network change bumps the confgen fingerprint, so the detached reconcile drain
+  # migrates each stale runner onto the new network as it goes idle (running jobs
+  # finish first), exactly like a Settings Apply. Draining inline here would block
+  # this synchronous Start request under the fleet lock for up to IMAGE_DRAIN_TIMEOUT
+  # (hours) while a busy runner finishes. Runners already on the right network match
+  # and are left untouched, so a normal Start migrates nothing.
+  local c need_migrate=0
   for c in $(managed_names); do
-    [ -n "$c" ] && ! on_expected_network "$c" && { log "network mode changed -> recreating $c on the correct network"; drain_and_recreate "$c"; }
+    [ -n "$c" ] && ! on_expected_network "$c" && { need_migrate=1; break; }
   done
+  [ "$need_migrate" = 1 ] && { log "network mode changed -> migrating runners onto the new network in the background as they go idle"; nohup "$0" reconcile-drain >>"$RUNDIR/autoscale.log" 2>&1 & }
   # bring back any runners Unraid/Docker left exited (array stop, daemon restart)
   start_stopped_managed
   # with autoscaling on, start the floor (MIN) and let the daemon grow to demand
@@ -1343,8 +1349,16 @@ crf_safe_cache_root() {
     |"/boot"*|"/usr"*|"/etc"*|"/var"*|"/root"*|"/bin"*|"/sbin"*|"/lib"*)
       echo unsafe >&2; return 1 ;;
   esac
-  # Require a dedicated subdirectory (>=2 levels under /mnt); reject a bare mount root.
+  # Require a dedicated subdirectory, never a bare mount root. Unassigned Devices,
+  # remote (SMB/NFS) mounts, and addons expose each device/share as
+  # /mnt/<container>/<name>, where that <name> level is ITSELF a mount root holding
+  # the operator's data — so for those containers require one level deeper
+  # (e.g. /mnt/disks/<dev>/<subdir>), not just /mnt/disks/<dev>. For pools and array
+  # disks, /mnt/<pool>/<subdir> (>=2 levels) is the dedicated subdir.
   case "$root" in
+    /mnt/disks/*/*|/mnt/remotes/*/*|/mnt/addons/*/*) printf '%s' "$root"; return 0 ;;
+    /mnt/disks/*|/mnt/remotes/*|/mnt/addons/*)
+      echo "device/remote mount root (point CACHE_ROOT at a subdirectory under it, e.g. ${root%/}/github-runner)" >&2; return 1 ;;
     /mnt/*/*) printf '%s' "$root"; return 0 ;;
     /mnt/*)   echo "bare-mount-root (point CACHE_ROOT at a subdirectory, e.g. /mnt/<pool>/github-runner)" >&2; return 1 ;;
     *)        echo not-under-mnt >&2; return 1 ;;

@@ -254,7 +254,7 @@ _(Shared image cache)_:
 </select>
 
 :crf_mirror_plug:
-> Runs a shared `registry:2` pull-through cache (Docker-in-Docker only) so images used across the fleet are pulled from Docker Hub once, not once per runner. Bound to the Docker bridge gateway, not the LAN — so it is not exposed off the host, though (being on the bridge gateway) it is reachable unauthenticated by any container on the default Docker bridge, not only this plugin's runners. It only caches public Docker Hub images. Turn off if you don't want the extra container.
+> Runs a shared `registry:2` pull-through cache (Docker-in-Docker only) so images used across the fleet are pulled from Docker Hub once, not once per runner. Bound to the Docker bridge gateway, not the LAN — so it is not exposed off the host, though (being on the bridge gateway) it is reachable unauthenticated by any container on the default Docker bridge, not only this plugin's runners. It only caches public Docker Hub images. Turn off if you don't want the extra container. The host port defaults to 5000; if that clashes with another service, set `MIRROR_PORT` in `/boot/config/plugins/ci-runner-farm/ci-runner-farm.cfg` and Restart the fleet.
 :end
 
 _(Network isolation)_:
