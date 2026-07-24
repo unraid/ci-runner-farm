@@ -140,6 +140,7 @@ chown -R root:root "\$PLGDIR"
 find "\$PLGDIR" -type d -exec chmod 0755 {} +
 find "\$PLGDIR" -type f -exec chmod 0644 {} +
 chmod 0755 "\$PLGDIR/include/runner-farm.sh"
+[ -d "\$PLGDIR/nchan" ] && find "\$PLGDIR/nchan" -type f -exec chmod 0755 {} +
 # Unraid's emhttp_event executes these on Docker service start/stop — must be +x
 [ -d "\$PLGDIR/event" ] && find "\$PLGDIR/event" -type f -exec chmod 0755 {} +
 # Config defaults are NOT seeded to flash — the settings page and runner-farm.sh

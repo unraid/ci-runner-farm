@@ -3,3 +3,6 @@
 # Build output: the .plg is committed (its version stamp is frozen at the tag),
 # but the .tgz package is rebuilt reproducibly by CI at publish — never committed.
 /ci-runner-farm.tgz
+
+# Local session logs (save-to-md / quick-push notes) — dev artifacts, never committed.
+docs/sessions/

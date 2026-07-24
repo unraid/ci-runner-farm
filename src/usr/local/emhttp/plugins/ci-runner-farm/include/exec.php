@@ -19,12 +19,31 @@ $SCRIPT  = "/usr/local/emhttp/plugins/$PLUGIN/include/runner-farm.sh";
 $action  = $_REQUEST['action'] ?? 'status-json';
 
 function run($cmd) { exec($cmd . ' 2>&1', $out, $rc); return [implode("\n", $out), $rc]; }
+// For actions whose stdout is a JSON body the frontend parses: keep stderr OUT of
+// it, so a stray docker/system warning can't corrupt the JSON (JSON.parse would
+// throw and the consumer's .catch would silently freeze the panel). run() keeps
+// 2>&1 for the action responses where the merged log IS the payload.
+function run_json($cmd) { exec($cmd . ' 2>/dev/null', $out, $rc); return [implode("\n", $out), $rc]; }
+// The last non-empty stdout line, if it is a JSON object — lets an emitter print
+// progress logs then its {ok,error?} verdict as the final line and have us pass
+// that verdict through with its specific reason intact.
+function last_json($out) {
+  $lines = array_values(array_filter(explode("\n", $out), fn($l) => trim($l) !== ''));
+  $last = $lines ? trim(end($lines)) : '';
+  return (strlen($last) && $last[0] === '{') ? $last : '';
+}
 
 switch ($action) {
   case 'status-json':
-    [$out, $rc] = run(escapeshellarg($SCRIPT) . ' status-json');
-    // runner-farm.sh already emits JSON; pass it through verbatim
-    echo $out !== '' ? $out : json_encode(['count'=>0,'runners'=>[]]);
+    [$out, $rc] = run_json(escapeshellarg($SCRIPT) . ' status-json');
+    // runner-farm.sh already emits JSON; pass it through verbatim. Empty stdout means
+    // the backend script itself failed (missing/non-executable/crash) — not a real
+    // empty fleet — so on a non-zero exit surface an HTTP error, which makes crfPost
+    // reject and the UI show "lost connection" instead of a misleading "No managed
+    // runners" card.
+    if      ($out !== '') { echo $out; }
+    elseif  ($rc === 0)   { echo json_encode(['count'=>0,'runners'=>[]]); }
+    else                  { http_response_code(500); echo json_encode(['ok'=>false,'error'=>'backend unavailable']); }
     break;
 
   case 'start': case 'stop': case 'restart': case 'validate':
@@ -33,7 +52,9 @@ switch ($action) {
     break;
 
   case 'scale':
-    $n = (int)($_REQUEST['n'] ?? 0);
+    // Clamp server-side too — the form max is presentation-only and the engine
+    // hard-caps; this is defense-in-depth against a crafted POST (n=99999).
+    $n = max(0, min(64, (int)($_REQUEST['n'] ?? 0)));
     [$out, $rc] = run(escapeshellarg($SCRIPT) . ' scale ' . escapeshellarg((string)$n));
     echo json_encode(['ok' => $rc === 0, 'action' => "scale $n", 'log' => $out]);
     break;
@@ -41,6 +62,13 @@ switch ($action) {
   case 'set-token':
     $tok = trim($_REQUEST['token'] ?? '');
     if ($tok === '') { echo json_encode(['ok'=>false,'error'=>'empty']); break; }
+    // Shape-check the PAT: every GitHub token form (ghp_/gho_/ghs_/ghr_/github_pat_
+    // + classic 40-char hex) is [A-Za-z0-9_] only. Rejecting anything else keeps a
+    // stray quote/newline/backslash out of the curl `--config` header the engine
+    // builds from this value (where it could break or inject curl directives).
+    if (!preg_match('/^[A-Za-z0-9_]{20,255}$/', $tok)) {
+      echo json_encode(['ok'=>false,'error'=>'that does not look like a GitHub token (expected letters, digits, and underscores only)']); break;
+    }
     @mkdir($CFGDIR, 0755, true);
     file_put_contents("$CFGDIR/token", $tok);
     chmod("$CFGDIR/token", 0600);
@@ -81,58 +109,44 @@ switch ($action) {
     break;
 
   case 'build-image':
-    // launch the build in the background; UI polls 'build-log'
-    $log  = "$CFGDIR/build.log";
-    $lock = "$CFGDIR/build.lock";
-    @mkdir($CFGDIR, 0755, true);
-    // Serialize builds ATOMICALLY and only report success once the lock is ours.
-    // The launcher opens fd 9 on the lock and takes a non-blocking flock IN THIS
-    // synchronous call: lose the race and it prints BUSY (we reject); win it and
-    // the build runs in a nohup'd child that INHERITS fd 9, so the flock is held
-    // for the whole build (released only when that child exits — even on SIGKILL).
-    // There is no probe/launch gap where two callers could both be told the build
-    // started: whoever loses `flock -n 9` is told BUSY. The child truncates the log
-    // under the lock so a poll can't read a prior build's __BUILD_RC__.
-    $inner = ': > ' . escapeshellarg($log) . '; '
-           . escapeshellarg($SCRIPT) . ' build-image >> ' . escapeshellarg($log) . ' 2>&1; '
-           . 'echo "__BUILD_RC__=$?" >> ' . escapeshellarg($log);
-    $launcher = 'exec 9> ' . escapeshellarg($lock) . '; '
-              . 'if flock -n 9; then '
-              .   'nohup sh -c ' . escapeshellarg($inner) . ' </dev/null >/dev/null 2>&1 & '
-              .   'echo STARTED; '
-              . 'else echo BUSY; fi';
-    $out = trim((string)shell_exec('sh -c ' . escapeshellarg($launcher)));
-    if ($out === 'STARTED') { echo json_encode(['ok' => true, 'action' => 'build-image']); }
-    else                    { echo json_encode(['ok' => false, 'error' => 'a build is already running']); }
+    // The engine owns the flock/launch state machine (build-async verb); thin shim.
+    [$out, $rc] = run_json(escapeshellarg($SCRIPT) . ' build-async');
+    echo $out !== '' ? $out : json_encode(['ok'=>false,'error'=>'build launch failed']);
     break;
 
   case 'queued-json':
-    [$out, $rc] = run(escapeshellarg($SCRIPT) . ' queued-json');
+    [$out, $rc] = run_json(escapeshellarg($SCRIPT) . ' queued-json');
     echo $out !== '' ? $out : json_encode(['queued' => -1]);
     break;
 
   case 'stats-json':
-    [$out, $rc] = run(escapeshellarg($SCRIPT) . ' stats-json');
+    [$out, $rc] = run_json(escapeshellarg($SCRIPT) . ' stats-json');
     echo $out !== '' ? $out : json_encode(['total' => -1]);
     break;
 
   case 'cache-usage':
-    [$out, $rc] = run(escapeshellarg($SCRIPT) . ' cache-usage-json');
+    [$out, $rc] = run_json(escapeshellarg($SCRIPT) . ' cache-usage-json');
     echo $out !== '' ? $out : json_encode(['total' => -1]);
     break;
 
   case 'cache-clear':
-    [$out, $rc] = run(escapeshellarg($SCRIPT) . ' cache-clear-pkg');
-    // cmd_cache_clear_pkg logs before its JSON; trust the exit code, not stdout.
-    echo json_encode(['ok' => $rc === 0, 'action' => 'cache-clear']);
+    [$out, $rc] = run_json(escapeshellarg($SCRIPT) . ' cache-clear-pkg');
+    // cmd_cache_clear_pkg emits its {ok,error?} verdict as the final stdout line;
+    // pass it through so a specific reason (unsafe root / could not remove N dirs)
+    // reaches the UI, else fall back to the exit-code envelope.
+    $j = last_json($out);
+    echo $j !== '' ? $j : json_encode(['ok' => $rc === 0, 'action' => 'cache-clear']);
     break;
 
   case 'recycle':
     $n = $_REQUEST['name'] ?? '';
     if (!preg_match('/^ci-runner-[0-9]+$/', $n)) { echo json_encode(['ok'=>false,'error'=>'bad name']); break; }
-    [$out, $rc] = run(escapeshellarg($SCRIPT) . ' recycle ' . escapeshellarg($n));
-    // cmd_recycle emits log lines before its JSON; trust the exit code, not stdout.
-    echo json_encode(['ok' => $rc === 0, 'action' => 'recycle']);
+    [$out, $rc] = run_json(escapeshellarg($SCRIPT) . ' recycle ' . escapeshellarg($n));
+    // cmd_recycle emits progress logs then its {ok,error?} verdict as the final
+    // stdout line; pass it through so the specific reason (removed-not-recreated,
+    // preflight-aborted, no-token …) reaches the UI, else fall back to exit code.
+    $j = last_json($out);
+    echo $j !== '' ? $j : json_encode(['ok' => $rc === 0, 'action' => 'recycle']);
     break;
 
   case 'runner-log':
@@ -143,7 +157,7 @@ switch ($action) {
     break;
 
   case 'image-info':
-    [$out, $rc] = run(escapeshellarg($SCRIPT) . ' image-info-json');
+    [$out, $rc] = run_json(escapeshellarg($SCRIPT) . ' image-info-json');
     echo $out !== '' ? $out : json_encode(['exists' => false]);
     break;
 
@@ -153,22 +167,15 @@ switch ($action) {
     break;
 
   case 'farm-log':
-    // Live farm activity for the Fleet log's idle state: the autoscale daemon
-    // log (or boot.log before the daemon ever ran), minus docker's noisy
-    // per-invocation swap-limit warning.
-    $as = "$CFGDIR/autoscale.log"; $bt = "$CFGDIR/boot.log";
-    $src = is_file($as) ? $as : $bt;
-    $txt = is_file($src) ? shell_exec('tail -n 150 ' . escapeshellarg($src) . " | grep -v 'swap limit capabilities' | tail -n 60") : '';
-    echo json_encode(['ok' => true, 'log' => $txt ?: '']);
+    // engine owns the source selection + filtering (farm-log verb); thin shim.
+    [$out, $rc] = run_json(escapeshellarg($SCRIPT) . ' farm-log');
+    echo $out !== '' ? $out : json_encode(['ok'=>true,'log'=>'']);
     break;
 
   case 'build-log':
-    $log = "$CFGDIR/build.log";
-    $txt = is_file($log) ? (string)shell_exec('tail -n 120 ' . escapeshellarg($log)) : '';
-    $running = trim(shell_exec("pgrep -f '[r]unner-farm.sh build-image' >/dev/null 2>&1 && echo 1 || echo 0")) === '1';
-    $rc = (!$running && preg_match('/__BUILD_RC__=(\d+)/', $txt, $m)) ? (int)$m[1] : null;
-    $disp = preg_replace('/\n?__BUILD_RC__=\d+\n?/', "\n", $txt);
-    echo json_encode(['ok' => true, 'running' => $running, 'rc' => $rc, 'log' => $disp]);
+    // engine owns the liveness/rc/log parsing (build-status verb); thin shim.
+    [$out, $rc] = run_json(escapeshellarg($SCRIPT) . ' build-status');
+    echo $out !== '' ? $out : json_encode(['ok'=>true,'running'=>false,'rc'=>null,'log'=>'']);
     break;
 
   default:

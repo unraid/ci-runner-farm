@@ -3,9 +3,11 @@ Title="Runner image"
 Tag="cube"
 ---
 <?php
+include_once '/usr/local/emhttp/plugins/ci-runner-farm/include/crf-core.php';
 /* Runner image builder tab: image status band, ACE-powered Dockerfile editor
    (core dynamix ships ace with a dockerfile mode), and the build pipeline.
-   The crf* JS core and .crf-* styles live on the Fleet tab (same document). */
+   The crf* JS core + .crf-* styles come from include/crf-core.php (above, shared
+   by all tabs via include_once). */
 $crf_plugin = 'ci-runner-farm';
 $crf_df     = "/boot/config/plugins/$crf_plugin/Dockerfile";
 $crf_df_saved = is_file($crf_df);
@@ -96,7 +98,7 @@ DFBLOCK;
 <div class="crf-console">
   <div class="crf-console-head">
     <span>Build log</span>
-    <uui-button variant="outline" size="xs" onclick="crfCopyBuildLog(this)">Copy</uui-button>
+    <uui-button variant="outline" size="xs" onclick="crfCopyFrom('crf-build-log',this)">Copy</uui-button>
   </div>
   <div id="crf-build-log" class="crf-console-body"><span class="crf-muted">Build output appears here. Set Image source to Built-in on the Settings tab and restart the fleet to use a new build.</span></div>
 </div>
@@ -175,6 +177,12 @@ let crfiAce=null, crfiSaved='';
     document.getElementById('crfi-dirty').classList.toggle('on',ta.value!==crfiSaved);
   });
 })();
+/* All three sub-tabs' scripts run at page load in one document with Fleet (tab1)
+   active, so this editor is built while hidden — ACE measures gutter/cursor geometry
+   at construction and gets zeros with no layout box, rendering mismeasured until the
+   first click. Switching to a dynamix sub-tab doesn't fire visibilitychange, so
+   re-measure when the Runner image sub-tab (tab2) is shown. */
+document.getElementById('tab2') && document.getElementById('tab2').addEventListener('click',()=>{ setTimeout(()=>{ if(crfiAce) crfiAce.resize(true); },60); });
 crfiSyncTC();
 function crfiResetDf(){
   crfPost({action:'get-default-dockerfile'}).then(d=>{
@@ -184,6 +192,10 @@ function crfiResetDf(){
     crfiSyncTC();
   }).catch(e=>{ document.getElementById('crf-build-status').textContent='could not load default — see console'; console.error('ci-runner-farm reset:',e); });
 }
+// NOTE: the toolchain install blocks + their splice/idempotency logic are a
+// BROWSER-ONLY convenience of the image builder — there is no engine (runner-farm.sh
+// / CLI) equivalent, so they can't be composed headlessly, and the block library
+// must be kept in sync with default.Dockerfile by hand.
 const CRFI_TC = <?=json_encode($crfi_tc)?>;
 function crfiGet(){ return crfiAce ? crfiAce.getValue() : document.getElementById('crf-dockerfile').value; }
 function crfiSet(v){
@@ -225,17 +237,36 @@ function crfSaveDf(cb){ crfPost({action:'save-dockerfile',dockerfile:document.ge
   if(o.ok){ crfiSaved=document.getElementById('crf-dockerfile').value; document.getElementById('crfi-dirty').classList.remove('on');
     document.getElementById('crfi-df-path').textContent='/boot/config/plugins/ci-runner-farm/Dockerfile'; }
   crfiBuildState(o.ok?'ok':'err', o.ok?'saved':('error: '+(o.error||'')));
-  if(typeof cb==='function'&&o.ok) cb(); }).catch(e=>{ crfiBuildState('err','could not save Dockerfile — see console'); console.error('ci-runner-farm save-dockerfile:',e); }); }
-function crfBuild(){ window.__crfBuildNull=0; crfiBuildState('busy','saving + building...'); crfSaveDf(function(){ crfPost({action:'build-image'}).then(o=>{ if(o&&o.ok===false){ crfiBuildState('err', o.error||'could not start build'); return; } crfPollBuild(); }).catch(e=>{ crfiBuildState('err','could not start build — see console'); console.error('ci-runner-farm build:',e); }); }); }
-function crfPollBuild(){ crfPost({action:'build-log'}).then(d=>{ const el=document.getElementById('crf-build-log'); el.innerHTML=crfColorize(d.log||''); el.scrollTop=el.scrollHeight;
-  if(d.running){ crfiBuildState('busy','building...'); setTimeout(crfPollBuild,2000); }
-  else if(d.rc===0){ crfiBuildState('ok','build finished — restart the fleet to use it'); crfiInfo(); }
-  else if(typeof d.rc==='number'){ crfiBuildState('err','build failed (exit '+d.rc+') — see log'); crfiInfo(); }
-  else if((window.__crfBuildNull=(window.__crfBuildNull||0)+1) < 3){ crfiBuildState('busy','finishing…'); setTimeout(crfPollBuild,1500); }
-  else { window.__crfBuildNull=0; crfiBuildState('err','build status unknown (interrupted?) — see log'); crfiInfo(); } })
-  .catch(e=>{ crfiBuildState('err','build status unknown — see console'); console.error('ci-runner-farm build:',e); }); }
-function crfCopyBuildLog(btn){
-  const t=document.getElementById('crf-build-log').textContent||'';
-  crfCopyText(t).then(()=>{ const o=btn.textContent; btn.textContent='Copied'; setTimeout(()=>btn.textContent=o,1500); }).catch(()=>{ const o=btn.textContent; btn.textContent='Copy failed'; setTimeout(()=>btn.textContent=o,1500); });
+  if(typeof cb==='function') cb(!!o.ok); }).catch(e=>{ crfiBuildState('err','could not save Dockerfile — see console'); console.error('ci-runner-farm save-dockerfile:',e); if(typeof cb==='function') cb(false); }); }
+function crfBuild(){
+  // Re-entrancy guard: a build (and its poll loop) is already live. Without this, a
+  // second Save+Build while a build runs would save the Dockerfile (clearing the dirty
+  // dot) and get an "already running" rejection — then the FIRST build's poller would
+  // paint "build finished", leaving a success banner + clean editor over the OLD image.
+  if(window.__crfBuilding) return;
+  window.__crfBuilding=true; window.__crfBuildNull=0; window.__crfBuildErr=0;
+  crfiBuildState('busy','saving + building...');
+  crfSaveDf(function(ok){
+    if(!ok){ window.__crfBuilding=false; return; }   // save failed — crfSaveDf already painted the error and kept the dirty dot
+    crfPost({action:'build-image'}).then(o=>{
+      if(o&&o.ok===false){ window.__crfBuilding=false; crfiBuildState('err', o.error||'could not start build'); return; }
+      crfPollBuild();
+    }).catch(e=>{ window.__crfBuilding=false; crfiBuildState('err','could not start build — see console'); console.error('ci-runner-farm build:',e); });
+  });
 }
+// Keep tracking a running build when the tab is backgrounded, just poll slower — the
+// NAS is busiest mid-build, so don't hammer build-log every 2s into a hidden tab.
+function crfBuildNext(ms){ setTimeout(crfPollBuild, document.hidden ? Math.max(ms,8000) : ms); }
+function crfPollBuild(){ crfPost({action:'build-log'}).then(d=>{ window.__crfBuildErr=0; const el=document.getElementById('crf-build-log'); el.innerHTML=crfColorize(d.log||''); el.scrollTop=el.scrollHeight;
+  if(d.running){ window.__crfBuildNull=0; crfiBuildState('busy','building...'); crfBuildNext(2000); }
+  else if(d.rc===0){ window.__crfBuilding=false; crfiBuildState('ok','build finished — restart the fleet to use it'); crfiInfo(); }
+  else if(typeof d.rc==='number'){ window.__crfBuilding=false; crfiBuildState('err','build failed (exit '+d.rc+') — see log'); crfiInfo(); }
+  else if((window.__crfBuildNull=(window.__crfBuildNull||0)+1) < 3){ crfiBuildState('busy','finishing…'); crfBuildNext(1500); }
+  else { window.__crfBuildNull=0; window.__crfBuilding=false; crfiBuildState('err','build status unknown (interrupted?) — see log'); crfiInfo(); } })
+  .catch(e=>{ console.error('ci-runner-farm build:',e);
+    // A long build issues hundreds of 2s polls under heavy NAS build load; a single
+    // dropped request or transient 403 must not end the loop while the build keeps
+    // running server-side. Retry a bounded number of times before giving up.
+    if((window.__crfBuildErr=(window.__crfBuildErr||0)+1) < 5){ crfiBuildState('busy','reconnecting…'); crfBuildNext(3000); }
+    else { window.__crfBuildErr=0; window.__crfBuilding=false; crfiBuildState('err','build status unknown — see console'); } }); }
 </script>

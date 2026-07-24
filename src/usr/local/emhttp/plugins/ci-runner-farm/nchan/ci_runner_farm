@@ -1,0 +1,28 @@
+#!/bin/bash
+# nchan publisher for the CI Runner Farm dashboard widget.
+#
+# monitor_nchan discovers and runs this (it manages every
+# /usr/local/emhttp/*/nchan/* process) ONLY while the Main → Dashboard has a
+# live subscriber, and pauses it otherwise. That idle-gating matters here: each
+# status-json makes docker calls, so we compute it ONCE per interval and push to
+# every dashboard viewer over nginx's pub socket, instead of each browser
+# polling the expensive endpoint. buffer_length=1 means a freshly-opened
+# dashboard gets the last status immediately.
+
+socket="/var/run/nginx.socket"
+chan="http://localhost/pub/ci_runner_farm?buffer_length=1"
+script="/usr/local/emhttp/plugins/ci-runner-farm/include/runner-farm.sh"
+interval=8
+
+# Publish the AGGREGATE-ONLY dashboard payload ({count,up,busy,idle}) — never the full
+# status-json. The nchan /sub channel is served by Unraid's nginx WITHOUT the webGUI
+# login, so anything pushed here is readable by any client on the network; the widget
+# only needs counts, so we don't broadcast private repo/branch/job metadata to the LAN.
+while :; do
+    json="$(timeout 5 "$script" dashboard-json 2>/dev/null)"
+    # On a backend failure push a sentinel instead of skipping the publish, so the widget
+    # flips to "disconnected" rather than freezing on the last-good counts as if live.
+    [ -n "$json" ] || json='{"ok":false,"error":"backend unavailable"}'
+    curl -s --max-time 3 --unix-socket "$socket" --data-raw "$json" "$chan" >/dev/null 2>&1
+    sleep "$interval"
+done

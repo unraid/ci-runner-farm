@@ -3,30 +3,16 @@ Title="Fleet"
 Tag="server"
 ---
 <?php
-/* Fleet hub tab: live stats, actions, runner bays with usage, and the fleet
-   log. Shares one document with the other RunnerFarm tabs (dynamix xmenu
-   tabs), so the crf* JS core, the uui loader, and the .crf-* stylesheet
-   defined here serve all tabs.
-
-   Modern components: Unraid ships the @unraid/ui web-component bundle on every
-   page but never registers it, and its stylesheet is missing the Tailwind
-   utilities layer (they live in the standalone apps css). crfUuiLoad() below
-   force-registers the bundle with a merged, shadow-rescoped stylesheet. Both
-   hashed filenames are resolved at render/runtime (manifest + PHP glob), so
-   Unraid updates don't break it — and if any piece is missing the custom
-   elements stay unregistered, which still renders their slotted text and
-   still fires their onclick handlers, so the page degrades to plain-looking
-   but functional controls. */
-$crf_csrf = $var['csrf_token'] ?? '';
-$crf_uui_base = '/plugins/dynamix.my.servers/unraid-components/uui/';
-$crf_util_css = '';
-foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/standalone/standalone-apps-*.css') ?: [] as $f) {
-  $crf_util_css = '/plugins/dynamix.my.servers/unraid-components/standalone/' . basename($f);
-  break;
-}
+/* Fleet hub tab: live stats, actions, runner bays with usage, and the fleet log.
+   The shared crf* JS core, the @unraid/ui force-loader, and the shared .crf-*
+   styles are included from include/crf-core.php (below, via include_once) so all
+   three RunnerFarm tabs share one declared dependency regardless of tab load
+   order. Only Fleet-specific pollers, rendering, and styles live in this file. */
 ?>
+<?php include_once '/usr/local/emhttp/plugins/ci-runner-farm/include/crf-core.php'; ?>
 <div id="crf-sec" class="crf-banner crf-banner-sec" style="display:none"></div>
 <div id="crf-warn" class="crf-banner crf-banner-warn" style="display:none"></div>
+<div id="crf-migrate" class="crf-banner crf-banner-info" style="display:none"></div>
 
 <div class="crf-stats" id="crf-stats">
   <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label">Runners up</span><span class="crf-stat-value" id="crf-s-up">&ndash;</span></div></uui-card-wrapper>
@@ -72,12 +58,12 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
 </div>
 
 <style>
-  :root{--crf-ok:#4caf50;--crf-busy:var(--brand-orange,#ff8c2f);--crf-err:var(--brand-red,#e22828)}
-  .crf-muted{color:var(--alt-text-color)}
+  /* Shared .crf-* tokens/rules (:root vars, .crf-muted, banners, balls, toast,
+     console, log tints, uui-button fallback, crf-pulse) live ONCE in
+     include/crf-core.php, which every tab include_once's first. Do NOT copy them
+     here — a duplicate later in document order would win the cascade and silently
+     mask edits to the shared source. Only Fleet-specific selectors belong below. */
   .crf-right{text-align:right}
-  .crf-banner{margin:6px 0 8px;padding:10px 12px;border-radius:6px;font-size:13px;line-height:1.4}
-  .crf-banner-sec{border:1px solid var(--crf-busy);background:color-mix(in srgb,var(--crf-busy) 12%,var(--background-color));color:var(--text-color);font-weight:bold}
-  .crf-banner-warn{border:1px solid var(--crf-err);background:color-mix(in srgb,var(--crf-err) 12%,var(--background-color));color:var(--text-color)}
   .crf-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin:6px 0 8px}
   .crf-stat-inner{display:flex;flex-direction:column;gap:2px;padding:0}
   uui-card-wrapper.crf-stat:not(:defined){background:var(--shade-bg-color,var(--table-header-background-color));border:1px solid var(--border-color);border-radius:6px;display:block;padding:10px 14px}
@@ -94,7 +80,6 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
   .crf-toolbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0 0 8px}
   .crf-scale{margin-left:auto;display:flex;align-items:center;gap:6px;color:var(--alt-text-color);font-size:13px}
   .crf-scale input[type=number]{width:4em;height:26px;box-sizing:border-box;border-radius:6px;padding:0 8px;font-size:12px;margin:0}
-  uui-button:not(:defined),uui-brand-button:not(:defined){cursor:pointer;border:1px solid var(--border-color);border-radius:6px;padding:5px 12px;font-size:13px;color:var(--text-color)}
   .crf-bays{border:1px solid var(--border-color);border-radius:6px;overflow:hidden;margin:0 0 8px}
   .crf-bay{display:grid;grid-template-columns:22px minmax(110px,1fr) 88px minmax(120px,1.6fr) 120px 160px 26px;gap:8px;align-items:center;padding:4px 10px;border-top:1px solid var(--table-border-color,var(--border-color))}
   .crf-bay:first-child{border-top:none}
@@ -128,92 +113,14 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
   .crf-bay-drawer{border-top:1px solid var(--table-border-color,var(--border-color));background:var(--shade-bg-color,var(--background-color));padding:8px 12px 8px 44px;font-family:bitstream,monospace;font-size:11.5px;line-height:1.5;white-space:pre-wrap;max-height:190px;overflow:auto;cursor:default}
   .crf-empty{display:flex;align-items:center;gap:14px;padding:18px 16px}
   .crf-empty strong{font-size:13px;color:var(--text-color)}
-  .crf-toast{position:fixed;right:18px;bottom:48px;z-index:9999;background:var(--inverse-background-color,#222);color:var(--inverse-text-color,#fff);border:1px solid var(--border-color);border-radius:6px;padding:9px 16px;font-size:13px;opacity:0;transform:translateY(6px);transition:opacity .2s,transform .2s;pointer-events:none}
-  .crf-toast-show{opacity:1;transform:none}
-  .crf-ball{width:12px;height:12px;border-radius:50%;background:var(--disabled-text-color,#888);display:inline-block}
-  .crf-ball-idle{background:var(--crf-ok)}
-  .crf-ball-busy{background:var(--crf-busy);animation:crf-pulse 1.6s ease-in-out infinite}
-  .crf-ball-error{background:var(--crf-err)}
-  .crf-ball-starting{animation:crf-pulse 1.1s ease-in-out infinite}
-  .crf-phase uui-badge:not(:defined){font-size:11px;color:var(--alt-text-color)}
-  .crf-console{border:1px solid var(--border-color);border-radius:6px;overflow:hidden;margin:0 0 8px}
-  .crf-console-head{display:flex;align-items:center;justify-content:space-between;padding:3px 6px 3px 12px;min-height:30px;box-sizing:border-box;background:var(--table-header-background-color);font-size:11px;color:var(--alt-text-color)}
-  .crf-lg-dim{color:var(--alt-text-color)}
-  .crf-lg-ok{color:var(--crf-ok)}
-  .crf-lg-warn{color:var(--crf-busy)}
-  .crf-lg-err{color:var(--crf-err)}
-  .crf-console-body{white-space:pre-wrap;font-family:bitstream,monospace;font-size:12px;line-height:1.5;min-height:90px;max-height:200px;overflow:auto;background:var(--shade-bg-color,var(--background-color));color:var(--text-color);padding:6px 10px}
-  .crf-builder-wrap textarea{width:100%;font-family:bitstream,monospace;font-size:12px;background:var(--input-bg-color);color:var(--text-color);border:1px solid var(--textarea-border-color,var(--input-border-color))}
-  @keyframes crf-pulse{0%,100%{opacity:1}50%{opacity:.35}}
-  @media (prefers-reduced-motion:reduce){.crf-ball-busy,.crf-ball-starting{animation:none}}
 </style>
 
 <script>
-const CRF_CSRF = "<?=$crf_csrf?>";
-const CRF_URL  = "/plugins/ci-runner-farm/include/exec.php";
-const CRF_UUI_BASE = "<?=$crf_uui_base?>";
-const CRF_UTIL_CSS = "<?=$crf_util_css?>";
-function crfDark(){ return /Theme--(black|gray)\b/.test(document.documentElement.className); }
-/* Force-register @unraid/ui (see header comment). Resolves both hashed asset
-   names at runtime; merges the standalone Tailwind utilities (which the uui
-   bundle ships without) with the uui tokens, rescoped for shadow DOM. */
-window.CRF_UUI = (async () => {
-  try {
-    const man = await (await fetch(CRF_UUI_BASE + 'ui.manifest.json')).json();
-    const parts = [];
-    if (CRF_UTIL_CSS) parts.push(await (await fetch(CRF_UTIL_CSS)).text());
-    parts.push(await (await fetch(CRF_UUI_BASE + man['style.css'].file)).text());
-    const css = parts.join('\n')
-      .replace(/\.unapi\.dark\b/g, ':host(.dark)')
-      .replace(/\.unapi\b/g, ':host')
-      .replace(/:root\b/g, ':host')
-      .replace(/\.dark\b/g, ':host(.dark)')
-      + '\n:host([size="xs"]) .inline-flex{font-size:12px;line-height:1.2;padding:3px 10px;gap:4px}'
-      + '\n:host(.crf-stat) [class~="p-4"]{padding:8px 14px}';
-    const mod = await import(CRF_UUI_BASE + man['src/register.ts'].file);
-    mod.registerAllComponents({ sharedCssContent: css });
-    if (crfDark()) document.querySelectorAll('uui-button,uui-brand-button,uui-badge,uui-card-wrapper').forEach(e => e.classList.add('dark'));
-    return true;
-  } catch (e) { console.warn('ci-runner-farm: @unraid/ui unavailable, using fallback styling', e); return false; }
-})();
-function crfPost(p){
-  p.csrf_token = CRF_CSRF;
-  return fetch(CRF_URL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body:Object.entries(p).map(([k,v])=>encodeURIComponent(k)+'='+encodeURIComponent(v)).join('&')})
-    .then(r=>r.text()).then(t=>{ try{ return JSON.parse(t); }catch(e){ throw new Error('bad response for '+p.action+': '+t.slice(0,120)); } });
-}
 /* Poll only when the Fleet tab is actually on screen. document.hidden covers a
    backgrounded browser tab; offsetParent covers the inactive dynamix sub-tab
    (all tabs share one document, so document.hidden stays false on Settings/Image
    while Fleet's pollers would otherwise keep hitting docker on the NAS). */
 function crfFleetActive(){ const b=document.getElementById('crf-bays-body'); return !document.hidden && !!b && b.offsetParent!==null; }
-/* Copy text to the clipboard, feature-detecting the async Clipboard API (absent
-   in insecure contexts — Unraid's LAN webGUI is often plain HTTP, where
-   navigator.clipboard is undefined and .writeText would throw synchronously) and
-   falling back to execCommand('copy'). Shared by every tab (one document). */
-function crfCopyText(t){
-  if(navigator.clipboard&&navigator.clipboard.writeText) return navigator.clipboard.writeText(t);
-  return new Promise((res,rej)=>{ try{ const ta=document.createElement('textarea'); ta.value=t; ta.setAttribute('readonly',''); ta.style.position='fixed'; ta.style.top='-1000px'; ta.style.opacity='0'; document.body.appendChild(ta); ta.select(); const ok=document.execCommand('copy'); document.body.removeChild(ta); ok?res():rej(new Error('copy rejected')); }catch(e){ rej(e); } });
-}
-/* Copy the text content of an element to the clipboard, with button feedback. */
-function crfCopyFrom(id, btn){
-  const t=(document.getElementById(id)||{}).textContent||'';
-  crfCopyText(t).then(()=>{ const o=btn.textContent; btn.textContent='Copied'; setTimeout(()=>btn.textContent=o,1500); }).catch(()=>{ const o=btn.textContent; btn.textContent='Copy failed'; setTimeout(()=>btn.textContent=o,1500); });
-}
-function crfEsc(s){ return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-/* Semantic log tinting: escape first, then dim structural prefixes and tint
-   error/warn lines and known lifecycle phrases. Applies to both consoles. */
-function crfColorize(t){
-  return String(t||'').split('\n').map(line=>{
-    let l=crfEsc(line);
-    l=l.replace(/^(\[ci-runner-farm\]|\d{4}-\d{2}-\d{2}[T ][\d:.]+Z?|#\d+\s)/,'<span class="crf-lg-dim">$1</span>');
-    if(/error|fatal|failed|failure/i.test(line)) return '<span class="crf-lg-err">'+l+'</span>';
-    if(/warn/i.test(line)) return '<span class="crf-lg-warn">'+l+'</span>';
-    l=l.replace(/\b(shrink by \d+|removing idle [\w-]+|deregistered [\w-]+|reaping [\w-]+|stopping|stopped)\b/gi,'<span class="crf-lg-warn">$1</span>');
-    l=l.replace(/\b(grow to \d+|daemon up|started|registered|Listening for Jobs|successfully|DONE|CACHED|FINISHED|build complete)\b/gi,'<span class="crf-lg-ok">$1</span>');
-    return l;
-  }).join('\n');
-}
 let crfUserLog=false;
 function crfLog(o){ crfUserLog=true; document.getElementById('crf-log').innerHTML = crfColorize(o.log||JSON.stringify(o)); }
 /* Until the user triggers an action, the Fleet log shows live farm activity
@@ -228,14 +135,8 @@ function crfFarmLog(){
 }
 crfFarmLog(); setInterval(crfFarmLog,10000);
 /* Lightweight theme-following toast for action feedback. */
-function crfToast(msg){
-  let t=document.getElementById('crf-toast');
-  if(!t){ t=document.createElement('div'); t.id='crf-toast'; t.className='crf-toast'; document.body.appendChild(t); }
-  t.textContent=msg; t.classList.add('crf-toast-show');
-  clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('crf-toast-show'),2600);
-}
 const CRF_TOAST_MSG={start:'Fleet started',stop:'Fleet stopped',restart:'Fleet restarted',validate:'Validation finished'};
-function crfDoAction(a){ crfPost({action:a}).then(o=>{crfLog(o); crfRefresh(); if(o.ok!==false) crfToast(CRF_TOAST_MSG[a]||a); }).catch(e=>{ crfToast((CRF_TOAST_MSG[a]||a)+' failed'); console.error('ci-runner-farm '+a+':',e); }); }
+function crfDoAction(a){ crfPost({action:a}).then(o=>{crfLog(o); crfRefresh(); if(o.ok!==false) crfToast(CRF_TOAST_MSG[a]||a); else crfToast((CRF_TOAST_MSG[a]||a)+' failed'+(o.error?': '+o.error:'')); }).catch(e=>{ crfToast((CRF_TOAST_MSG[a]||a)+' failed'); console.error('ci-runner-farm '+a+':',e); }); }
 function crfAction(a){
   /* Stop/Restart kill whatever the runners are building — confirm with the
      live impact when any runner is mid-job (sweetalert ships with the webgui). */
@@ -252,7 +153,7 @@ function crfAction(a){
   }
   crfDoAction(a);
 }
-function crfScale(){ const n=document.getElementById('crf-n').value; crfPost({action:'scale',n}).then(o=>{crfLog(o); crfRefresh(); if(o.ok!==false) crfToast('Scaled to '+n);}).catch(e=>{ crfToast('Scale failed'); console.error('ci-runner-farm scale:',e); }); }
+function crfScale(){ const n=document.getElementById('crf-n').value; crfPost({action:'scale',n}).then(o=>{crfLog(o); crfRefresh(); if(o.ok!==false) crfToast('Scaled to '+n); else crfToast('Scale failed'+(o.error?': '+o.error:''));}).catch(e=>{ crfToast('Scale failed'); console.error('ci-runner-farm scale:',e); }); }
 
 function crfElapsed(iso){
   const t=Date.parse(iso); if(isNaN(t)) return null;
@@ -264,14 +165,39 @@ function crfBar(pct){
   const cls=p>90?' crf-hot':p>60?' crf-mid':'';
   return '<span class="crf-ubar'+cls+'"><span style="width:'+p+'%"></span></span>';
 }
+/* The per-poll VOLATILE cells — the elapsed timer and the CPU/mem bars, which tick
+   every 5s for a busy runner. Factored out so the full row builder and crfRefresh's
+   in-place fast-path render them identically from ONE source of truth (no drift). */
+function crfVolatile(r){
+  const running=r.state==='running';
+  let elapsedHtml='';
+  if(running&&r.phase==='busy'&&r.job_started){
+    const e=crfElapsed(r.job_started);
+    if(e) elapsedHtml=' <span class="crf-elapsed'+(e.m>=120?' crf-el-hot':e.m>=30?' crf-el-warn':'')+'" title="running for '+e.txt+'">'+e.txt+'</span>';
+  }
+  const cpuMax=(r.cpus&&r.cpus>0)?r.cpus*100:100;
+  const cpuKnown=running&&r.cpu_pct>=0, memKnown=running&&r.mem_used_mib>=0&&r.mem_gb;
+  const cpuPct=cpuKnown?(100*r.cpu_pct/cpuMax):0;
+  const memPct=memKnown?100*r.mem_used_mib/(r.mem_gb*1024):0;
+  const cpuTxt=cpuKnown?Math.round(r.cpu_pct)+'%':(running?'…':'&ndash;');
+  const memTxt=memKnown?((r.mem_used_mib>=1024?( (r.mem_used_mib/1024).toFixed(1)+'g'):(r.mem_used_mib+'m'))+'/'+r.mem_gb+'g'):(running?'…':'&ndash;');
+  return {elapsedHtml,cpuPct,cpuTxt,memPct,memTxt};
+}
 function crfRefresh(){
-  if(!crfFleetActive()) return;
+  // In-flight guard: never stack a new status poll while the previous is still
+  // outstanding, so a slow backend can't spiral into overlapping polls.
+  if(!crfFleetActive() || window.__crfBusyStatus) return;
+  window.__crfBusyStatus=true;
   crfPost({action:'status-json'}).then(d=>{
     window.CRF_LAST=d;
     const warn=document.getElementById('crf-warn');
     if(warn){ if(d.warning){ warn.textContent='⚠ '+d.warning; warn.style.display='block'; } else { warn.textContent=''; warn.style.display='none'; } }
     const sec=document.getElementById('crf-sec');
     if(sec){ if(d.security){ sec.textContent='🔒 '+d.security; sec.style.display='block'; } else { sec.textContent=''; sec.style.display='none'; } }
+    // Runners still on a previous baked config after a settings change — the reconciler
+    // recycles them onto the new config as they go idle (busy jobs finish first).
+    const mig=document.getElementById('crf-migrate');
+    if(mig){ if(d.stale>0){ mig.textContent='⟳ '+d.stale+' runner'+(d.stale>1?'s':'')+' updating to the new configuration — recycling as they go idle, so running jobs finish first.'; mig.style.display='block'; } else { mig.textContent=''; mig.style.display='none'; } }
     const rs=d.runners||[];
     const up=rs.filter(r=>r.state==='running').length;
     const busy=rs.filter(r=>r.state==='running'&&r.phase==='busy').length;
@@ -280,6 +206,10 @@ function crfRefresh(){
     put('crf-s-up',up); put('crf-s-busy',busy); put('crf-s-idle',idle);
     put('crf-s-as',d.autoscale||'off'); put('crf-s-iu',d.image_autoupdate||'off');
     const tb=document.getElementById('crf-bays-body'); if(!tb) return;
+    // Capture the open drawer's LIVE scroll before the rebuild below destroys the
+    // node, so crfDrawerMount can restore the user's position (not snap to tail).
+    const odr=window.CRF_DRAWER&&document.querySelector('.crf-bay-drawer[data-for="'+window.CRF_DRAWER+'"]');
+    if(odr){ window.CRF_DRAWER_PINNED=crfDrawerPinned(odr); window.CRF_DRAWER_SCROLL=odr.scrollTop; }
     if(!rs.length){
       tb.innerHTML='<div class="crf-empty"><span class="crf-ball"></span>'+
         '<div><strong>No managed runners</strong><div class="crf-muted">Configured for '+crfEsc(d.configured||0)+' — start the fleet to register them with GitHub.</div></div>'+
@@ -287,17 +217,37 @@ function crfRefresh(){
       return;
     }
     const dark=crfDark()?' class="dark"':'';
+    // In-place fast-path: rebuilding crf-bays-body's innerHTML every 5s recreates every
+    // <uui-badge> web component and drops keyboard focus / text selection on each poll.
+    // Most polls are steady-state — same runners and jobs, only CPU/mem/elapsed ticking —
+    // so when the STRUCTURE is unchanged we refresh just those volatile cells in place and
+    // leave the rows (and the open drawer sibling) alive. Any structural change (runner
+    // added/removed, phase flip, new job, theme or drawer toggle) changes the signature
+    // and falls through to the full rebuild below. busy-with-job_started is in the
+    // signature so the .crf-elapsed span's presence always matches what the row was built
+    // with — the in-place branch can then update it without ever needing to create it.
+    const sig=JSON.stringify([dark,window.CRF_DRAWER,rs.map(r=>[r.name,r.state,r.phase,r.job,r.repo,r.run_id,r.pr,r.branch,r.cpus,r.mem_gb,r.state==='running'&&r.phase==='busy'&&!!r.job_started])]);
+    if(tb.__crfSig===sig && tb.querySelector('.crf-bay[data-name]')){
+      rs.forEach(r=>{
+        const row=tb.querySelector('.crf-bay[data-name="'+(window.CSS&&CSS.escape?CSS.escape(r.name):r.name)+'"]'); if(!row) return;
+        const v=crfVolatile(r);
+        const u=row.querySelectorAll('.crf-usage');
+        if(u[0]) u[0].innerHTML=crfBar(v.cpuPct)+'<span class="crf-uval">'+v.cpuTxt+'</span>';
+        if(u[1]) u[1].innerHTML=crfBar(v.memPct)+'<span class="crf-uval">'+v.memTxt+'</span>';
+        const el=row.querySelector('.crf-elapsed');
+        if(el&&r.job_started){ const e=crfElapsed(r.job_started); if(e){ el.textContent=e.txt; el.title='running for '+e.txt; el.className='crf-elapsed'+(e.m>=120?' crf-el-hot':e.m>=30?' crf-el-warn':''); } }
+      });
+      crfDrawerMount();
+      return;
+    }
+    tb.__crfSig=sig;
     tb.innerHTML=rs.map(r=>{
       const running=r.state==='running';
       const ph=running?r.phase:'exited';
       const ball=running?('crf-ball-'+r.phase):'crf-ball';
       const bvar=ph==='busy'?'orange':ph==='idle'?'green':ph==='error'?'red':'gray';
       let jobHtml;
-      let elapsedHtml='';
-      if(running&&r.phase==='busy'&&r.job_started){
-        const e=crfElapsed(r.job_started);
-        if(e) elapsedHtml=' <span class="crf-elapsed'+(e.m>=120?' crf-el-hot':e.m>=30?' crf-el-warn':'')+'" title="running for '+e.txt+'">'+e.txt+'</span>';
-      }
+      const v=crfVolatile(r);
       if(running&&r.phase==='busy'){
         const repoShort=r.repo?crfEsc(String(r.repo).split('/').pop()):'';
         const runOk=/^\d+$/.test(r.run_id||'');
@@ -306,29 +256,31 @@ function crfRefresh(){
         jobHtml=(runOk&&r.repo)?'<a href="https://github.com/'+crfEsc(r.repo)+'/actions/runs/'+r.run_id+'" target="_blank" rel="noopener" title="open run">'+core+'</a>':core;
         if(/^\d+$/.test(r.pr||'')&&r.repo) jobHtml+='<a class="crf-ref" href="https://github.com/'+crfEsc(r.repo)+'/pull/'+r.pr+'" target="_blank" rel="noopener">#'+r.pr+'</a>';
         else if(r.branch) jobHtml+='<span class="crf-ref">'+crfEsc(r.branch)+'</span>';
-        jobHtml+=elapsedHtml;
+        jobHtml+=v.elapsedHtml;
       } else {
         jobHtml=crfEsc(running?'waiting for jobs':r.state);
       }
       const jobCls=running&&r.phase==='busy'&&r.job?'crf-job':'crf-job crf-muted';
-      const cpuMax=(r.cpus&&r.cpus>0)?r.cpus*100:100;
-      const cpuKnown=running&&r.cpu_pct>=0, memKnown=running&&r.mem_used_mib>=0&&r.mem_gb;
-      const cpuPct=cpuKnown?(100*r.cpu_pct/cpuMax):0;
-      const memPct=memKnown?100*r.mem_used_mib/(r.mem_gb*1024):0;
-      const cpuTxt=cpuKnown?Math.round(r.cpu_pct)+'%':(running?'…':'&ndash;');
-      const memTxt=memKnown?((r.mem_used_mib>=1024?( (r.mem_used_mib/1024).toFixed(1)+'g'):(r.mem_used_mib+'m'))+'/'+r.mem_gb+'g'):(running?'…':'&ndash;');
       return '<div class="crf-bay" data-name="'+crfEsc(r.name)+'" tabindex="0" role="button" aria-expanded="'+(window.CRF_DRAWER===r.name?'true':'false')+'" aria-label="Runner '+crfEsc(r.name)+', toggle log">'+
         '<span class="crf-ball '+ball+'"></span>'+
         '<span class="crf-name">'+crfEsc(r.name)+'</span>'+
         '<span class="crf-phase"><uui-badge variant="'+bvar+'" size="xs"'+dark+'>'+crfEsc(ph)+'</uui-badge></span>'+
         '<span class="'+jobCls+'" title="'+crfEsc(r.job||'')+'">'+jobHtml+'</span>'+
-        '<span class="crf-usage">'+crfBar(cpuPct)+'<span class="crf-uval">'+cpuTxt+'</span></span>'+
-        '<span class="crf-usage">'+crfBar(memPct)+'<span class="crf-uval">'+memTxt+'</span></span>'+
+        '<span class="crf-usage">'+crfBar(v.cpuPct)+'<span class="crf-uval">'+v.cpuTxt+'</span></span>'+
+        '<span class="crf-usage">'+crfBar(v.memPct)+'<span class="crf-uval">'+v.memTxt+'</span></span>'+
         '<span class="crf-recycle" tabindex="0" role="button" aria-label="Recycle '+crfEsc(r.name)+'" title="Recycle this runner">&#10227;</span>'+
       '</div>';
     }).join('');
     crfDrawerMount();
-  }).catch(()=>{});
+  }).catch(e=>{
+    // A rejected status poll (network down, or a 403 from a CSRF token that expired
+    // on a reboot/array restart) must NOT look like an empty fleet — surface it in
+    // the warning banner and keep the last-rendered bays in place. Cleared by the
+    // next successful poll (the d.warning handling above overwrites/hides it).
+    const warn=document.getElementById('crf-warn');
+    if(warn){ warn.textContent='⚠ '+(String((e&&e.message)||'').indexOf('session expired')>=0?'Session expired — reload the page to reconnect.':'Lost connection to the server — retrying…'); warn.style.display='block'; }
+    console.error('ci-runner-farm status:',e);
+  }).finally(()=>{ window.__crfBusyStatus=false; });
 }
 crfRefresh(); setInterval(crfRefresh,5000);
 function crfQueued(){
@@ -385,13 +337,25 @@ function crfRecycle(name){
     swal({title:'Recycle '+name+'?',text:'It is mid-job'+(r.job?': '+r.job:'')+'.\nThe job will fail and re-queue.',type:'warning',showCancelButton:true,confirmButtonText:'Recycle',cancelButtonText:'Cancel'},ok=>{ if(ok) go(); });
   } else go();
 }
-/* Click a bay to open a live log drawer for that runner (persists across the
-   5s re-render; content refreshes each poll while open). */
-window.CRF_DRAWER=null;
+/* Click a bay to open a live log drawer for that runner. It persists across the
+   5s re-render: crfRefresh rebuilds crf-bays-body's innerHTML (destroying this
+   node), so we cache the last log + scroll position and restore them on re-mount
+   rather than flashing "loading…" and yanking the view back to the tail. The live
+   scroll is captured in crfRefresh just before the rebuild (see CRF_DRAWER_SCROLL). */
+window.CRF_DRAWER=null; window.CRF_DRAWER_HTML=''; window.CRF_DRAWER_SCROLL=0; window.CRF_DRAWER_PINNED=true;
+function crfDrawerPinned(el){ return el.scrollHeight-el.scrollTop-el.clientHeight < 24; }
 function crfDrawerFill(name){
   crfPost({action:'runner-log',name}).then(d=>{
     const el=document.querySelector('.crf-bay-drawer[data-for="'+name+'"]');
-    if(el&&window.CRF_DRAWER===name){ el.innerHTML=crfColorize(d.log||'(no output)'); el.scrollTop=el.scrollHeight; }
+    if(el&&window.CRF_DRAWER===name){
+      const pinned=crfDrawerPinned(el), prev=el.scrollTop;
+      window.CRF_DRAWER_HTML=crfColorize(d.log||'(no output)');
+      el.innerHTML=window.CRF_DRAWER_HTML;
+      // Stick to the tail only if the user was already there; otherwise keep their
+      // place so reading a mid-log error isn't interrupted on the next poll.
+      el.scrollTop = pinned ? el.scrollHeight : prev;
+      window.CRF_DRAWER_SCROLL=el.scrollTop; window.CRF_DRAWER_PINNED=pinned;
+    }
   }).catch(()=>{});
 }
 function crfDrawerMount(){
@@ -404,13 +368,19 @@ function crfDrawerMount(){
   const row=document.querySelector('#crf-bays-body .crf-bay[data-name="'+window.CRF_DRAWER+'"]');
   if(!row) return;
   const d=document.createElement('div'); d.className='crf-bay-drawer'; d.dataset.for=window.CRF_DRAWER;
-  d.innerHTML='<span class="crf-muted">loading log...</span>';
-  row.after(d); crfDrawerFill(window.CRF_DRAWER);
+  // Re-seed with the last log so a 5s re-render doesn't flash "loading…"; only the
+  // very first open (no cached HTML) shows the placeholder.
+  d.innerHTML=window.CRF_DRAWER_HTML||'<span class="crf-muted">loading log...</span>';
+  row.after(d);
+  if(window.CRF_DRAWER_HTML) d.scrollTop = window.CRF_DRAWER_PINNED ? d.scrollHeight : window.CRF_DRAWER_SCROLL;
+  crfDrawerFill(window.CRF_DRAWER);
 }
 function crfToggleDrawer(name){
-  window.CRF_DRAWER = window.CRF_DRAWER===name ? null : name;
+  const opening = window.CRF_DRAWER!==name;
+  window.CRF_DRAWER = opening ? name : null;
+  window.CRF_DRAWER_HTML=''; window.CRF_DRAWER_SCROLL=0; window.CRF_DRAWER_PINNED=true; // fresh cache per open
   const row=document.querySelector('#crf-bays-body .crf-bay[data-name="'+name+'"]');
-  if(row) row.setAttribute('aria-expanded', window.CRF_DRAWER===name?'true':'false');
+  if(row) row.setAttribute('aria-expanded', opening?'true':'false');
   crfDrawerMount();
 }
 document.getElementById('crf-bays-body').addEventListener('click',e=>{

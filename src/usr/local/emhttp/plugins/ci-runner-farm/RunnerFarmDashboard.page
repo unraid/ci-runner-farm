@@ -1,0 +1,79 @@
+Menu="Dashboard"
+Title="CI Runner Farm"
+Icon="icon-docker"
+Tag="server"
+Nchan="ci_runner_farm"
+Cond="(preg_match('/DASHBOARD_WIDGET_ENABLE\s*=\s*[\x22\x27]false[\x22\x27]/', @file_get_contents('/boot/config/plugins/ci-runner-farm/ci-runner-farm.cfg') ?: '') !== 1)"
+---
+<?php
+/* Main → Dashboard status tile for CI Runner Farm.
+ *
+ * Deliberately self-contained vanilla JS with no @unraid/ui force-load (unlike
+ * the full RunnerFarm tabs) — this renders on every dashboard view, so it stays
+ * a few tiles + an EventSource. Live status is PUSHED over the nchan
+ * "ci_runner_farm" channel (see nchan/ci_runner_farm); the Nchan= header keeps
+ * that publisher alive while this tile is visible. The publisher pushes an
+ * AGGREGATE-ONLY payload ({count,up,busy,idle}) — the /sub channel is not behind
+ * the webGUI login, so no per-runner repo/branch/job detail is broadcast. */
+?>
+<style>
+  .crfw-wrap{display:flex;flex-direction:column;gap:8px;padding:2px}
+  .crfw-tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  .crfw-tile{border:1px solid var(--border-color,#33383d);border-radius:8px;padding:8px 10px;text-align:center}
+  .crfw-v{font-size:1.9rem;font-weight:600;line-height:1.1}
+  .crfw-l{font-size:1.1rem;opacity:.72;text-transform:uppercase;letter-spacing:.04em}
+  .crfw-busy{color:#e0a53b}
+  .crfw-idle{color:#63a659}
+  .crfw-head{display:flex;align-items:center;gap:8px;font-size:1.25rem}
+  .crfw-dot{width:9px;height:9px;border-radius:50%;background:#8a8a8a}
+  .crfw-dot.on{background:#63a659}
+  .crfw-foot{font-size:1.15rem;opacity:.7}
+  .crfw-foot a{margin-left:auto}
+</style>
+
+<div class="crfw-wrap">
+  <div class="crfw-head">
+    <span class="crfw-dot" id="crfw-dot"></span>
+    <strong id="crfw-state">Connecting…</strong>
+  </div>
+  <div class="crfw-tiles">
+    <div class="crfw-tile"><div class="crfw-v" id="crfw-up">&ndash;</div><div class="crfw-l">Up</div></div>
+    <div class="crfw-tile"><div class="crfw-v crfw-busy" id="crfw-busy">&ndash;</div><div class="crfw-l">Busy</div></div>
+    <div class="crfw-tile"><div class="crfw-v crfw-idle" id="crfw-idle">&ndash;</div><div class="crfw-l">Idle</div></div>
+  </div>
+  <div class="crfw-foot" style="display:flex">
+    <span id="crfw-meta">&nbsp;</span>
+    <a href="/Utilities/RunnerFarm">Manage ›</a>
+  </div>
+</div>
+
+<script>
+(function(){
+  var set=function(id,v){var el=document.getElementById(id); if(el)el.textContent=v;};
+  // Show a non-live state WITHOUT pretending the counts are current: neutral dot + message.
+  var markDown=function(txt){ var dot=document.getElementById('crfw-dot'); if(dot) dot.className='crfw-dot'; set('crfw-state',txt); set('crfw-up','–'); set('crfw-busy','–'); set('crfw-idle','–'); set('crfw-meta',' '); };
+  var last=Date.now(), es;
+  function connect(){
+    es=new EventSource('/sub/ci_runner_farm');
+    es.onmessage=function(e){
+      var d; try{ d=JSON.parse(e.data); }catch(_){ return; }
+      last=Date.now();   // a frame arrived — the stream is live, even a failure sentinel; don't let the watchdog relabel it "stale"
+      if(!d || d.ok===false){ markDown('Backend unavailable'); return; }   // sentinel pushed by the publisher on failure
+      var up=(typeof d.up==='number')?d.up:0;
+      set('crfw-up',up);
+      set('crfw-busy',(typeof d.busy==='number')?d.busy:0);
+      set('crfw-idle',(typeof d.idle==='number')?d.idle:0);
+      var dot=document.getElementById('crfw-dot'); if(dot) dot.className='crfw-dot'+(up>0?' on':'');
+      set('crfw-state', up>0 ? up+' runner'+(up===1?'':'s')+' up' : 'No runners up');
+      set('crfw-meta', typeof d.count==='number' ? d.count+' managed' : ' ');
+    };
+    // Don't leave stale-but-confident tiles up on a dropped stream — the plugin's other
+    // panels surface "lost connection" rather than freezing; match that discipline here.
+    es.onerror=function(){ markDown('Disconnected — reconnecting…'); };
+  }
+  // Staleness watchdog: even if the socket stays nominally open, flag it when no push has
+  // landed in ~3x the publisher interval (8s), so a wedged publisher can't show old data.
+  setInterval(function(){ if(Date.now()-last > 24000) markDown('No recent update — reconnecting…'); }, 6000);
+  connect();
+})();
+</script>
