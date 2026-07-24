@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.0](https://github.com/unraid/ci-runner-farm/compare/v1.6.0...v1.7.0) (2026-07-24)
+
+
+### Features
+
+* fleet hardening, Main dashboard widget, live config migration ([#40](https://github.com/unraid/ci-runner-farm/issues/40)) ([e74875b](https://github.com/unraid/ci-runner-farm/commit/e74875b414f4f0149fea021bc6196045ae771861))
+
 ## [1.6.0](https://github.com/unraid/ci-runner-farm/compare/v1.5.1...v1.6.0) (2026-07-22)
 
 
