@@ -56,17 +56,22 @@ if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d=''){ global 
     </span>
   </div>
   <div class="crfs-tok-input">
-    <span class="crfs-pat-actions">
-      <select id="crf-pat-preset" aria-label="Classic PAT type to create">
-        <option value="repo" <?=$pat_preset === 'repo' ? 'selected' : ''?>>Repository runners</option>
-        <option value="org" <?=$pat_preset === 'org' ? 'selected' : ''?>>Organization runners</option>
-        <option value="repo-ghcr" <?=$pat_preset === 'repo-ghcr' ? 'selected' : ''?>>Repository + GHCR</option>
-        <option value="org-ghcr" <?=$pat_preset === 'org-ghcr' ? 'selected' : ''?>>Organization + GHCR</option>
-      </select>
-      <uui-button variant="secondary" size="xs" onclick="crfGetPat('crf-pat-preset')">1. Create GitHub PAT &#8599;</uui-button>
-    </span>
-    <span class="crfs-field"><input type="password" id="crf-token" autocomplete="new-password" placeholder="2. Paste the new PAT here"><button type="button" class="crfs-fx" title="Clear saved token" aria-label="Clear saved token" onclick="crfClearToken()">&times;</button></span>
-    <uui-button size="xs" onclick="crfSetToken()">Save GitHub token</uui-button>
+    <div class="crfs-pat-step">
+      <label class="crfs-pat-step-label" for="crf-pat-preset">1. Choose the token to create</label>
+      <span class="crfs-pat-actions">
+        <select id="crf-pat-preset" aria-label="Classic PAT type to create">
+          <option value="repo" <?=$pat_preset === 'repo' ? 'selected' : ''?>>Repository runners</option>
+          <option value="org" <?=$pat_preset === 'org' ? 'selected' : ''?>>Organization runners</option>
+          <option value="repo-ghcr" <?=$pat_preset === 'repo-ghcr' ? 'selected' : ''?>>Repository + GHCR</option>
+          <option value="org-ghcr" <?=$pat_preset === 'org-ghcr' ? 'selected' : ''?>>Organization + GHCR</option>
+        </select>
+        <uui-button variant="secondary" size="xs" onclick="crfGetPat('crf-pat-preset')">Create GitHub PAT &#8599;</uui-button>
+      </span>
+    </div>
+    <div class="crfs-pat-step">
+      <label class="crfs-pat-step-label" for="crf-token">2. Paste the new token and save it</label>
+      <span class="crfs-pat-save"><span class="crfs-field"><input type="password" id="crf-token" autocomplete="new-password" placeholder="Paste the new PAT"><button type="button" class="crfs-fx" title="Clear saved token" aria-label="Clear saved token" onclick="crfClearToken()">&times;</button></span><uui-button size="xs" onclick="crfSetToken()">Save GitHub token</uui-button></span>
+    </div>
   </div>
   <div class="crfs-pat-note"><strong>Token creation flow:</strong> choose a type, create the PAT on GitHub, then paste and save it here. Classic PATs apply to every repository the token owner can access. These presets minimize scopes, not repository or organization reach; use a dedicated service account/token with only the access this farm needs.</div>
 </div>
@@ -518,9 +523,12 @@ if (window.jQuery) jQuery(function($){ if ($.fn.fileTreeAttach) $("#CACHE_ROOT")
   .crfs-tok-text strong{font-size:13px;color:var(--text-color)}
   .crfs-tok-sub{font-size:11px;color:var(--alt-text-color)}
   .crfs-pat-note{flex:0 0 100%;font-size:11px;color:var(--alt-text-color);margin-top:6px;line-height:1.4}
-  .crfs-tok-input{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .crfs-tok-input{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}
+  .crfs-pat-step{display:flex;flex-direction:column;gap:4px}
+  .crfs-pat-step-label{font-size:11px;font-weight:600;color:var(--text-color)}
   .crfs-pat-actions{display:inline-flex;align-items:center;gap:8px;max-width:100%}
   .crfs-pat-actions select{width:210px;max-width:100%;font-size:12px}
+  .crfs-pat-save{display:inline-flex;align-items:center;gap:8px;max-width:100%}
   .crfs-tok-input input[type=password]{width:24em;font-size:12px;padding-right:26px!important;box-sizing:border-box}
   .crfs-field{position:relative;display:inline-flex;align-items:center}
   button.crfs-fx{position:absolute;right:4px;border:none!important;background:none!important;box-shadow:none!important;outline:none;width:auto!important;min-width:0!important;height:auto!important;color:var(--alt-text-color)!important;font-size:16px;line-height:1;cursor:pointer;padding:2px 5px!important;margin:0!important;letter-spacing:0}
