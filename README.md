@@ -106,7 +106,11 @@ The Settings tab holds the whole configuration on one screen:
 - **Autoscaling** and **image auto-update** — optional; see steps below.
 
 Save a **classic Personal Access Token** from the band at the top. The selector
-opens GitHub with the appropriate least-privilege scope preset:
+opens GitHub with the appropriate least-privilege scope preset. Here, “least
+privilege” means the minimum **classic PAT scopes** for the job; it does not
+make the credential repository- or organization-scoped. A classic PAT applies
+across the token owner's accessible repositories, so use a dedicated service
+account/token with only the access this farm needs.
 
 | Use case | PAT scopes |
 | --- | --- |

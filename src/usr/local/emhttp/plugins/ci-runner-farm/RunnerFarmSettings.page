@@ -66,6 +66,7 @@ if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d=''){ global 
     <span class="crfs-field"><input type="password" id="crf-token" autocomplete="new-password" placeholder="ghp_... (choose a preset first)"><button type="button" class="crfs-fx" title="Clear saved token" aria-label="Clear saved token" onclick="crfClearToken()">&times;</button></span>
     <uui-button size="xs" onclick="crfSetToken()">Save token</uui-button>
   </div>
+  <div class="crfs-pat-note">Classic PATs apply to every repository the token owner can access. These presets minimize scopes, not repository or organization reach; use a dedicated service account/token with only the access this farm needs.</div>
 </div>
 <div class="crfs-tokband crfs-regband" id="crf-remote-auth">
   <div class="crfs-tok-status">
@@ -514,6 +515,7 @@ if (window.jQuery) jQuery(function($){ if ($.fn.fileTreeAttach) $("#CACHE_ROOT")
   .crfs-tok-text{display:flex;flex-direction:column;gap:2px}
   .crfs-tok-text strong{font-size:13px;color:var(--text-color)}
   .crfs-tok-sub{font-size:11px;color:var(--alt-text-color)}
+  .crfs-pat-note{font-size:11px;color:var(--alt-text-color);margin-top:6px;line-height:1.4}
   .crfs-tok-input{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .crfs-tok-input select{max-width:100%;font-size:12px}
   .crfs-tok-input input[type=password]{width:24em;font-size:12px;padding-right:26px!important;box-sizing:border-box}
