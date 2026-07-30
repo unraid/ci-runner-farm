@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/unraid/ci-runner-farm/compare/v1.7.0...v1.8.0) (2026-07-30)
+
+
+### Features
+
+* **auth:** add PAT scope presets ([#42](https://github.com/unraid/ci-runner-farm/issues/42)) ([15f073e](https://github.com/unraid/ci-runner-farm/commit/15f073efe45d5874f2dd05cf17802bfee102484a))
+
 ## [1.7.0](https://github.com/unraid/ci-runner-farm/compare/v1.6.0...v1.7.0) (2026-07-24)
 
 
