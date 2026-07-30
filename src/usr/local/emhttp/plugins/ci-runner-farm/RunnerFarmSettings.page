@@ -62,7 +62,7 @@ if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d=''){ global 
       <option value="repo-ghcr" <?=$pat_preset === 'repo-ghcr' ? 'selected' : ''?>>Repository runners + private GHCR image &mdash; repo + read:packages</option>
       <option value="org-ghcr" <?=$pat_preset === 'org-ghcr' ? 'selected' : ''?>>Organization runners + private GHCR image &mdash; repo + admin:org + read:packages</option>
     </select>
-    <uui-button variant="outline" size="xs" onclick="crfGetPat('crf-pat-preset')">Get a classic PAT &#8599;</uui-button>
+    <uui-button variant="secondary" size="xs" onclick="crfGetPat('crf-pat-preset')">Create classic PAT &#8599;</uui-button>
     <span class="crfs-field"><input type="password" id="crf-token" autocomplete="new-password" placeholder="ghp_... (choose a preset first)"><button type="button" class="crfs-fx" title="Clear saved token" aria-label="Clear saved token" onclick="crfClearToken()">&times;</button></span>
     <uui-button size="xs" onclick="crfSetToken()">Save token</uui-button>
   </div>
@@ -77,7 +77,7 @@ if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d=''){ global 
     </span>
   </div>
   <div class="crfs-tok-input">
-    <uui-button variant="outline" size="xs" onclick="crfGetPat('packages')">Get a GHCR pull PAT &#8599;</uui-button>
+    <uui-button variant="secondary" size="xs" onclick="crfGetPat('packages')">Create GHCR pull PAT &#8599;</uui-button>
     <span class="crfs-field"><input type="password" id="crf-registry-token" autocomplete="new-password" placeholder="registry password / token"><button type="button" class="crfs-fx" title="Clear saved registry token" aria-label="Clear saved registry token" onclick="crfClearRegistryToken()">&times;</button></span>
     <uui-button size="xs" onclick="crfSetRegistryToken()">Save registry token</uui-button>
   </div>
