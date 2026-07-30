@@ -517,7 +517,7 @@ if (window.jQuery) jQuery(function($){ if ($.fn.fileTreeAttach) $("#CACHE_ROOT")
   .crfs-tok-text{display:flex;flex-direction:column;gap:2px}
   .crfs-tok-text strong{font-size:13px;color:var(--text-color)}
   .crfs-tok-sub{font-size:11px;color:var(--alt-text-color)}
-  .crfs-pat-note{font-size:11px;color:var(--alt-text-color);margin-top:6px;line-height:1.4}
+  .crfs-pat-note{flex:0 0 100%;font-size:11px;color:var(--alt-text-color);margin-top:6px;line-height:1.4}
   .crfs-tok-input{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .crfs-pat-actions{display:inline-flex;align-items:center;gap:8px;max-width:100%}
   .crfs-pat-actions select{width:210px;max-width:100%;font-size:12px}
