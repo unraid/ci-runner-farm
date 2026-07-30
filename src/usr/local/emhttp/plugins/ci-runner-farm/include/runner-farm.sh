@@ -48,7 +48,7 @@ IMAGE=""                              # remote image ref, used when IMAGE_SOURCE
 EPHEMERAL="false"                     # true => runner deregisters after each job
 RUN_AS_ROOT="false"                   # false => jobs run as non-root 'runner' (sudo+docker groups), like
                                       # GitHub-hosted runners. true => jobs run as root (legacy).
-ACCESS_TOKEN=""                       # GitHub PAT (repo scope; +admin:org for org). Stays host-side:
+ACCESS_TOKEN=""                       # GitHub PAT (repo scope; +admin:org for org; +read:packages if reused for private GHCR). Stays host-side:
                                       # runners get a short-lived registration token, never the PAT itself.
 SHARE_DOCKER_SOCK="false"             # mount host docker.sock for service containers (ignored when DIND=true).
                                       # Off by default: it gives jobs root-equivalent host access — opt in only

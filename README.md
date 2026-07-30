@@ -105,11 +105,21 @@ The Settings tab holds the whole configuration on one screen:
   isolation.
 - **Autoscaling** and **image auto-update** — optional; see steps below.
 
-Save your **Personal Access Token** from the band at the top (`repo` scope; add
-`admin:org` for org runners). It's stored at
-`/boot/config/plugins/ci-runner-farm/token` with `chmod 600` and is **never**
-written into your plugin config — the **Get a pre-scoped PAT** link opens GitHub
-with exactly the right scopes pre-filled.
+Save a **classic Personal Access Token** from the band at the top. The selector
+opens GitHub with the appropriate least-privilege scope preset:
+
+| Use case | PAT scopes |
+| --- | --- |
+| Repository runners | `repo` |
+| Organization runners | `repo`, `admin:org` |
+| Either runner type with a private GHCR image | Add `read:packages` |
+| Separate registry token for pulling a private GHCR image | `read:packages` |
+
+The runner token is stored at `/boot/config/plugins/ci-runner-farm/token` with
+`chmod 600` and is **never** written into the plugin config. A separate
+package-only token can be saved in the registry-token field when you do not want
+the runner-management token to have package access. If the GitHub organization
+uses SSO, authorize each token for that organization.
 
 ![The Settings tab — GitHub scope and targets, per-runner CPU/memory caps, runner image source, warm caches, Docker-in-Docker, autoscaling, and secure token storage, all on one screen](docs/images/settings.png)
 

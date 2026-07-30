@@ -32,8 +32,14 @@ $defaults = [
   'AUTOSCALE'=>'false', 'AUTOSCALE_MIN'=>'2', 'AUTOSCALE_MAX'=>'16', 'AUTOSCALE_MIN_IDLE'=>'2',
   'AUTOSCALE_STEP'=>'2', 'AUTOSCALE_INTERVAL'=>'30', 'AUTOSCALE_IDLE_GRACE'=>'5',
 ];
-$patScope = (($cfg['GH_SCOPE'] ?? $defaults['GH_SCOPE']) === 'org') ? 'repo,admin:org' : 'repo';
-$patUrl   = 'https://github.com/settings/tokens/new?description=Unraid+CI+Runner+Farm&scopes='.$patScope;
+/* GitHub Packages currently requires a classic PAT. Preselect the least-privilege
+   preset that matches the saved runner scope and remote GHCR configuration, while
+   still letting an operator deliberately choose a different (for example,
+   package-only) token. */
+$saved_scope = $cfg['GH_SCOPE'] ?? $defaults['GH_SCOPE'];
+$saved_ghcr  = ($cfg['IMAGE_SOURCE'] ?? $defaults['IMAGE_SOURCE']) === 'remote'
+  && preg_match('/^(?:https:\/\/)?(?:[a-z0-9-]+\.)?ghcr\.io(?:\/|$)/i', trim($cfg['REGISTRY_SERVER'] ?? $defaults['REGISTRY_SERVER']));
+$pat_preset  = $saved_scope === 'org' ? ($saved_ghcr ? 'org-ghcr' : 'org') : ($saved_ghcr ? 'repo-ghcr' : 'repo');
 /* $defaults is authoritative: the inline $d args at call sites are a fallback
    for any key not listed above (there are none today). */
 if (!function_exists('crf_g'))   { function crf_g($cfg,$k,$d=''){ global $defaults; return htmlspecialchars($cfg[$k] ?? $defaults[$k] ?? $d, ENT_QUOTES); } }
@@ -50,8 +56,14 @@ if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d=''){ global 
     </span>
   </div>
   <div class="crfs-tok-input">
-    <uui-button variant="outline" size="xs" onclick="window.open('<?=$patUrl?>','_blank','noopener')">Get a pre-scoped PAT &#8599;</uui-button>
-    <span class="crfs-field"><input type="password" id="crf-token" autocomplete="new-password" placeholder="ghp_... (scopes pre-filled)"><button type="button" class="crfs-fx" title="Clear saved token" aria-label="Clear saved token" onclick="crfClearToken()">&times;</button></span>
+    <select id="crf-pat-preset" aria-label="Classic PAT permission preset">
+      <option value="repo" <?=$pat_preset === 'repo' ? 'selected' : ''?>>Repository runners &mdash; repo</option>
+      <option value="org" <?=$pat_preset === 'org' ? 'selected' : ''?>>Organization runners &mdash; repo + admin:org</option>
+      <option value="repo-ghcr" <?=$pat_preset === 'repo-ghcr' ? 'selected' : ''?>>Repository runners + private GHCR image &mdash; repo + read:packages</option>
+      <option value="org-ghcr" <?=$pat_preset === 'org-ghcr' ? 'selected' : ''?>>Organization runners + private GHCR image &mdash; repo + admin:org + read:packages</option>
+    </select>
+    <uui-button variant="outline" size="xs" onclick="crfGetPat('crf-pat-preset')">Get a classic PAT &#8599;</uui-button>
+    <span class="crfs-field"><input type="password" id="crf-token" autocomplete="new-password" placeholder="ghp_... (choose a preset first)"><button type="button" class="crfs-fx" title="Clear saved token" aria-label="Clear saved token" onclick="crfClearToken()">&times;</button></span>
     <uui-button size="xs" onclick="crfSetToken()">Save token</uui-button>
   </div>
 </div>
@@ -64,6 +76,7 @@ if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d=''){ global 
     </span>
   </div>
   <div class="crfs-tok-input">
+    <uui-button variant="outline" size="xs" onclick="crfGetPat('packages')">Get a GHCR pull PAT &#8599;</uui-button>
     <span class="crfs-field"><input type="password" id="crf-registry-token" autocomplete="new-password" placeholder="registry password / token"><button type="button" class="crfs-fx" title="Clear saved registry token" aria-label="Clear saved registry token" onclick="crfClearRegistryToken()">&times;</button></span>
     <uui-button size="xs" onclick="crfSetRegistryToken()">Save registry token</uui-button>
   </div>
@@ -400,6 +413,20 @@ function crfTokState(ok){
 function crfSetToken(){ const t=document.getElementById('crf-token').value; if(!t)return;
   crfPost({action:'set-token',token:t}).then(o=>{crfTokState(!!o.ok);document.getElementById('crf-token').value='';}).catch(e=>{ crfToast&&crfToast('Save failed'); console.error('ci-runner-farm set-token:',e); }); }
 function crfClearToken(){ crfPost({action:'clear-token'}).then(()=>crfTokState(false)).catch(e=>console.error('ci-runner-farm clear-token:',e)); }
+function crfGetPat(presetOrId){
+  const preset=document.getElementById(presetOrId), key=preset ? preset.value : presetOrId;
+  const scopes={
+    repo:'repo',
+    org:'repo,admin:org',
+    'repo-ghcr':'repo,read:packages',
+    'org-ghcr':'repo,admin:org,read:packages',
+    packages:'read:packages'
+  };
+  const scope=scopes[key];
+  if(!scope) return;
+  const params=new URLSearchParams({description:'Unraid CI Runner Farm',scopes:scope});
+  window.open('https://github.com/settings/tokens/new?'+params.toString(),'_blank','noopener');
+}
 function crfRegState(ok){
   document.getElementById('crf-regtok').textContent = ok?'Registry token configured':'Registry token not set';
   document.getElementById('crf-regtok-ball').className='crf-ball '+(ok?'crf-ball-idle':'');
@@ -488,6 +515,7 @@ if (window.jQuery) jQuery(function($){ if ($.fn.fileTreeAttach) $("#CACHE_ROOT")
   .crfs-tok-text strong{font-size:13px;color:var(--text-color)}
   .crfs-tok-sub{font-size:11px;color:var(--alt-text-color)}
   .crfs-tok-input{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .crfs-tok-input select{max-width:100%;font-size:12px}
   .crfs-tok-input input[type=password]{width:24em;font-size:12px;padding-right:26px!important;box-sizing:border-box}
   .crfs-field{position:relative;display:inline-flex;align-items:center}
   button.crfs-fx{position:absolute;right:4px;border:none!important;background:none!important;box-shadow:none!important;outline:none;width:auto!important;min-width:0!important;height:auto!important;color:var(--alt-text-color)!important;font-size:16px;line-height:1;cursor:pointer;padding:2px 5px!important;margin:0!important;letter-spacing:0}
