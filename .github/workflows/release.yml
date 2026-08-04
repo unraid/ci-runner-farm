@@ -22,6 +22,9 @@ permissions:
 
 jobs:
   release:
+    # A fork may push a v* tag or dispatch this workflow while developing. Keep
+    # upstream's release validation intact without treating fork tags as releases.
+    if: ${{ github.repository == 'unraid/ci-runner-farm' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

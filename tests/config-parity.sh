@@ -38,6 +38,16 @@ parse_val() {
 
 declare -A ENG CFGV UIV
 
+# Unraid parses every shipped default.cfg with PHP before merging the saved
+# plugin config. PHP's INI scanner accepts `;` comments, not shell-style `#`
+# comments on current Unraid releases; catch a file that is textually correct
+# for the shell tests but unusable by the webGUI.
+command -v php >/dev/null 2>&1 || bad "php is required to validate default.cfg"
+if command -v php >/dev/null 2>&1 \
+   && ! php -r '$v = parse_ini_file($argv[1]); exit(is_array($v) ? 0 : 1);' "$CFG"; then
+  bad "default.cfg is not valid for PHP parse_ini_file (and therefore Unraid parse_plugin_cfg)"
+fi
+
 # --- engine defaults: the block from the "# ---- defaults" header to its closing
 #     pure-dashes divider (the "# ---- image auto-update ----" sub-header has text,
 #     so only the final all-dashes line matches and bounds the block) ---
@@ -47,7 +57,7 @@ done < <(awk '/^# ---- defaults/{f=1;next} f&&/^# -+$/{exit} f' "$ENGINE")
 
 # --- default.cfg (plain KEY="value") ---
 while IFS= read -r line; do
-  case "$line" in \#*|'') continue ;; [A-Z_]*=*) CFGV["${line%%=*}"]="$(parse_val "$line")" ;; esac
+  case "$line" in \#*|\;*|'') continue ;; [A-Z_]*=*) CFGV["${line%%=*}"]="$(parse_val "$line")" ;; esac
 done < "$CFG"
 
 # --- UI $defaults array ('KEY'=>'VALUE') ---

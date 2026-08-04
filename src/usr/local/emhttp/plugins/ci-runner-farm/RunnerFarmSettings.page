@@ -13,6 +13,9 @@ $plugin   = 'ci-runner-farm';
    the flash cfg only ever holds what the user actually changed. */
 $cfg      = parse_plugin_cfg($plugin);
 $has_token= file_exists("/boot/config/plugins/$plugin/token");
+$has_gitlab_runner_token = file_exists("/boot/config/plugins/$plugin/gitlab-runner-token");
+$has_gitlab_api_token = file_exists("/boot/config/plugins/$plugin/gitlab-api-token");
+$has_gitlab_ca = file_exists("/boot/config/plugins/$plugin/gitlab-ca.crt");
 $has_regtok = file_exists("/boot/config/plugins/$plugin/registry-token");
 $host_mem_gb = (int)round(((int)preg_replace('/[^0-9]/', '', (string)shell_exec("grep MemTotal /proc/meminfo"))) / 1048576);
 $csrf     = $var['csrf_token'] ?? '';
@@ -20,7 +23,11 @@ $csrf     = $var['csrf_token'] ?? '';
    rendered fallback (via crf_g/crf_sel) and the client-side "Reset to defaults"
    button (emitted as CRF_DEFAULTS), so the two can never drift apart. */
 $defaults = [
+  'CI_PROVIDER'=>'github',
   'GH_SCOPE'=>'repo', 'GH_OWNER'=>'unraid', 'GH_REPOS'=>'unraid/repo-a unraid/repo-b',
+  'GITLAB_URL'=>'https://gitlab.com', 'GITLAB_RUNNER_IMAGE'=>'gitlab/gitlab-runner:alpine', 'GITLAB_PROJECTS'=>'',
+  'GITLAB_SHUTDOWN_TIMEOUT'=>'7200',
+  'GITLAB_ALLOWED_IMAGES'=>'', 'GITLAB_ALLOWED_SERVICES'=>'', 'GITLAB_PULL_POLICY'=>'auto', 'GITLAB_SHM_SIZE'=>'0',
   'RUNNER_GROUP'=>'', 'RUNNER_COUNT'=>'4', 'RUNNER_LABELS'=>'self-hosted,unraid,build',
   'RUNNER_CPUS'=>'', 'RUNNER_MEMORY'=>'16g', 'EPHEMERAL'=>'false', 'RUN_AS_ROOT'=>'false',
   'IMAGE_SOURCE'=>'builtin', 'IMAGE'=>'', 'REGISTRY_SERVER'=>'', 'REGISTRY_USERNAME'=>'',
@@ -32,6 +39,7 @@ $defaults = [
   'AUTOSCALE'=>'false', 'AUTOSCALE_MIN'=>'2', 'AUTOSCALE_MAX'=>'16', 'AUTOSCALE_MIN_IDLE'=>'2',
   'AUTOSCALE_STEP'=>'2', 'AUTOSCALE_INTERVAL'=>'30', 'AUTOSCALE_IDLE_GRACE'=>'5',
 ];
+$saved_provider = ($cfg['CI_PROVIDER'] ?? $defaults['CI_PROVIDER']) === 'gitlab' ? 'gitlab' : 'github';
 /* GitHub Packages currently requires a classic PAT. Preselect the least-privilege
    preset that matches the saved runner scope and remote GHCR configuration, while
    still letting an operator deliberately choose a different (for example,
@@ -47,7 +55,7 @@ if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d=''){ global 
 ?>
 <link type="text/css" rel="stylesheet" href="<?autov('/webGui/styles/jquery.filetree.css')?>">
 <script src="<?autov('/webGui/javascript/jquery.filetree.js')?>" charset="utf-8"></script>
-<div class="crfs-tokband<?= $has_token ? '' : ' crfs-tokband-missing' ?>" id="crf-tokband">
+<div class="crfs-tokband<?= $has_token ? '' : ' crfs-tokband-missing' ?>" id="crf-github-auth" data-provider="github" style="<?= $saved_provider === 'github' ? '' : 'display:none' ?>">
   <div class="crfs-tok-status">
     <span class="crf-ball <?= $has_token ? 'crf-ball-idle' : 'crf-ball-error' ?>" id="crf-tok-ball"></span>
     <span class="crfs-tok-text">
@@ -75,16 +83,58 @@ if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d=''){ global 
   </div>
   <div class="crfs-pat-note"><strong>Token creation flow:</strong> choose a type, create the PAT on GitHub, then paste and save it here. Classic PATs apply to every repository the token owner can access. These presets minimize scopes, not repository or organization reach; use a dedicated service account/token with only the access this farm needs.</div>
 </div>
+<div class="crfs-tokband<?= $has_gitlab_runner_token ? '' : ' crfs-tokband-missing' ?>" id="crf-gitlab-runner-auth" data-provider="gitlab" style="<?= $saved_provider === 'gitlab' ? '' : 'display:none' ?>">
+  <div class="crfs-tok-status">
+    <span class="crf-ball <?= $has_gitlab_runner_token ? 'crf-ball-idle' : 'crf-ball-error' ?>" id="crf-gitlab-runner-ball"></span>
+    <span class="crfs-tok-text">
+      <strong id="crf-gitlab-runner-status"><?= $has_gitlab_runner_token ? 'GitLab runner token configured' : 'GitLab runner token not set' ?></strong>
+      <span class="crfs-tok-sub" id="crf-gitlab-runner-sub"><?= $has_gitlab_runner_token ? 'Stored in a mode-0600 bootstrap file and per-slot config.toml copies; never in ci-runner-farm.cfg.' : 'Required to start GitLab runner managers. Paste only the raw modern glrt- authentication token.' ?></span>
+    </span>
+  </div>
+  <div class="crfs-tok-input">
+    <a href="https://docs.gitlab.com/ci/runners/new_creation_workflow/" target="_blank" rel="noopener">Create runner in GitLab &#8599;</a>
+    <span class="crfs-field"><input type="password" id="crf-gitlab-runner-token" autocomplete="new-password" placeholder="glrt-..."><button type="button" class="crfs-fx" title="Clear saved runner token" aria-label="Clear saved GitLab runner token" onclick="crfClearGitLabRunnerToken()">&times;</button></span>
+    <uui-button size="xs" onclick="crfSetGitLabRunnerToken()">Save runner token</uui-button>
+  </div>
+  <div class="crfs-pat-note"><strong>Runner authentication:</strong> create the runner and configure its tags, protected status, scope, and untagged-job policy in GitLab. Paste only the reusable <code>glrt-</code> value—not the <code>gitlab-runner register</code> command, a flag, or quotes. Current routable tokens can contain periods. The token is shared by this farm's persistent manager slots; it is not an API token.</div>
+</div>
+<div class="crfs-tokband" id="crf-gitlab-api-auth" data-provider="gitlab" style="<?= $saved_provider === 'gitlab' ? '' : 'display:none' ?>">
+  <div class="crfs-tok-status">
+    <span class="crf-ball <?= $has_gitlab_api_token ? 'crf-ball-idle' : '' ?>" id="crf-gitlab-api-ball"></span>
+    <span class="crfs-tok-text">
+      <strong id="crf-gitlab-api-status"><?= $has_gitlab_api_token ? 'GitLab API token configured' : 'GitLab API token not set (optional)' ?></strong>
+      <span class="crfs-tok-sub">Optional token with <code>read_api</code> for advisory queued/recent-job statistics. A project access token covers only its project; for several monitored projects use a group access token scoped to their group or a dedicated PAT that can read every listed project. GitLab.com tokens commonly begin <code>glpat-</code>; self-managed prefixes may differ. Runner execution does not use it.</span>
+    </span>
+  </div>
+  <div class="crfs-tok-input">
+    <span class="crfs-field"><input type="password" id="crf-gitlab-api-token" autocomplete="new-password" placeholder="glpat-... or configured prefix"><button type="button" class="crfs-fx" title="Clear saved API token" aria-label="Clear saved GitLab API token" onclick="crfClearGitLabApiToken()">&times;</button></span>
+    <uui-button size="xs" onclick="crfSetGitLabApiToken()">Save API token</uui-button>
+  </div>
+</div>
+<div class="crfs-tokband" id="crf-gitlab-ca-auth" data-provider="gitlab" style="<?= $saved_provider === 'gitlab' ? '' : 'display:none' ?>">
+  <div class="crfs-tok-status">
+    <span class="crf-ball <?= $has_gitlab_ca ? 'crf-ball-idle' : '' ?>" id="crf-gitlab-ca-ball"></span>
+    <span class="crfs-tok-text">
+      <strong id="crf-gitlab-ca-status"><?= $has_gitlab_ca ? 'GitLab custom CA configured' : 'GitLab custom CA not set (optional)' ?></strong>
+      <span class="crfs-tok-sub">PEM CA chain for a self-managed GitLab instance. It is used by the manager and helper, and is made available to job containers; arbitrary job images must install/use it themselves. In DinD mode it also trusts the configured private registry authority.</span>
+    </span>
+  </div>
+  <div class="crfs-tok-input">
+    <input type="file" id="crf-gitlab-ca" accept=".pem,.crt,application/x-pem-file,application/pem-certificate-chain">
+    <uui-button size="xs" onclick="crfSetGitLabCa()">Upload CA</uui-button>
+    <uui-button variant="secondary" size="xs" onclick="crfClearGitLabCa()">Remove CA</uui-button>
+  </div>
+</div>
 <div class="crfs-tokband crfs-regband" id="crf-remote-auth">
   <div class="crfs-tok-status">
     <span class="crf-ball <?= $has_regtok ? 'crf-ball-idle' : '' ?>" id="crf-regtok-ball"></span>
     <span class="crfs-tok-text">
       <strong id="crf-regtok"><?= $has_regtok ? 'Registry token configured' : 'Registry token not set' ?></strong>
-      <span class="crfs-tok-sub">Password/token for the private registry (e.g. a PAT with read:packages for ghcr.io). For ghcr.io, leaving it blank reuses the GitHub PAT.</span>
+      <span class="crfs-tok-sub">Password/token for pulling a private job image. In GitHub mode only, a blank ghcr.io token can reuse the GitHub PAT.</span>
     </span>
   </div>
   <div class="crfs-tok-input">
-    <uui-button variant="secondary" size="xs" onclick="crfGetPat('packages')">Create GHCR pull PAT &#8599;</uui-button>
+    <uui-button variant="secondary" size="xs" data-provider="github" onclick="crfGetPat('packages')">Create GHCR pull PAT &#8599;</uui-button>
     <span class="crfs-field"><input type="password" id="crf-registry-token" autocomplete="new-password" placeholder="registry password / token"><button type="button" class="crfs-fx" title="Clear saved registry token" aria-label="Clear saved registry token" onclick="crfClearRegistryToken()">&times;</button></span>
     <uui-button size="xs" onclick="crfSetRegistryToken()">Save registry token</uui-button>
   </div>
@@ -98,6 +148,18 @@ if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d=''){ global 
      (see cmd_reconcile_config); the Fleet tab shows a "migrating" count until it settles. -->
 <input type="hidden" name="#command" value="/usr/local/emhttp/plugins/ci-runner-farm/include/runner-farm.sh">
 <input type="hidden" name="#arg[1]" value="reconcile-config">
+
+### CI provider
+
+_(Active provider)_:
+: <select name="CI_PROVIDER" onchange="crfProviderChange()">
+  <option value="github" <?=crf_sel($cfg,'CI_PROVIDER','github','github')?>>GitHub Actions</option>
+  <option value="gitlab" <?=crf_sel($cfg,'CI_PROVIDER','gitlab','github')?>>GitLab CI/CD</option>
+  </select>
+
+:crf_provider_plug:
+> One provider owns the farm at a time. Switching provider drains/recreates the managed runner slots with that provider's credentials and runtime. GitHub remains the default for existing installations.
+:end
 
 ### GitHub
 
@@ -134,6 +196,68 @@ _(Runner group)_:
 > Optional runner group (org scope) to restrict which repos may use the pool — e.g. exclude public repos so fork PRs never run here.
 :end
 
+### GitLab
+
+_(GitLab URL)_:
+: <input type="url" name="GITLAB_URL" value="<?=crf_g($cfg,'GITLAB_URL','https://gitlab.com')?>" placeholder="https://gitlab.com">
+
+:crf_gitlab_url_plug:
+> Base URL for GitLab.com or a self-managed GitLab instance. Use HTTPS. If the instance uses a private CA, upload its PEM certificate above. In strict network mode the engine permits only this configured endpoint through the LAN block.
+:end
+
+_(Runner manager image)_:
+: <input type="text" name="GITLAB_RUNNER_IMAGE" value="<?=crf_g($cfg,'GITLAB_RUNNER_IMAGE','gitlab/gitlab-runner:alpine')?>" placeholder="gitlab/gitlab-runner:alpine">
+
+:crf_gitlab_runner_image_plug:
+> Official GitLab Runner image used for each persistent manager slot. Pin a version matching your self-managed GitLab instance when required, e.g. <code>gitlab/gitlab-runner:v18.5.0</code>. Every mode requires Runner 16.0.0 or newer for manager-only unregister with a persisted system ID. Explicit host-socket mode requires Runner 18.5.0 or newer so build, helper, and service containers carry the exact slot labels needed for safe cleanup. Start and Validate reject older or unparseable versions. This is separate from the default job image edited on the Runner image tab.
+:end
+
+_(Graceful shutdown timeout (s))_:
+: <input type="number" name="GITLAB_SHUTDOWN_TIMEOUT" min="30" max="86400" value="<?=crf_g($cfg,'GITLAB_SHUTDOWN_TIMEOUT','7200')?>">
+
+:crf_gitlab_shutdown_plug:
+> GitLab only. Stop, Restart, token removal, manager replacement, array stop, and Docker-service restart send <code>SIGQUIT</code>, stop accepting new jobs, and wait this long for an in-flight job to finish before Docker force-stops the manager. An array/Docker stop can therefore remain in progress for up to this timeout. Default 7200 seconds (2 hours).
+:end
+
+_(Allowed job images)_:
+: <input type="text" name="GITLAB_ALLOWED_IMAGES" value="<?=crf_g($cfg,'GITLAB_ALLOWED_IMAGES','')?>" placeholder="blank = all, e.g. registry.example/team/*:* node:*">
+
+:crf_gitlab_allowed_images_plug:
+> GitLab only. Optional, space-separated wildcard patterns for <code>.gitlab-ci.yml image:</code> overrides. Blank preserves GitLab Runner's permissive default and allows every image. Set an explicit allowlist when pipeline authors should use only trusted registries or image families; prefix an exclusion with <code>!</code> where supported by GitLab Runner. This is a Runner-admission guardrail, not a sandbox: job code receives a Docker socket and can pull/run other images directly.
+:end
+
+_(Allowed service images)_:
+: <input type="text" name="GITLAB_ALLOWED_SERVICES" value="<?=crf_g($cfg,'GITLAB_ALLOWED_SERVICES','')?>" placeholder="blank = all, e.g. postgres:* redis:*">
+
+:crf_gitlab_allowed_services_plug:
+> GitLab only. Optional, space-separated wildcard patterns for job <code>services:</code>. Blank allows every service image. This controls which service images the Docker executor may start; it does not make an allowed image trustworthy.
+:end
+
+_(Job image pull policy)_:
+: <select name="GITLAB_PULL_POLICY">
+  <option value="auto" <?=crf_sel($cfg,'GITLAB_PULL_POLICY','auto','auto')?>>auto (built-in: if-not-present; remote: always)</option>
+  <option value="always" <?=crf_sel($cfg,'GITLAB_PULL_POLICY','always','auto')?>>always</option>
+  <option value="if-not-present" <?=crf_sel($cfg,'GITLAB_PULL_POLICY','if-not-present','auto')?>>if-not-present</option>
+  </select>
+
+:crf_gitlab_pull_policy_plug:
+> GitLab only. Sets both <code>pull_policy</code> and <code>allowed_pull_policies</code>, so a job cannot request a different policy through GitLab's job/service declarations. <strong>auto</strong> preserves the existing behavior: locally built images are reused and remote images are refreshed. Explicit <strong>always</strong> requires a remote default image; a locally built tag has no registry source for real jobs. The Runner's <code>never</code> policy is intentionally unsupported because a fresh per-slot daemon cannot obtain its helper/service images. Job scripts can still call the mounted Docker API directly, so this is an admission guardrail for trusted pipelines, not a security boundary.
+:end
+
+_(Job shared memory (bytes))_:
+: <input type="number" name="GITLAB_SHM_SIZE" min="0" step="1" value="<?=crf_g($cfg,'GITLAB_SHM_SIZE','0')?>" placeholder="0 = Docker default">
+
+:crf_gitlab_shm_size_plug:
+> GitLab only. Size of <code>/dev/shm</code> for Docker-executor job and service containers, in bytes. <code>0</code> uses Docker's default; browser and test suites commonly need a larger value such as <code>1073741824</code> (1 GiB). Maximum job runtime is configured on the runner in GitLab (or through GitLab's Runners API), not in this local <code>config.toml</code>.
+:end
+
+_(Monitored projects)_:
+: <input type="text" name="GITLAB_PROJECTS" value="<?=crf_g($cfg,'GITLAB_PROJECTS','')?>" placeholder="group/project group/another-project">
+
+:crf_gitlab_projects_plug:
+> Optional, space-separated project paths used only for advisory queued/recent-job statistics. Requires the optional API token. A project access token covers only one project; for several paths use a group token scoped to their common group or a dedicated PAT that can read every listed project. This setting does not limit which projects may use the runner; configure runner scope and tags in GitLab.
+:end
+
 ### Runners
 
 _(Concurrent runners)_:
@@ -147,7 +271,7 @@ _(Runner labels)_:
 : <input type="text" name="RUNNER_LABELS" value="<?=crf_g($cfg,'RUNNER_LABELS','self-hosted,unraid,build')?>">
 
 :crf_labels_plug:
-> Comma-separated labels that workflows target with runs-on, e.g. self-hosted,unraid,build.
+> GitHub only. Comma-separated labels that workflows target with runs-on, e.g. self-hosted,unraid,build. Configure GitLab tags on the runner in GitLab instead.
 :end
 
 _(CPUs per runner)_:
@@ -168,10 +292,10 @@ _(Ephemeral)_:
 : <select name="EPHEMERAL">
   <option value="false" <?=crf_sel($cfg,'EPHEMERAL','false','false')?>>false (persistent, warm cache)</option>
   <option value="true" <?=crf_sel($cfg,'EPHEMERAL','true','false')?>>true (clean per job)</option>
-  </select>
+  </select><span id="crfs-gitlab-ephemeral" style="display:<?= $saved_provider === 'gitlab' ? 'inline' : 'none' ?>">always ephemeral (clean Docker job container per job)</span>
 
 :crf_ephemeral_plug:
-> false = persistent runner, package caches stay warm between jobs. true = fresh runner re-registered per job (cleanest state, slightly slower first run).
+> GitHub: false = persistent runner; true = a fresh runner re-registered per job. GitLab is always ephemeral at the job-container layer: manager slots and explicitly mounted caches persist, but the Docker executor creates a clean job container for every job.
 :end
 
 _(Run jobs as root)_:
@@ -181,7 +305,7 @@ _(Run jobs as root)_:
   </select>
 
 :crf_runasroot_plug:
-> false (recommended): jobs run as the non-root `runner` user with passwordless sudo, matching GitHub-hosted runners — so tests that assert non-root file permissions behave correctly. Package caches mount under /home/runner for that user. true: jobs run as root (legacy); permission-sensitive tests may behave differently and caches mounted under /home/runner won't be auto-discovered by root tooling.
+> GitHub only. false (recommended): jobs run as the non-root `runner` user with passwordless sudo, matching GitHub-hosted runners. GitLab job users are controlled by the selected job image and Docker executor.
 :end
 
 ### Runner image
@@ -193,21 +317,21 @@ _(Image source)_:
   </select>
 
 :crf_imgsrc_plug:
-> **Built-in** (default): run the image you build with the Runner image builder below &mdash; no registry needed. **Remote**: pull the image named in "Remote image" from a registry (fill in the registry fields too).
+> **Built-in** (default): use the image you build on the Runner image tab &mdash; no registry needed. For GitHub it contains the runner process; for GitLab it is the Docker executor's default job image. **Remote**: pull the image named in "Remote image" from a registry (fill in the registry fields too).
 :end
 
 _(Remote image)_:
 : <input type="text" name="IMAGE" value="<?=crf_g($cfg,'IMAGE','')?>" placeholder="ghcr.io/org/image:tag">
 
 :crf_image_plug:
-> Used only when Image source = **Remote**. Full image ref to pull, e.g. `ghcr.io/org/ci-runner-image:latest`. For a private image, also set the registry fields below.
+> Used only when Image source = **Remote**. Full image ref to pull, e.g. `ghcr.io/org/ci-runner-image:latest`. In GitLab, a job's `.gitlab-ci.yml image:` may override this default. For a private image, also set the registry fields below.
 :end
 
 _(Registry server)_:
 : <input type="text" name="REGISTRY_SERVER" value="<?=crf_g($cfg,'REGISTRY_SERVER','')?>" placeholder="blank = none, e.g. ghcr.io">
 
 :crf_registry_server_plug:
-> Private registry to `docker login` so the host can pull a private runner image (the Runner image above). Blank disables it. Set the username below and the password/token with "Save registry token". For `ghcr.io`, if you leave the registry token blank the GitHub PAT is reused automatically (the PAT must have the `read:packages` scope), and the username defaults to the org/owner.
+> Private HTTPS registry authority for the default or a GitLab job/service override (for example `registry.example.test:5443` or `https://registry.example.test:5443`). Blank disables registry authentication. GitLab refuses plain HTTP because it would expose registry credentials and the private DinD daemon is not configured as an insecure registry. GitLab writes mode-restricted auth into every manager slot even when the default job image is built locally; DinD also installs the uploaded custom CA for this exact authority. GitHub keeps its remote-image-only host login behavior. Set the username below and the password/token with "Save registry token". For `ghcr.io` in GitHub mode, a blank registry token can reuse the GitHub PAT (it needs `read:packages`) and the username defaults to the org/owner.
 :end
 
 _(Registry username)_:
@@ -234,14 +358,14 @@ _(Workspace tmpfs size)_:
 : <input type="text" name="WORK_TMPFS_SIZE" value="<?=crf_g($cfg,'WORK_TMPFS_SIZE','8g')?>" placeholder="blank = bind to pool">
 
 :crf_tmpfs_plug:
-> Size of the RAM-backed per-job workspace, e.g. 8g — a clean, fast workspace each job while caches stay warm. Blank binds the workspace to the pool instead of RAM.
+> GitHub only. Size of the RAM-backed per-job workspace, e.g. 8g — a clean, fast workspace each job while caches stay warm. GitLab's Docker executor creates a clean workspace in each job container.
 :end
 
 _(Cache mounts)_:
 : <input type="text" name="CACHE_MOUNTS" value="<?=crf_g($cfg,'CACHE_MOUNTS','pnpm-store:/home/runner/.local/share/pnpm/store npm:/home/runner/.npm yarn:/home/runner/.cache/yarn ms-playwright:/home/runner/.cache/ms-playwright')?>">
 
 :crf_cache_mounts_plug:
-> Space-separated `host-subdir:container-path` warm caches mounted into every runner (created under the cache root). Defaults cover pnpm/npm/yarn/Playwright — edit for your stack.
+> Space-separated `host-subdir:container-path` warm caches mounted into every runner (created under the cache root). Defaults cover pnpm/npm/yarn/Playwright — edit for your stack. These named directories are shared concurrently by all slots, so use only caches whose tools tolerate multi-process access. GitLab requires unique absolute destinations and rejects its reserved <code>/cache</code>, Docker-socket, and helper-CA paths. GitLab's native <code>/cache</code> directory is separate per slot; the plugin does not currently configure a shared S3/MinIO cache backend.
 :end
 
 ### Docker
@@ -255,7 +379,7 @@ _(Docker-in-docker mode)_:
 :crf_dind_plug:
 > Docker-in-docker: each runner runs its own Docker daemon (requires --privileged).
 >
-> Fixes GitHub Actions services: networking (localhost:port becomes reachable from job steps) and "port already allocated" collisions between parallel jobs. Recommended when workflows use services: or service containers.
+> GitHub: fixes Actions services networking and port collisions between parallel jobs. GitLab: provides the private daemon used by the Docker executor for job images and services; keep this on for the slot-scoped default. Every job also receives this daemon's socket, so Docker commands in the job can inspect or remove that slot's job, helper, and service containers. `concurrent=1` limits cross-job exposure to one slot, but the sidecar itself is privileged and is not a security boundary against the Unraid host.
 >
 > Each runner's `/var/lib/docker` is stored under **Cache root**, so when this is on, Cache root **must** be a real pool dataset (not a `/mnt/user` FUSE share) or `docker build`/`buildx`/`services:` will fail with overlay mount errors.
 :end
@@ -267,7 +391,7 @@ _(Share host docker.sock)_:
   </select>
 
 :crf_sock_plug:
-> Mount the host Docker socket so jobs can start service containers (e.g. postgres for integration tests). PRIVATE repos only — never expose this to public/fork-PR code (root-equivalent host access).
+> Mount the host Docker socket. In GitLab this is the explicit alternative to Docker-in-Docker; at least one of these two settings must be on, and host-socket mode requires Network isolation = <strong>off</strong> because the host daemon creates job/helper/service networks outside the manager's dedicated bridge. PRIVATE projects/repositories only — never expose the host socket to public or fork/MR code (root-equivalent host access).
 :end
 
 _(Shared image cache)_:
@@ -292,9 +416,9 @@ _(Network isolation)_:
 >
 > **off** — runners share the default Docker bridge (legacy behavior).
 >
-> **isolate** — runners run on a dedicated bridge (`ci-runner-net`), so they can't reach your **other Unraid containers**. The shared image cache joins the same network. Low-risk; recommended.
+> **isolate** — runners run on a dedicated bridge (`ci-runner-net`), so they can't reach your **other Unraid containers**. The shared image cache joins the same network. GitLab host-socket mode cannot guarantee this for executor-created networks and is rejected; use the default per-slot DinD mode. Low-risk; recommended.
 >
-> **strict** — everything `isolate` does, **plus** IPv4 firewall rules (Docker's `DOCKER-USER`/`INPUT` chains) that block runners from reaching the **Unraid host and your LAN** while still allowing the internet and the shared cache. Treat this as **defense-in-depth against accidental egress** (a build script phoning home by mistake), **not a hard boundary**: with Docker-in-Docker on (the default) runners are **privileged** and determined malicious code could break out and remove these rules, and the rules are IPv4-only. For genuinely untrusted code, prefer non-privileged runners and treat strict as an extra layer, not the wall. Requires `iptables`; if it can't be applied, Start logs a warning and continues without the egress rules.
+> **strict** — everything `isolate` does, **plus** IPv4 firewall rules (Docker's `DOCKER-USER`/`INPUT` chains) that block runners from reaching the **Unraid host and your LAN** while still allowing the internet and the shared cache. Treat this as **defense-in-depth against accidental egress** (a build script phoning home by mistake), **not a hard boundary**: with Docker-in-Docker on (the default) runners are **privileged** and determined malicious code could break out and remove these rules, and the rules are IPv4-only. For genuinely untrusted code, prefer non-privileged runners and treat strict as an extra layer, not the wall. Requires `iptables`; Start fails closed if the required policy cannot be inspected or installed.
 :end
 
 ### Image auto-update
@@ -306,9 +430,9 @@ _(Auto-update runner image)_:
   </select>
 
 :crf_imgupd_plug:
-> When on, a daemon checks the runner image on a schedule and, when a newer image is published, recreates each runner on it — **draining** first (waits for the runner's current job to finish, never interrupts a build). The shared image-cache mirror is refreshed in the same pass.
+> When on, a daemon checks provider runtime images on a schedule and, when one changes, recreates each runner on it — **draining** first (waits for the runner's current job to finish, never interrupts a build). The shared image-cache mirror is refreshed in the same pass.
 >
-> Only **remote** images (Image source = Remote) can auto-pull — a built-in image has no upstream, so rebuild it from the Runner image builder instead.
+> For GitHub, this tracks the configured remote runner image. For GitLab, it tracks the official manager and private DinD images. A remote GitLab job image is refreshed inside each slot according to **Job image pull policy** (`auto` means `always`); a locally built job image has no upstream, so rebuild it in the image editor and restart/reconcile the fleet.
 >
 > Takes effect on the next **Start/Restart** of the fleet (like Autoscaling).
 :end
@@ -317,7 +441,7 @@ _(Auto-update: check interval (s))_:
 : <input type="number" name="IMAGE_AUTOUPDATE_INTERVAL" min="300" max="86400" value="<?=crf_g($cfg,'IMAGE_AUTOUPDATE_INTERVAL','1800')?>">
 
 :crf_imgupd_int_plug:
-> Seconds between update checks. Default 1800 (30 min). A check is a cheap registry digest comparison; the fleet only rolls when the image actually changed.
+> Seconds between update checks. Default 1800 (30 min). The fleet only rolls when a tracked provider image actually changed.
 :end
 
 _(Auto-update: drain timeout (s))_:
@@ -337,6 +461,8 @@ _(Autoscaling)_:
 
 :crf_autoscale_plug:
 > When on, a daemon grows/shrinks the fleet by demand instead of using a fixed count. It keeps a warm idle buffer: when idle runners drop below the buffer (jobs are consuming them) it adds runners; when too many sit idle it removes them. Bounded by Min/Max, with grace to avoid flapping. Only ever removes idle runners, never a runner mid-job.
+>
+> Autoscaling is off by default and is an explicit opt-in for GitLab. GitLab demand comes from live manager metrics and observed job containers; the incomplete Monitored-project queue count is dashboard-only and never drives scale decisions.
 :end
 
 _(Autoscale: min runners)_:
@@ -406,21 +532,74 @@ const CRF_DEFAULTS = <?=json_encode($defaults)?>;
 // nothing is written to flash until the user clicks Apply.
 function crfResetDefaults(){
   for (const k in CRF_DEFAULTS){ const el=document.getElementsByName(k)[0]; if(el) el.value=CRF_DEFAULTS[k]; }
-  crfImgSrc();
+  crfProviderChange(); crfImgSrc();
   // programmatic .value changes fire no input event, so nudge the advisory
   // listeners (Min>Max, memory envelope) to re-evaluate against the reset values.
   ['AUTOSCALE_MIN','AUTOSCALE_MAX','RUNNER_MEMORY','RUNNER_COUNT','AUTOSCALE'].forEach(n=>{ const el=document.getElementsByName(n)[0]; if(el) el.dispatchEvent(new Event('input')); });
 }
 function crfTokState(ok){
-  const band=document.getElementById('crf-tokband'), ball=document.getElementById('crf-tok-ball');
+  const band=document.getElementById('crf-github-auth'), ball=document.getElementById('crf-tok-ball');
   document.getElementById('crf-tok').textContent = ok?'GitHub token configured':'GitHub token not set';
   document.getElementById('crf-tok-sub').textContent = ok?'Stored at /boot/config/plugins/ci-runner-farm/token (chmod 600), never in ci-runner-farm.cfg.':'The farm cannot register runners until a token is saved.';
   band.classList.toggle('crfs-tokband-missing',!ok);
   ball.className='crf-ball '+(ok?'crf-ball-idle':'crf-ball-error');
 }
+function crfCredentialOk(o,label){
+  if(o&&o.ok===true)return true;
+  crfToast(label+': '+((o&&o.error)||'operation failed')); return false;
+}
+function crfCredentialDone(o,message){
+  if(o&&o.reconcile_requested&&!o.reconcile_started){
+    const why=o.reconcile_error?': '+String(o.reconcile_error).slice(0,240):'';
+    crfToast(message+'; fleet reconcile could not start'+why);
+  }else if(o&&o.warning)crfToast(message+'; '+String(o.warning).slice(0,280));
+  else crfToast(message);
+}
 function crfSetToken(){ const t=document.getElementById('crf-token').value; if(!t)return;
-  crfPost({action:'set-token',token:t}).then(o=>{crfTokState(!!o.ok);document.getElementById('crf-token').value='';}).catch(e=>{ crfToast&&crfToast('Save failed'); console.error('ci-runner-farm set-token:',e); }); }
-function crfClearToken(){ crfPost({action:'clear-token'}).then(()=>crfTokState(false)).catch(e=>console.error('ci-runner-farm clear-token:',e)); }
+  crfPost({action:'set-token',token:t}).then(o=>{if(!crfCredentialOk(o,'GitHub token save failed'))return;crfTokState(true);document.getElementById('crf-token').value='';crfCredentialDone(o,'GitHub token saved');}).catch(e=>{ crfToast&&crfToast('Save failed'); console.error('ci-runner-farm set-token:',e); }); }
+function crfClearToken(){ crfPost({action:'clear-token'}).then(o=>{if(!crfCredentialOk(o,'GitHub token removal failed')){if(o&&o.token_removed)crfTokState(false);return;}crfTokState(false);crfCredentialDone(o,'GitHub token removed');}).catch(e=>console.error('ci-runner-farm clear-token:',e)); }
+function crfGitLabRunnerState(ok){
+  const band=document.getElementById('crf-gitlab-runner-auth'), ball=document.getElementById('crf-gitlab-runner-ball');
+  document.getElementById('crf-gitlab-runner-status').textContent=ok?'GitLab runner token configured':'GitLab runner token not set';
+  document.getElementById('crf-gitlab-runner-sub').textContent=ok?'Stored in a mode-0600 bootstrap file and per-slot config.toml copies; never in ci-runner-farm.cfg.':'Required to start GitLab runner managers. Paste only the raw modern glrt- authentication token.';
+  band.classList.toggle('crfs-tokband-missing',!ok); ball.className='crf-ball '+(ok?'crf-ball-idle':'crf-ball-error');
+}
+function crfSetGitLabRunnerToken(){ const el=document.getElementById('crf-gitlab-runner-token'), t=el.value; if(!t)return;
+  crfPost({action:'set-gitlab-runner-token',token:t}).then(o=>{if(!crfCredentialOk(o,'Runner token rejected'))return;crfGitLabRunnerState(true);el.value='';crfCredentialDone(o,'GitLab runner token saved');}).catch(e=>{const m=String(e&&e.message||'request failed');crfToast(m.includes('session expired')?'Session expired — reload this page':('Save failed — '+m.slice(0,120)));console.error('ci-runner-farm set-gitlab-runner-token:',e);}); }
+function crfDoClearGitLabRunnerToken(confirmed){
+  crfPost({action:'clear-gitlab-runner-token',confirm_stop:confirmed?'1':'0'}).then(o=>{
+    if(o&&o.confirmation_required){
+      const seconds=(document.getElementsByName('GITLAB_SHUTDOWN_TIMEOUT')[0]||{}).value||'7200';
+      const warning='This stops accepting new GitLab jobs, waits up to '+seconds+' seconds for in-flight jobs to finish, then stops and unregisters every active manager. Jobs still running after the timeout are forced to stop. The saved token and per-slot config copies will be removed.';
+      if(window.swal){
+        swal({title:'Remove the active GitLab runner token?',text:warning,type:'warning',showCancelButton:true,confirmButtonText:'Stop fleet and remove token',cancelButtonText:'Cancel'},ok=>{if(ok)crfDoClearGitLabRunnerToken(true);});
+      }else if(window.confirm(warning))crfDoClearGitLabRunnerToken(true);
+      return;
+    }
+    if(!crfCredentialOk(o,'Runner token removal failed')){if(o&&o.token_removed)crfGitLabRunnerState(false);return;}
+    crfGitLabRunnerState(false);crfCredentialDone(o,'GitLab runner token removed');
+  }).catch(e=>console.error('ci-runner-farm clear-gitlab-runner-token:',e));
+}
+function crfClearGitLabRunnerToken(){crfDoClearGitLabRunnerToken(false);}
+function crfGitLabApiState(ok){
+  document.getElementById('crf-gitlab-api-status').textContent=ok?'GitLab API token configured':'GitLab API token not set (optional)';
+  document.getElementById('crf-gitlab-api-ball').className='crf-ball '+(ok?'crf-ball-idle':'');
+}
+function crfSetGitLabApiToken(){ const el=document.getElementById('crf-gitlab-api-token'), t=el.value; if(!t)return;
+  crfPost({action:'set-gitlab-api-token',token:t}).then(o=>{if(!crfCredentialOk(o,'API token rejected'))return;crfGitLabApiState(true);el.value='';crfCredentialDone(o,'GitLab API token saved');}).catch(e=>{crfToast('Save failed');console.error('ci-runner-farm set-gitlab-api-token:',e);}); }
+function crfClearGitLabApiToken(){ crfPost({action:'clear-gitlab-api-token'}).then(o=>{if(!crfCredentialOk(o,'API token removal failed'))return;crfGitLabApiState(false);crfCredentialDone(o,'GitLab API token removed');}).catch(e=>console.error('ci-runner-farm clear-gitlab-api-token:',e)); }
+function crfGitLabCaState(ok){
+  document.getElementById('crf-gitlab-ca-status').textContent=ok?'GitLab custom CA configured':'GitLab custom CA not set (optional)';
+  document.getElementById('crf-gitlab-ca-ball').className='crf-ball '+(ok?'crf-ball-idle':'');
+}
+function crfSetGitLabCa(){
+  const el=document.getElementById('crf-gitlab-ca'), f=el.files&&el.files[0]; if(!f){crfToast('Choose a PEM certificate first');return;}
+  if(f.size>1048576){crfToast('CA file is larger than 1 MiB');return;}
+  const reader=new FileReader();
+  reader.onload=()=>crfPost({action:'set-gitlab-ca',ca:String(reader.result||'')}).then(o=>{if(!crfCredentialOk(o,'CA rejected'))return;crfGitLabCaState(true);el.value='';crfCredentialDone(o,'GitLab CA saved');}).catch(e=>{crfToast('CA upload failed');console.error('ci-runner-farm set-gitlab-ca:',e);});
+  reader.onerror=()=>crfToast('Could not read CA file'); reader.readAsText(f);
+}
+function crfClearGitLabCa(){crfPost({action:'clear-gitlab-ca'}).then(o=>{if(!crfCredentialOk(o,'CA removal failed'))return;crfGitLabCaState(false);document.getElementById('crf-gitlab-ca').value='';crfCredentialDone(o,'GitLab CA removed');}).catch(e=>console.error('ci-runner-farm clear-gitlab-ca:',e));}
 function crfGetPat(presetOrId){
   const preset=document.getElementById(presetOrId), key=preset ? preset.value : presetOrId;
   const scopes={
@@ -440,10 +619,36 @@ function crfRegState(ok){
   document.getElementById('crf-regtok-ball').className='crf-ball '+(ok?'crf-ball-idle':'');
 }
 function crfSetRegistryToken(){ const t=document.getElementById('crf-registry-token').value; if(!t)return;
-  crfPost({action:'set-registry-token',token:t}).then(o=>{crfRegState(!!o.ok);document.getElementById('crf-registry-token').value='';}).catch(e=>console.error('ci-runner-farm set-registry-token:',e)); }
-function crfClearRegistryToken(){ crfPost({action:'clear-registry-token'}).then(()=>crfRegState(false)).catch(e=>console.error('ci-runner-farm clear-registry-token:',e)); }
-// show/hide the remote-only fields (Remote image + registry server/username/token)
-// based on the Image source select. Targets each field's <dd>+<dt> (Unraid
+  crfPost({action:'set-registry-token',token:t}).then(o=>{if(!crfCredentialOk(o,'Registry token save failed'))return;crfRegState(true);document.getElementById('crf-registry-token').value='';crfCredentialDone(o,'Registry token saved');}).catch(e=>console.error('ci-runner-farm set-registry-token:',e)); }
+function crfClearRegistryToken(){ crfPost({action:'clear-registry-token'}).then(o=>{if(!crfCredentialOk(o,'Registry token removal failed')){if(o&&o.token_removed)crfRegState(false);return;}crfRegState(false);crfCredentialDone(o,'Registry token removed');}).catch(e=>console.error('ci-runner-farm clear-registry-token:',e)); }
+function crfFieldVisible(name,on){
+  const el=document.getElementsByName(name)[0]; if(!el)return;
+  const dd=el.closest('dd'), row=dd||el.closest('tr'); if(row)row.style.display=on?'':'none';
+  if(dd&&dd.previousElementSibling)dd.previousElementSibling.style.display=on?'':'none';
+}
+function crfProviderChange(){
+  const sel=document.getElementsByName('CI_PROVIDER')[0], provider=sel&&sel.value==='gitlab'?'gitlab':'github';
+  document.querySelectorAll('[data-provider]').forEach(el=>{el.style.display=el.dataset.provider===provider?'':'none';});
+  ['GH_SCOPE','GH_OWNER','GH_REPOS','RUNNER_GROUP','RUNNER_LABELS','RUN_AS_ROOT','WORK_TMPFS_SIZE'].forEach(n=>crfFieldVisible(n,provider==='github'));
+  ['GITLAB_URL','GITLAB_RUNNER_IMAGE','GITLAB_PROJECTS','GITLAB_SHUTDOWN_TIMEOUT','GITLAB_ALLOWED_IMAGES','GITLAB_ALLOWED_SERVICES','GITLAB_PULL_POLICY','GITLAB_SHM_SIZE'].forEach(n=>crfFieldVisible(n,provider==='gitlab'));
+  const ephemeral=document.getElementsByName('EPHEMERAL')[0], gitlabEphemeral=document.getElementById('crfs-gitlab-ephemeral');
+  if(ephemeral)ephemeral.style.display=provider==='github'?'':'none';
+  if(gitlabEphemeral)gitlabEphemeral.style.display=provider==='gitlab'?'inline':'none';
+  document.querySelectorAll('.crfs-card').forEach(card=>{
+    const title=(card.querySelector('h2,h3,h4')||{}).textContent||'';
+    if(title.trim()==='GitHub')card.style.display=provider==='github'?'':'none';
+    if(title.trim()==='GitLab')card.style.display=provider==='gitlab'?'':'none';
+  });
+  const dind=document.getElementsByName('DIND')[0], sock=document.getElementsByName('SHARE_DOCKER_SOCK')[0];
+  let w=document.getElementById('crfs-gitlab-docker-warn');
+  if(!w&&dind){w=document.createElement('div');w.id='crfs-gitlab-docker-warn';w.className='crfs-as-warn';w.textContent='GitLab needs Docker-in-Docker or explicit host docker.sock sharing; Start will reject this configuration.';(dind.closest('dl')||dind.parentElement).after(w);}
+  if(w)w.classList.toggle('on',provider==='gitlab'&&dind&&dind.value!=='true'&&sock&&sock.value!=='true');
+  crfImgSrc();
+}
+// The default image field is remote-only. GitLab keeps registry auth visible for
+// built-in defaults too because .gitlab-ci.yml image/service overrides can use it;
+// GitHub retains its historical remote-only registry UI. Targets each field's
+// <dd>+<dt> (Unraid
 // markdown forms are MarkdownExtra definition lists). Hide-only (never disable):
 // disabled inputs aren't submitted, which would drop the values on Apply;
 // display:none inputs still submit, so values persist when switching modes. If
@@ -451,16 +656,20 @@ function crfClearRegistryToken(){ crfPost({action:'clear-registry-token'}).then(
 function crfImgSrc(){
   const sel=document.getElementsByName('IMAGE_SOURCE')[0];
   const remote=sel&&sel.value==='remote';
-  const disp=remote?'':'none';
-  ['IMAGE','REGISTRY_SERVER','REGISTRY_USERNAME'].forEach(n=>{
+  const providerSel=document.getElementsByName('CI_PROVIDER')[0];
+  const gitlab=providerSel&&providerSel.value==='gitlab';
+  const setRow=(n,on)=>{
     const el=document.getElementsByName(n)[0]; if(!el) return;
     const dd=el.closest('dd'); const row=dd||el.closest('tr');
-    if(row) row.style.display=disp;
-    if(dd&&dd.previousElementSibling) dd.previousElementSibling.style.display=disp;
-  });
-  const auth=document.getElementById('crf-remote-auth'); if(auth) auth.style.display=disp;
+    if(row) row.style.display=on?'':'none';
+    if(dd&&dd.previousElementSibling) dd.previousElementSibling.style.display=on?'':'none';
+  };
+  setRow('IMAGE',remote);
+  ['REGISTRY_SERVER','REGISTRY_USERNAME'].forEach(n=>setRow(n,remote||gitlab));
+  const auth=document.getElementById('crf-remote-auth'); if(auth) auth.style.display=(remote||gitlab)?'':'none';
 }
-crfImgSrc();
+['DIND','SHARE_DOCKER_SOCK'].forEach(n=>{const el=document.getElementsByName(n)[0];if(el)el.addEventListener('change',crfProviderChange);});
+crfProviderChange(); crfImgSrc();
 /* Inline sanity check: a floor above the ceiling is the classic autoscale
    misconfiguration — warn right at the fields (the daemon clamps it anyway). */
 (function(){
@@ -513,7 +722,7 @@ if (window.jQuery) jQuery(function($){ if ($.fn.fileTreeAttach) $("#CACHE_ROOT")
   .crfs-card dl{margin:0!important;padding:2px 0!important;display:flex;align-items:center;gap:10px;background:none!important}
   .crfs-card dt{float:none!important;width:44%!important;min-width:110px;text-align:right;font-size:12px;margin:0!important;padding:0!important;background:none!important}
   .crfs-card dd{float:none!important;flex:1;width:auto!important;margin:0!important;padding:0!important;background:none!important}
-  .crfs-card dd input[type=text],.crfs-card dd input[type=number],.crfs-card dd select{width:100%!important;max-width:none!important;font-size:12px;padding:3px 6px;margin:0}
+  .crfs-card dd input[type=text],.crfs-card dd input[type=url],.crfs-card dd input[type=number],.crfs-card dd select{width:100%!important;max-width:none!important;font-size:12px;padding:3px 6px;margin:0}
   .crfs-actions{display:flex;gap:8px;justify-content:flex-end;padding:4px 0 2px}
   .crfs-actions input{width:auto!important;margin:0!important}
   .crfs-tokband{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;border:1px solid var(--border-color);border-radius:6px;background:var(--shade-bg-color,transparent);padding:10px 14px;margin:6px 0 8px}
@@ -569,5 +778,6 @@ if (window.jQuery) jQuery(function($){ if ($.fn.fileTreeAttach) $("#CACHE_ROOT")
     actions.remove();
     form.appendChild(bar);
   }
+  crfProviderChange();
 })();
 </script>

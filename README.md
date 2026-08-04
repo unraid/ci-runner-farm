@@ -1,282 +1,432 @@
 # CI Runner Farm for Unraid
 
-Turn your Unraid server into a fleet of **GitHub Actions self-hosted runners** —
-multiple concurrent, resource-capped runners running as Docker containers, with
-warm shared caches, queue-aware autoscaling, and Docker-in-Docker. No VM
-required.
+Turn an Unraid server into a resource-capped fleet of self-hosted runners for
+**GitHub Actions or GitLab CI/CD**. The farm keeps package and image caches warm,
+supports Docker-in-Docker, and can scale several single-job runner slots without
+requiring a VM.
 
-Hosted CI minutes are slow and metered. Meanwhile, the Unraid server in your
-rack has spare cores and a fast cache pool sitting idle between media tasks.
-Point CI Runner Farm at a repo or organization, paste a token, and your builds
-run on your own hardware — as many in parallel as your box can handle, with
-dependency caches that stay hot between runs, at zero cost per minute.
-
----
-
-## Why run your own CI?
-
-- **Cost.** Hosted CI bills by the minute. A server you already own runs builds
-  for the price of the electricity.
-- **Speed.** Run many jobs in parallel and keep pnpm/npm/yarn/Playwright caches
-  warm on a local NVMe pool — no re-downloading the world on every run.
-- **It's the Unraid thing to do.** Self-hosted runners are just Docker
-  containers, and Docker is what your server is already great at. This is "do
-  more with the hardware you have," turned up to a build farm.
-- **A couple of clicks to install.** It's a normal plugin from Community
-  Applications, configured entirely from the webGUI.
-
----
+GitHub remains the default provider, so an existing installation upgrades
+without changing its runner behavior. A farm runs one provider at a time;
+switching provider drains and recreates the managed slots with the selected
+provider's credentials and runtime.
 
 ## What you get
 
 | Capability | What it means |
-|---|---|
-| **N concurrent runners** | Each runner is its own container, optionally capped with `--cpus` / `--memory` so CI never starves the rest of the host. |
-| **Queue-aware autoscaling** | An optional daemon floats the fleet between a min and max based on how many jobs are waiting — capacity when you need it, idle when you don't. |
-| **Warm shared caches** | npm, yarn, pnpm, and Playwright caches by default (fully configurable — add cargo, sccache, and more) live on a fast pool and are reused across every run. This is the biggest hidden speed win over hosted CI. |
-| **Docker-in-Docker per runner** | Jobs that use `services:` or `docker compose` just work, with an optional shared pull-through registry mirror so images are pulled once for the whole fleet. |
-| **Bring your own image** | Point at any image you publish to a registry, or build one in-plugin — toggle **Rust / Python / Node·TS / Android** toolchains into the Dockerfile with one click, then Build. |
-| **Live fleet dashboard** | Watch each runner's phase, the repo and **PR # it's building right now**, and live CPU/memory against its cap — plus queue depth, cache usage (one-click clear), recent-run pass rates, per-runner log drawers, and a colorized activity log. |
-| **One webGUI page** | Three tabs — configure, build your image, run and watch the fleet — with your token stored securely on the host. No shell required. |
+| --- | --- |
+| Concurrent runner slots | Each slot accepts one job at a time and can have CPU and memory limits, keeping CI from starving the rest of the host. |
+| GitHub and GitLab providers | Keep the existing GitHub Actions integration or select GitLab.com/self-managed GitLab. |
+| Warm shared caches | Reuse npm, yarn, pnpm, Playwright, Cargo, sccache, or custom cache directories across jobs. |
+| Slot-scoped Docker-in-Docker | Give each runner slot a private privileged Docker daemon without exposing Unraid's existing Docker socket by default; privileged DinD is still capable of host compromise. |
+| Bring your own job image | Pull a remote image or edit and build a provider-specific starter image in the plugin. |
+| Fleet controls and telemetry | Validate, start, stop, scale, recycle, and inspect runner/job state from the Unraid webGUI. |
+| Optional autoscaling | Keep a warm idle buffer between configured minimum and maximum runner counts. |
 
----
+## Architecture
 
-## How it works
+GitHub mode preserves the original container model: each `ci-runner-N`
+container is a GitHub Actions runner based on the configured runner image. The
+host keeps the GitHub PAT and gives containers only short-lived registration
+tokens.
 
-The plugin provisions a set of Docker containers from a runner image — built
-in-plugin or pulled from a registry. Each container registers itself with GitHub
-as a self-hosted runner, either at **repo** scope or **org** scope (org scope
-gives you one shared pool that any of your private repos can pull from).
+GitLab mode uses the official
+[`gitlab/gitlab-runner`](https://docs.gitlab.com/runner/install/docker/) image;
+it does not modify or fork GitLab Runner itself. Each slot contains:
 
-Persistent package caches and the build workspace are bind-mounted from a fast
-pool so they survive across jobs. An optional companion container runs a
-**pull-through registry mirror**, so Docker-in-Docker jobs across the whole fleet
-pull each image only once. And an optional autoscaler watches the GitHub job
-queue, scaling the fleet up toward your max when work is waiting and back down to
-your min when things go quiet.
+- `ci-runner-N`, a persistent GitLab Runner manager with `concurrent = 1`, a
+  per-runner `limit = 1`, and a persisted `config.toml` plus
+  `.runner_system_id`;
+- `ci-runner-N-dind`, by default, a private privileged Docker daemon shared
+  with that manager through a Unix socket; and
+- one temporary Docker-executor job container for each accepted pipeline job,
+  created from the configured default job image or the job's `.gitlab-ci.yml`
+  `image:` override.
 
----
+The reusable GitLab `glrt-` token identifies the runner configuration. Each
+manager retains its own system ID, so recycling a slot does not create a new
+shared runner configuration in GitLab.
 
 ## Install
 
-### Community Applications (recommended)
+### Community Applications
 
-Search for **CI Runner Farm** in [Community Applications](https://unraid.net/community/apps)
-and click **Install**.
+Search for **CI Runner Farm** in
+[Community Applications](https://unraid.net/community/apps) and click
+**Install**.
 
 ### Install by URL
 
-In the Unraid webGUI go to **Plugins → Install Plugin** and paste:
+In **Plugins → Install Plugin**, paste:
 
-```
+```text
 https://github.com/unraid/ci-runner-farm/releases/latest/download/ci-runner-farm.plg
 ```
 
-Unraid always resolves this to the newest published release, and its built-in
-"check for updates" keeps the plugin current.
+Everything is managed from **Settings → Utilities → CI Runner Farm**. The page
+has **Fleet**, **Runner image**, and **Settings** tabs.
 
----
+## GitHub setup
 
-## Setup, step by step
+1. Leave **Active provider** set to **GitHub Actions**.
+2. Select repository or organization scope, then configure the owner, target
+   repositories, optional runner group, labels, and resource limits.
+3. Create and save a classic GitHub Personal Access Token.
+4. Configure Docker, caches, job image, and optional autoscaling; then
+   **Validate** and **Start** on the Fleet tab.
 
-Everything lives on one page — **Settings → Utilities → CI Runner Farm** — split
-into three tabs: **Fleet** (run and watch, the default view), **Runner image**
-(build), and **Settings** (configure). The steps below follow setup order, so
-they start on the **Settings** tab (rightmost). You'll need a GitHub Personal
-Access Token and a fast pool/share for caches.
-
-### 1. Configure the fleet — the *Settings* tab
-
-The Settings tab holds the whole configuration on one screen:
-
-- **GitHub** — pick your **scope** (`repo` or `org`), the **owner** and **target
-  repos**, and an optional **runner group**.
-- **Runners** — how many **concurrent runners**, their **labels** (so workflows
-  target this fleet with `runs-on:`), and optional **CPU / memory caps per
-  runner** so CI can't starve the rest of the box.
-- **Runner image** — the **Image source**: **Built-in** (build locally, below),
-  or **Remote** to pull a named image, e.g. `ghcr.io/org/ci-runner-image:latest`
-  (for a private image, set the registry server/username and save a registry
-  token; for `ghcr.io`, a blank registry token reuses your GitHub token).
-- **Storage & caches** — the **warm caches** (host-subdir → container-path
-  mounts; defaults cover pnpm/npm/yarn/Playwright) and the **workspace tmpfs
-  size**.
-- **Docker** — **Docker-in-Docker** mode, host-socket sharing, and network
-  isolation.
-- **Autoscaling** and **image auto-update** — optional; see steps below.
-
-Save a **classic Personal Access Token** from the band at the top. The selector
-opens GitHub with the appropriate least-privilege scope preset. Here, “least
-privilege” means the minimum **classic PAT scopes** for the job; it does not
-make the credential repository- or organization-scoped. A classic PAT applies
-across the token owner's accessible repositories, so use a dedicated service
-account/token with only the access this farm needs.
-
-| Use case | PAT scopes |
+| Use case | Classic PAT scopes |
 | --- | --- |
 | Repository runners | `repo` |
 | Organization runners | `repo`, `admin:org` |
 | Either runner type with a private GHCR image | Add `read:packages` |
-| Separate registry token for pulling a private GHCR image | `read:packages` |
+| Separate registry token for a private GHCR image | `read:packages` |
 
-The runner token is stored at `/boot/config/plugins/ci-runner-farm/token` with
-`chmod 600` and is **never** written into the plugin config. A separate
-package-only token can be saved in the registry-token field when you do not want
-the runner-management token to have package access. If the GitHub organization
-uses SSO, authorize each token for that organization.
+The GitHub PAT is stored at
+`/boot/config/plugins/ci-runner-farm/token` with mode `0600`; it is not written
+to the main config or passed into job containers. Existing GitHub settings,
+container names, and the legacy editable `Dockerfile` remain compatible.
 
-![The Settings tab — GitHub scope and targets, per-runner CPU/memory caps, runner image source, warm caches, Docker-in-Docker, autoscaling, and secure token storage, all on one screen](docs/images/settings.png)
+## GitLab setup
 
-### 2. Build a runner image — the *Runner image* tab
+### 1. Create the runner in GitLab
 
-Point CI at any registry image, or build one right here. The Runner image tab is
-a syntax-highlighted, in-page Dockerfile editor over a generic
-[starter image](src/usr/local/emhttp/plugins/ci-runner-farm/default.Dockerfile)
-(stock self-hosted runner base + a Docker-in-Docker readiness wrapper). Click the
-**toolchain** pills — **Rust**, **Python**, **Node / TS**, **Android** — to
-splice matching install blocks in or out, then **Save + Build** and watch the
-live build log. Restart the fleet to roll onto the new image. No registry needed.
+Create a project, group, or instance runner using GitLab's
+[new runner creation workflow](https://docs.gitlab.com/ci/runners/new_creation_workflow/).
+Set its tags, protected status, project/group scope, and whether it may run
+untagged jobs in GitLab. Copy the runner authentication token shown after
+creation; the token must begin exactly with `glrt-`.
 
-![The Runner image tab — a syntax-highlighted Dockerfile editor, one-click Rust / Python / Node·TS / Android toolchain blocks, and a live build log](docs/images/runner-image.png)
+The same token is intentionally reused by the farm's manager slots. Avoid
+automatic authentication-token rotation for this shared multi-manager setup:
+one manager can rotate first and leave the other persisted managers with the
+old token. Rotate manually by stopping the farm, replacing the saved token, and
+starting it again. Slot retirement uses the token plus that slot's persisted
+system ID to delete only its runner-manager record; it never deletes the shared
+runner entity. The plugin rejects `glrtr-` tokens created through the deprecated
+registration-token workflow because their unregister semantics can delete that
+shared runner. It also rejects instance-prefixed variants: current official
+GitLab Runner releases recognize the safe manager-only unregister path only when
+the token itself starts with `glrt-`.
 
-### 3. Run and watch — the *Fleet* tab
+### 2. Configure the provider
 
-The Fleet tab is mission control. **Validate** (no token needed) confirms the
-host can provision, then **Start / Stop / Restart / Scale** the fleet and watch
-live per-runner status: phase, the **repo and PR # each runner is building right
-now** (linked to the GitHub run), and live **CPU / memory** against each runner's
-cap. Click the ↻ on a runner to **recycle** it — deregister, remove, and bring
-back a fresh replacement in place, so the fleet keeps its size.
+On the Settings tab:
 
-The stat tiles track runners up / busy / idle, GitHub **queue** depth, autoscaler
-state, image-update state, and total **cache** usage — with a one-click **Clear
-caches**. A **Recent runs** strip summarizes pass/fail/cancel rates across your
-repos, and the colorized **Fleet log** streams autoscaler and action output.
+1. Set **Active provider** to **GitLab CI/CD**.
+2. Set **GitLab URL** to `https://gitlab.com` or the HTTPS base URL of a
+   self-managed instance.
+3. Keep the official manager image or pin a version appropriate for the
+   self-managed instance, for example `gitlab/gitlab-runner:v18.5.0`. Explicit
+   host-socket mode requires Runner 18.5.0 or newer; Start and Validate reject an
+   older or unparseable version because safe host cleanup depends on the exact
+   build/helper/service labels fixed in that release. Every mode requires
+   Runner 16.0.0 or newer because that release added manager-only unregister
+   with a persisted system ID. Older images are rejected rather than risk
+   deleting the shared runner entity. Use GitLab 16.0 or newer for a self-managed
+   server so its runner-authentication-token and manager-system-ID APIs match
+   this lifecycle contract.
+4. Save the required `glrt-` runner token.
+5. Set the graceful manager shutdown timeout. The default is 7200 seconds.
+6. Optionally enter monitored project paths and save a separate access token
+   with `read_api`. A project access token covers only its project; for several
+   monitored projects use a group token scoped to their common group or a
+   dedicated PAT that can read every listed project.
+7. Configure resource limits, caches, the default job image, Docker mode, and
+   optional image/service execution policy; save, **Validate**, and **Start**.
 
-![The Fleet tab — live runner bays showing each runner's current repo/PR and per-runner CPU/memory, stat tiles for queue depth, autoscaler, and cache usage, a recent-runs summary, and a colorized fleet log](docs/images/fleet.png)
+The runner token is stored separately as
+`/boot/config/plugins/ci-runner-farm/gitlab-runner-token`. The optional API
+token is stored as `gitlab-api-token`. Core job execution needs only the runner
+token; the API token is used exclusively for advisory queue and recent-job
+telemetry. GitLab Runner also requires the reusable runner token in each
+mode-`0600` per-slot `gitlab-runners/ci-runner-N/config.toml`. Token validation
+uses a mode-`0600` `gitlab-token-probe/config.toml`: GitLab verification creates
+a temporary manager row, so the plugin immediately unregisters it and retains
+that file only when exact cleanup must be retried. After a manager is
+successfully unregistered and all of its local containers are removed, ordinary
+Stop, scale-down, recycle, and provider switching scrub that slot's TOML, Docker
+auth, CA snapshot, and unregister marker while preserving `.runner_system_id`.
+Any failed retirement preserves the complete material needed for a safe retry.
+Clearing the runner token applies the same rule across the active fleet. Stop,
+Restart, manager replacement, and active-token removal send `SIGQUIT`, stop
+accepting new jobs, and wait up to
+`GITLAB_SHUTDOWN_TIMEOUT` for an in-flight job to finish before Docker forces the
+manager to stop. The Unraid `stopping_docker` hook quiesces all GitLab managers
+in parallel before Docker stops their DinD sidecars, preserving the same graceful
+behavior for array stops and Docker-service restarts. The plugin registers no
+diagnostics collector for the
+bootstrap/API/registry token files, per-slot/probe `config.toml` files, or Docker auth
+files. Current Unraid system diagnostics list the plugin configuration directory
+but do not copy those file contents. Do not add those paths to a support bundle
+or attach them manually; they contain live credentials even though their modes
+are restricted.
 
-Click any runner to drop down a live **log drawer** streaming that container's
-job output inline:
+If GitLab is permanently unreachable or the saved manager token has been
+revoked, normal Stop/Recycle intentionally fails closed and preserves the local
+manager identity for retry. The Fleet row's warning action provides a separately
+confirmed **force local forget** escape hatch: it interrupts that slot, deletes
+its local manager/sidecar/token-bearing config and slot Docker/cache roots
+without contacting GitLab, and
+leaves any offline remote manager record for you to remove in GitLab manually.
 
-![A runner's log drawer expanded below its row, streaming the live job log](docs/images/fleet-log-drawer.png)
+### Self-managed GitLab and custom CAs
 
-### 4. (Optional) Queue-aware autoscaling
+Use the complete HTTPS base URL, including a non-default port if required. If
+the instance's certificate chain is not already trusted, upload its PEM CA
+chain in the GitLab credential band. It is stored as
+`/boot/config/plugins/ci-runner-farm/gitlab-ca.crt`. Each manager snapshots the
+CA used to create it alongside that slot's `config.toml`, so a CA rotation does
+not prevent the old manager identity from unregistering. The manager uses its
+snapshot for the GitLab API, and the Docker executor mounts it at the official
+`/etc/gitlab-runner/certs/ca.crt` helper path so clone, artifact, and cache
+helpers trust it. Runner also exposes the GitLab chain to jobs through
+`CI_SERVER_TLS_CA_FILE`, but an arbitrary job image does not automatically add
+it to that image's system trust store. Job scripts that call the self-managed
+service directly must use that file (for example, `curl --cacert
+"$CI_SERVER_TLS_CA_FILE" ...`) or install it using the image's own CA tooling.
 
-On the Settings tab, set a **min** and **max** runner count, a **warm idle
-buffer**, an **autoscale step**, a **demand check interval**, and a **scale-down
-grace** period. The daemon adds runners when jobs are queued and removes idle
-ones once the grace window passes — so you keep capacity ready without leaving
-the whole fleet running around the clock. Its decisions stream into the Fleet
-log.
+In DinD mode the uploaded CA is also installed for the exact authority in
+**Registry server**, allowing that per-slot daemon to pull from a registry using
+the same private CA. GitLab registry endpoints must use HTTPS (the scheme may be
+omitted); plain HTTP is rejected so credentials are never sent to an insecure
+registry. GitLab keeps the configured registry credentials available
+to each manager even when its default job image is built locally, so an
+`image:` or `services:` override can authenticate to that one registry. The
+strict-network exception for the configured authority follows the same rule.
+This does not discover other registry hostnames from job configuration. If the
+GitLab registry uses a different hostname or CA, configure that authority and
+chain explicitly. Host-socket mode cannot modify Unraid's Docker trust store;
+install the registry CA on the host and restart its Docker service before using
+that mode. The built-in shared Docker Hub mirror is local HTTP and is explicitly
+scoped as an insecure registry inside each DinD daemon; the uploaded CA is
+unrelated to it.
 
-Once started, the runners also show up as ordinary Docker containers
-(`ci-runner-1…N`), plus the optional `ci-runner-mirror` registry mirror — each
-with the warm-cache bind mounts you configured — register with GitHub, and start
-picking up jobs.
+Strict network isolation normally blocks the host and LAN. GitLab mode adds a
+narrow exception for the configured GitLab endpoint so a self-managed instance
+remains reachable; do not use a broad LAN allow rule. Configure private job
+image registries explicitly rather than weakening the runner network.
 
----
+Each private DinD daemon also allocates per-build job and service networks from
+Docker's default address pools. If a self-managed GitLab or registry lives in a
+private CIDR that overlaps those pools (commonly `172.16.0.0/12`), an inner
+Docker route can shadow the real endpoint even though the farm firewall allows
+it. Keep CI/registry endpoints on non-overlapping subnets, or configure suitable
+Docker default address pools before relying on that topology.
 
-## Security
+### Queue telemetry limitation
 
-Self-hosted runners execute arbitrary workflow code on your hardware. Read this
-before exposing the fleet:
+GitLab does not expose one public API endpoint containing every pending job
+eligible for a particular runner. With a `read_api` token, the plugin can count
+pending/recent jobs only for **Monitored projects** that the token can read.
+That number is advisory: it can omit other eligible projects and jobs excluded
+by tags or protection rules. Runner execution and busy/idle scaling do not rely
+on it.
 
-- DinD runners run `--privileged`, and the shared-socket mode gives runners
-  root-equivalent access to the host. Use self-hosted runners **only for
-  trusted/private repositories**. Fork-PR code from public repos must **never**
-  run on a privileged or socket-mounted self-hosted runner.
-- **The plugin actively warns you.** When you Start the fleet (and live on the
-  settings page), it checks each repo-scope target's visibility via your token
-  and shows a prominent warning if any is **public** while runners are
-  privileged. It warns rather than blocks — the call stays yours.
-- **`Share host docker.sock` now defaults to off.** Turn it on only for trusted
-  private repos; DinD (the default) already covers `services:` without it.
-- **Your GitHub token never enters a runner container.** The PAT stays on the
-  host; each runner is handed only a short-lived registration token, and runners
-  are deregistered host-side. So a workflow step can't read your token out of its
-  own environment.
-- **Network isolation** (Docker section) confines runners at the network layer:
-  - `isolate` puts them on a dedicated bridge so they can't reach your **other
-    Unraid containers**;
-  - `strict` adds firewall rules (Docker's `DOCKER-USER` chain) that also block
-    the runners from the **Unraid host and your LAN**, while still allowing the
-    internet and the shared image cache. Recommended if runners might touch
-    less-trusted code. Applies on the next Start; needs `iptables` on the host.
-- For stronger isolation, set `EPHEMERAL=true` so each job gets a clean runner.
-- At org scope, create a **runner group restricted to your private repos** so a
-  public repo can never schedule onto these runners.
+## Job images
 
-See GitHub's [self-hosted runner security guidance](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/about-self-hosted-runners#self-hosted-runner-security)
-for the full picture.
+The Runner image tab maintains provider-specific editable files on flash:
 
----
+- `Dockerfile.github` for the GitHub runner container;
+- `Dockerfile.gitlab` for GitLab Docker-executor job containers; and
+- legacy `Dockerfile`, used as the GitHub fallback so existing customized
+  installs keep working.
+
+The packaged starter files are `default.github.Dockerfile` and
+`default.gitlab.Dockerfile`; the original `default.Dockerfile` remains
+byte-identical to the GitHub default for compatibility. The GitLab starter is a
+general Ubuntu job image with common build tools and a Docker client. It is
+deliberately not the GitLab Runner manager image. A GitLab job may override the
+default with:
+
+```yaml
+build:
+  image: node:24
+  script:
+    - npm ci
+    - npm test
+```
+
+GitHub-only image controls such as `EPHEMERAL`, `RUN_AS_ROOT`, and the workspace
+tmpfs do not change GitLab Docker-executor semantics. GitLab jobs are **always
+ephemeral at the job-container layer**: the manager and configured caches
+persist, but every accepted job receives a fresh Docker container.
+
+### GitLab execution policy
+
+Pipeline write access implies job-image selection and code execution on this
+host. The GitLab settings therefore expose the Docker executor's
+`allowed_images`, `allowed_services`, `pull_policy`, and `shm_size` controls:
+
+- `GITLAB_ALLOWED_IMAGES` and `GITLAB_ALLOWED_SERVICES` are space-separated
+  wildcard patterns. Empty values deliberately preserve the upgrade-compatible
+  GitLab Runner default of allowing every image; configure explicit trusted
+  registries or image families to narrow that exposure.
+- `GITLAB_PULL_POLICY=auto` preserves existing behavior (`if-not-present` for
+  the locally built image, `always` for a remote default). An explicit
+  `always` or `if-not-present` value is also written as
+  `allowed_pull_policies`, so jobs cannot select a different pull policy.
+  Explicit `always` requires a remote default image; it is rejected for the
+  locally built tag because Runner would try to pull a tag with no registry.
+  Runner's `never` policy is rejected because a fresh per-slot daemon cannot
+  obtain the helper and service images required to execute its first job.
+- `GITLAB_SHM_SIZE` is an integer byte count for Docker-executor containers.
+  The default `0` preserves Docker's default; browser/test workloads commonly
+  need a larger value such as `1073741824` (1 GiB).
+
+These controls follow GitLab Runner's
+[Docker executor configuration](https://docs.gitlab.com/runner/configuration/advanced-configuration/#the-runnersdocker-section).
+They govern images and services admitted by GitLab Runner; they are useful
+guardrails against accidental or declarative `.gitlab-ci.yml` overrides, not a
+security boundary. Every job, helper, and service container receives the
+selected Docker socket, so its code can invoke the Docker API directly to
+pull/run an otherwise disallowed image;
+against privileged DinD it can also request privileged nested containers. Route
+only trusted code to this farm even when allowlists are configured.
+Maximum job duration is server-owned runner metadata rather than a local
+`config.toml` key; set it on the runner in GitLab or with the
+[Runners API](https://docs.gitlab.com/ci/runners/configure_runners/#set-the-maximum-job-timeout).
+
+![The runner image editor and build log](docs/images/runner-image.png)
+
+## Cache scope and concurrency
+
+GitLab's native `/cache` bind is deliberately **per slot**
+(`gitlab-cache/ci-runner-N`), so managers do not race on the same Runner cache
+files; the tradeoff is that a cache warmed on one slot is not automatically
+available on another. The configurable `CACHE_MOUNTS` directories are different:
+they are shared across every slot for package-manager reuse. Use them only for
+cache formats whose tools support concurrent writers, or assign disjoint
+directories yourself. The plugin does not currently emit GitLab's distributed
+S3 cache configuration, so an external MinIO/S3 backend is not yet a supported
+configuration key.
+
+## Docker and security
+
+Self-hosted runners execute repository-controlled code on your hardware. Use
+privileged or socket-mounted runners only for trusted private projects.
+
+- **DinD is slot-scoped, not host-secure.** Each GitLab slot gets a private
+  privileged daemon, and `concurrent = 1` limits its normal cross-job blast
+  radius to that slot. The daemon creates the job, helper, and service
+  containers, and its socket is mounted into job, helper, and service containers;
+  any of them can therefore inspect or remove those siblings, pull/run images that
+  bypass Runner's image/service allowlists, and request privileged containers
+  inside the nested daemon. More importantly,
+  the DinD sidecar itself is privileged and must be treated as capable of host
+  compromise. It avoids handing jobs Unraid's existing Docker control socket,
+  but it is not a security boundary against the NAS. GitLab validation rejects
+  configurations with neither DinD nor host-socket sharing because the Docker
+  executor would have no endpoint.
+- **Host socket sharing is root-equivalent host access.** Enable it only as an
+  explicit alternative for trusted jobs. A job that controls
+  `/var/run/docker.sock` can control Unraid's containers and host filesystem.
+  GitLab host-socket mode requires `NETWORK_ISOLATION=off`: per-build networks
+  are created by Unraid's daemon and cannot be confined by attaching only the
+  manager to the farm's dedicated bridge.
+- **Public/fork pipelines are dangerous.** Do not route untrusted merge-request
+  or pull-request code to privileged DinD or host-socket runners. Enforce
+  protected runners, tags, runner groups, and private project scope at the CI
+  provider.
+- **Credentials are separated.** Runner-management credentials live in
+  mode-`0600` host files, not `ci-runner-farm.cfg`. Registry credentials use the
+  separate `registry-token` file. Clearing it unlinks every per-slot auth file
+  and the plugin-owned tmpfs Docker client config immediately; the plugin never
+  logs registry credentials into root's global Docker config. Managers mount the
+  containing per-slot directory and observe removal. An image pull that already
+  authenticated may still finish.
+- **Network isolation matters.** `isolate` separates runner containers from
+  other Unraid containers. `strict` also blocks the Unraid host and LAN, apart
+  from narrowly configured service endpoints.
+
+See [GitHub's self-hosted runner security guidance](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/about-self-hosted-runners#self-hosted-runner-security)
+and [GitLab's self-managed runner security guidance](https://docs.gitlab.com/runner/security/).
+
+## Fleet and autoscaling
+
+The Fleet tab shows provider-neutral runner, project, job, ref, CPU, and memory
+state while retaining GitHub run/PR links for compatibility. Runner-manager logs
+are available from each slot; job links open in the provider UI. The autoscaler
+maintains the configured minimum, maximum, and warm-idle buffer and drains busy
+slots before recycling or switching provider. Autoscaling is off by default and
+must be explicitly enabled for GitLab; when enabled, it uses observed manager
+metrics and job containers, never the incomplete advisory project queue. A
+provider switch is an idle-drained rolling transition: a busy old-provider slot
+finishes first, its old adapter deregisters it, and only then is that slot
+recreated for the new provider.
+The Fleet tab may therefore briefly show both providers during the transition;
+ordinary steady state still has one active provider.
+
+![Fleet state and controls](docs/images/fleet.png)
 
 ## CLI
 
-Everything in the UI maps to the control script:
-
+```text
+include/runner-farm.sh {start|boot-autostart|docker-stopping|stop|restart|scale N|status|status-json|logs i|validate|build-image|prune-cache|autoscale-*}
 ```
-include/runner-farm.sh {start|boot-autostart|stop|restart|scale N|status|status-json|logs i|validate|build-image|prune-cache|autoscale-*}
-```
-
----
-
-## Releases & versioning
-
-Releases are automated with
-[release-please](https://github.com/googleapis/release-please) and published as
-**GitHub Release assets** — the same flow used by Unraid's other plugins.
-
-- `.release-please-manifest.json` is the SemVer source of truth; `VERSION`
-  mirrors it for tooling.
-- Merging [Conventional Commits](https://www.conventionalcommits.org) to `main`
-  opens a release PR. That PR regenerates the self-contained
-  `ci-runner-farm.plg` (version entities + embedded payload) and updates
-  `CHANGELOG.md`.
-- Merging the release PR tags `vX.Y.Z`, cuts a GitHub Release, validates the
-  tagged `.plg`, and uploads it as the `ci-runner-farm.plg` release asset that
-  the install URL above resolves to.
-
-The Unraid plugin-manager `<version>` is written as
-`YYYY.MM.DD.HHMM.BUILD-INTERNAL` (e.g. `2026.06.24.1530.42-0.1.0`) so it sorts
-chronologically in the plugin manager while still pinning the SemVer release.
-
----
 
 ## Development
 
+Fork the repository on GitHub, then keep the canonical project as `upstream`:
+
 ```sh
-./build-plg.sh                 # build ci-runner-farm.plg from src/ (date-stamped dev build)
-./deploy.sh root@tower         # rsync src/ to a dev Unraid host (fast iteration; not for installs)
+git clone git@github.com:YOUR-ACCOUNT/ci-runner-farm.git
+cd ci-runner-farm
+git remote add upstream https://github.com/unraid/ci-runner-farm.git
+git switch -c feat/gitlab-provider
 ```
 
-The `.plg` is fully self-contained: the plugin file tree is tarred,
-base64-encoded, and embedded inline, so installing only ever fetches the single
-`.plg` — no external file hosting.
+Run all checks in the bundled Linux environment. This is the preferred command
+on macOS because the host commonly has Bash 3, BSD tar/realpath, and no PHP CLI:
+
+```sh
+./tests/run-linux-checks.sh
+```
+
+With compatible Linux tools installed, run `bash tests/check.sh` directly.
+Checks cover Bash/PHP syntax, config parity, safe cache paths, the provider and
+credential contract, fork release guards, generated XML, and exact package
+contents.
+
+Build and deploy to a disposable Unraid development host:
+
+```sh
+./build-plg.sh
+./deploy.sh root@tower
+```
+
+`deploy.sh` uploads the complete runtime into a staging directory, validates
+its sentinels and permissions, then performs a rollback-protected replacement
+of the development copy.
+Stop the fleet before deploying; the script refuses an active fleet/daemon so
+long-running processes cannot keep executing an unlinked older engine while
+new web actions use the replacement.
+The generated `.plg` downloads a version-pinned reproducible `.tgz`; it is not
+an inline/base64 package.
 
 ### Layout
 
-```
-ci-runner-farm.plg                 self-contained installer (built artifact, committed)
-build-plg.sh                       packages src/ -> versioned .plg
-deploy.sh                          dev-only raw deploy to an Unraid host
-release-please-config.json         release-please configuration
-.release-please-manifest.json      SemVer source of truth
-VERSION                            mirror of the internal SemVer version
+```text
+ci-runner-farm.plg                  generated installer metadata
+build-plg.sh                        packages src/ into .plg + reproducible .tgz
+deploy.sh                           complete-tree atomic dev deployment
+tests/check.sh                      Linux/CI check entry point
+tests/run-linux-checks.sh           containerized local check entry point
 src/usr/local/emhttp/plugins/ci-runner-farm/
-  RunnerFarm.page                  Settings page (Dynamix)
-  default.cfg                      seed config
-  default.Dockerfile               generic starter runner image
-  include/runner-farm.sh           provisioning/control script
-  include/exec.php                 CSRF-guarded web endpoint
-.github/workflows/
-  package-plugins.yml              PR/branch build + validate
-  release-please.yml               release automation + asset upload
-  release.yml                      tagged-release validation
+  default.Dockerfile                legacy GitHub starter (compatibility)
+  default.github.Dockerfile         named GitHub runner starter
+  default.gitlab.Dockerfile         GitLab Docker-executor job starter
+  default.cfg                       public reference defaults
+  include/runner-farm.sh            common lifecycle engine
+  include/providers/                provider adapters
+  include/exec.php                  CSRF-guarded web endpoint
 ```
 
----
+The release workflows are guarded to `unraid/ci-runner-farm`. They remain inert
+in forks even when a fork pushes `main`, tags `v*`, or dispatches them manually.
+The fork's CI stays on GitHub; no `.gitlab-ci.yml` is required to add GitLab as a
+runtime provider.
 
-## Support
+## Releases and support
 
-Questions and bug reports: <https://github.com/unraid/ci-runner-farm/issues>
+Canonical releases use release-please and GitHub Release assets. Questions and
+bug reports: <https://github.com/unraid/ci-runner-farm/issues>
