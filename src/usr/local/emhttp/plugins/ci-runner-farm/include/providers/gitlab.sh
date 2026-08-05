@@ -302,13 +302,17 @@ gitlab_api_token_ready() {
     && printf '%s' "$GITLAB_API_TOKEN" | grep -qE '^[A-Za-z0-9_.@:+/=~-]+$'
 }
 
+# Deliberately no --location. curl strips only Authorization on a cross-host
+# redirect, so a followed 3xx would resend PRIVATE-TOKEN to whatever host the
+# instance names. These are plain /api/v4 GETs against the configured base URL
+# and have no legitimate reason to leave it.
 gitlab_api() {
   local method="$1" path="$2" ca=()
   gitlab_validate_url >/dev/null 2>&1 || return 1
   gitlab_api_token_ready || return 1
   [ -f "$GITLAB_CA_FILE" ] && ca=( --cacert "$GITLAB_CA_FILE" )
   printf 'header = "PRIVATE-TOKEN: %s"\n' "$GITLAB_API_TOKEN" \
-    | curl -fsSL -g -m 12 -X "$method" --config - \
+    | curl -fsS -g -m 12 -X "$method" --config - \
       -H 'Accept: application/json' ${ca[@]+"${ca[@]}"} \
       "$(gitlab_url)/api/v4${path}" 2>/dev/null
 }
@@ -319,9 +323,27 @@ gitlab_api_capture() {
   gitlab_api_token_ready || return 1
   [ -f "$GITLAB_CA_FILE" ] && ca=( --cacert "$GITLAB_CA_FILE" )
   printf 'header = "PRIVATE-TOKEN: %s"\n' "$GITLAB_API_TOKEN" \
-    | curl -fsSL -g -m 12 --config - -H 'Accept: application/json' \
+    | curl -fsS -g -m 12 --config - -H 'Accept: application/json' \
       ${ca[@]+"${ca[@]}"} -D "$headers" -o "$body" \
       "$(gitlab_url)/api/v4${path}" 2>/dev/null
+}
+
+# Split the operator-entered monitored-project list without pathname expansion:
+# an entry such as group/* is a literal telemetry path, never a filesystem glob,
+# and `for p in $GITLAB_PROJECTS` would expand it against the process CWD. Only
+# well-formed namespace/project paths are emitted; anything else is advisory
+# input that cannot address a real project, so it is skipped rather than
+# blocking the fleet on a telemetry-only field.
+gitlab_projects_list() {
+  local -a items=()
+  local item
+  read -r -a items <<< "$GITLAB_PROJECTS"
+  [ "${#items[@]}" -gt 0 ] || return 0
+  for item in "${items[@]}"; do
+    printf '%s' "$item" \
+      | grep -qE '^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)+$' || continue
+    printf '%s\n' "$item"
+  done
 }
 
 gitlab_public_repo_problem() {
@@ -333,13 +355,13 @@ gitlab_public_repo_problem() {
   [ "$DIND" != "true" ] && [ "$SHARE_DOCKER_SOCK" = "true" ] \
     && msg="GitLab host-socket mode gives every accepted job root-equivalent control of this Unraid host. Restrict the runner in GitLab to trusted, protected projects and refs; isolated DinD is the safer default."
   if gitlab_api_token_ready && [ -n "$GITLAB_PROJECTS" ]; then
-    for project in $GITLAB_PROJECTS; do
+    while IFS= read -r project; do
       [ -n "$project" ] || continue
       encoded="$(urlencode "$project")"
       body="$(gitlab_api GET "/projects/$encoded" 2>/dev/null)"
       vis="$(printf '%s' "$body" | grep -o '"visibility"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')"
       [ "$vis" = public ] && pub="$pub $project"
-    done
+    done <<< "$(gitlab_projects_list)"
     [ -n "$pub" ] && msg="PUBLIC GitLab project(s) monitored while jobs can control a Docker daemon:${pub}. Untrusted merge-request code can control that slot's job, helper, and service containers; the privileged DinD sidecar is not a host security boundary. Use protected/trusted projects and runner policies. Host-socket mode directly exposes the Unraid Docker daemon. Monitored projects are advisory and do not define the runner's scope."
   fi
   security_cache_put "$msg"
@@ -1489,7 +1511,7 @@ gitlab_queued_refresh() {
   local total=0 got=0 failed=0 project encoded tmpd body headers n
   tmpd="$(mktemp -d 2>/dev/null)"
   [ -n "$tmpd" ] || { echo "gitlab $(date +%s) -1" > "$RUNDIR/queued.cache"; return 0; }
-  for project in $GITLAB_PROJECTS; do
+  while IFS= read -r project; do
     [ -n "$project" ] || continue
     encoded="$(urlencode "$project")"; body="$tmpd/body"; headers="$tmpd/headers"
     : > "$body"; : > "$headers"
@@ -1501,7 +1523,7 @@ gitlab_queued_refresh() {
     else
       failed=1
     fi
-  done
+  done <<< "$(gitlab_projects_list)"
   rm -rf "$tmpd"
   [ "$got" = 1 ] && [ "$failed" = 0 ] || total=-1
   echo "gitlab $(date +%s) $total" > "$RUNDIR/queued.cache"
@@ -1513,7 +1535,9 @@ gitlab_stats_refresh() {
     echo "gitlab $(date +%s) 0 0 0 0 -1" > "$RUNDIR/stats.cache"; return 0
   fi
   local ok=0 fail=0 cancel=0 other=0 total got=0 failed=0 project encoded body status
-  for project in $GITLAB_PROJECTS; do
+  # Read the project list on fd 3: the per-project status scan below is itself a
+  # `while read` and would otherwise share this loop's stdin.
+  while IFS= read -r project <&3; do
     [ -n "$project" ] || continue
     encoded="$(urlencode "$project")"
     if body="$(gitlab_api GET "/projects/$encoded/jobs?per_page=50&order_by=id&sort=desc")"; then
@@ -1536,7 +1560,7 @@ gitlab_stats_refresh() {
     else
       failed=1
     fi
-  done
+  done 3<<< "$(gitlab_projects_list)"
   if [ "$got" = 1 ] && [ "$failed" = 0 ]; then total=$((ok+fail+cancel+other)); else total=-1; fi
   echo "gitlab $(date +%s) $ok $fail $cancel $other $total" > "$RUNDIR/stats.cache"
 }
