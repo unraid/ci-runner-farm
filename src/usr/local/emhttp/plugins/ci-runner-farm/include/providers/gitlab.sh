@@ -58,7 +58,9 @@ gitlab_confgen() {
   # Hash the exact token values loaded after fleet.lock was acquired. Reading the
   # files again here can pair a stale in-memory token with a freshly rotated file
   # hash, incorrectly stamping a replacement as current.
-  printf '%s\0' gitlab "$GITLAB_URL" "$GITLAB_RUNNER_IMAGE" "$GITLAB_DIND_IMAGE" \
+  # Keep a runtime-schema salt in the fingerprint so security-sensitive argv
+  # changes also retire sidecars created by an older plugin build.
+  printf '%s\0' gitlab-dind-unix-only-v2 "$GITLAB_URL" "$GITLAB_RUNNER_IMAGE" "$GITLAB_DIND_IMAGE" \
     "$GITLAB_RUNNER_TOKEN" "$GITLAB_CA_FINGERPRINT" "$REGISTRY_TOKEN" \
     "$RUNNER_CPUS" "$RUNNER_MEMORY" "$CACHE_MOUNTS" "$GITLAB_SHUTDOWN_TIMEOUT" \
     "$GITLAB_ALLOWED_IMAGES" "$GITLAB_ALLOWED_SERVICES" "$GITLAB_PULL_POLICY" "$GITLAB_SHM_SIZE" \
@@ -862,7 +864,10 @@ gitlab_start_sidecar() {
   [ "$NETWORK_ISOLATION" != "off" ] && sargs+=( --network "$RUNNER_NETWORK" )
   [ "$SHARED_IMAGE_CACHE" = "true" ] && [ "$NETWORK_ISOLATION" = "off" ] \
     && sargs+=( --add-host "host.docker.internal:host-gateway" )
-  sargs+=( "$GITLAB_DIND_IMAGE" --host=unix:///runner-services/docker.sock )
+  # docker:dind's stock entrypoint adds an unauthenticated TCP listener when
+  # its first argument is an option. Pass `dockerd` explicitly so the entrypoint
+  # retains PID cleanup/init/iptables setup without injecting any TCP listener.
+  sargs+=( "$GITLAB_DIND_IMAGE" dockerd --host=unix:///runner-services/docker.sock )
   docker run "${sargs[@]}" >/dev/null || return 1
   local i
   for i in $(seq 1 60); do

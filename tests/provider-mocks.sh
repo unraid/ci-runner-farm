@@ -517,6 +517,12 @@ docker() {
 gitlab_start_sidecar 1 ci-runner-1 || fail "custom-CA GitLab DinD sidecar generation failed"
 grep -qx -- '--restart=unless-stopped' "$SIDECAR_ARGS" \
   || fail "GitLab DinD sidecar does not survive Docker daemon restarts"
+expected_dind_suffix="$(printf '%s\n' "$GITLAB_DIND_IMAGE" dockerd --host=unix:///runner-services/docker.sock)"
+[ "$(tail -n 3 "$SIDECAR_ARGS")" = "$expected_dind_suffix" ] \
+  || fail "GitLab DinD sidecar does not retain the stock entrypoint with exactly one private Unix listener"
+if grep -qF 'tcp://' "$SIDECAR_ARGS"; then
+  fail "GitLab DinD sidecar exposes a TCP Docker API"
+fi
 grep -qx "type=bind,src=$slot_ca,dst=$slot_ca,readonly" "$SIDECAR_ARGS" \
   || fail "DinD cannot resolve the executor's custom-CA bind source"
 grep -qx "type=bind,src=$slot_ca,dst=/etc/docker/certs.d/registry.gitlab.example.test:5443/ca.crt,readonly" "$SIDECAR_ARGS" \
