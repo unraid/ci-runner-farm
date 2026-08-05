@@ -163,7 +163,8 @@ github_registry_credentials() {
 }
 
 github_build_args() {
-  local idx="$1" name="${2:-${NAME_PREFIX}-${idx}}" role="${CRF_CONTAINER_ROLE:-runner}"
+  local idx="$1"
+  local name="${2:-${NAME_PREFIX}-${idx}}" role="${CRF_CONTAINER_ROLE:-runner}"
   ARGS=(
     -d --restart=no
     --name "$name" --hostname "$name"

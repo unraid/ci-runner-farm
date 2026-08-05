@@ -51,6 +51,8 @@ for required_remove_line in \
   'set -euo pipefail' \
   'if ! "$PLGDIR/include/runner-farm.sh" stop' \
   'cleanup engine is missing and Docker is unavailable' \
+  'cleanup engine is missing and Docker ownership enumeration failed' \
+  'cleanup engine is missing and GitLab executor ownership enumeration failed' \
   'cleanup engine is missing while plugin-owned Docker resources still exist' \
   'if ! rm -rf -- "$PLGDIR" || [ -e "$PLGDIR" ]; then' \
   'if ! rm -f -- "$CFGDIR"/ci-runner-farm-*.tgz; then'
@@ -60,8 +62,8 @@ do
     exit 1
   }
 done
-cleanup_line="$(printf '%s\n' "$remove_block" | grep -nF 'if ! rm -f -- "$CFGDIR"/ci-runner-farm-*.tgz' | head -1 | cut -d: -f1)"
-success_line="$(printf '%s\n' "$remove_block" | grep -nF 'ci-runner-farm removed. Config + credentials left' | head -1 | cut -d: -f1)"
+cleanup_line="$(printf '%s\n' "$remove_block" | grep -nF 'if ! rm -f -- "$CFGDIR"/ci-runner-farm-*.tgz' | head -1 | cut -d: -f1 || true)"
+success_line="$(printf '%s\n' "$remove_block" | grep -nF 'ci-runner-farm removed. Config + credentials left' | head -1 | cut -d: -f1 || true)"
 [ -n "$cleanup_line" ] && [ -n "$success_line" ] && [ "$cleanup_line" -lt "$success_line" ] || {
   echo "package-contents: generated remove action can report success before cleanup completes" >&2
   exit 1

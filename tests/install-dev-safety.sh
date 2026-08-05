@@ -8,12 +8,17 @@ INSTALLER=install-dev.sh
 fail() { printf 'INSTALL-DEV SAFETY FAIL: %s\n' "$*" >&2; exit 1; }
 line_of() {
   local value
-  value="$(grep -nF -- "$2" "$1" | head -1 | cut -d: -f1)"
+  value="$(grep -nF -- "$2" "$1" | head -1 | cut -d: -f1 || true)"
   [ -n "$value" ] || fail "missing contract: $2"
   printf '%s\n' "$value"
 }
 
 bash -n "$INSTALLER" || fail "installer has invalid shell syntax"
+missing_line_output="$( (line_of "$INSTALLER" '__install_dev_missing_contract_probe__') 2>&1 || true)"
+case "$missing_line_output" in
+  *'missing contract: __install_dev_missing_contract_probe__'*) ;;
+  *) fail "line_of suppresses its focused missing-contract diagnostic" ;;
+esac
 
 # The local bundle is authenticated before the first remote mutation, and the
 # lock-protected live deployment completes before flash state is created.
@@ -37,6 +42,9 @@ do
 done
 grep -qF 'case "${HOST#root@}"' "$INSTALLER" || fail "host shell syntax is not rejected"
 if grep -qF 'set -x' "$INSTALLER"; then fail "installer enables shell tracing"; fi
+if grep -qF 'PACKAGE="$BUNDLE_DIR/$PACKAGE_FILE"' "$INSTALLER"; then
+  fail "installer retains the unused PACKAGE assignment"
+fi
 
 # Baseline creation is one-time and copies exactly the public canonical
 # descriptor plus the one package it references.  It must not sweep or copy the
@@ -52,6 +60,22 @@ for contract in \
   'canonical descriptor'\''s exact cached package is unavailable; refusing an incomplete baseline'
 do
   grep -qF -- "$contract" "$INSTALLER" || fail "missing rollback-baseline contract: $contract"
+done
+cleanup_function_line="$(line_of "$INSTALLER" 'cleanup_install_temps() {')"
+cleanup_trap_line="$(line_of "$INSTALLER" 'trap cleanup_install_temps EXIT')"
+rollback_tmp_line="$(line_of "$INSTALLER" '  rollback_tmp="$(mktemp -d "$dev_root/.rollback.XXXXXX")"')"
+commit_tmp_line="$(line_of "$INSTALLER" '  commit_tmp="$(mktemp "$artifacts/.commit.XXXXXX")"')"
+[ "$cleanup_function_line" -lt "$cleanup_trap_line" ] \
+  && [ "$cleanup_trap_line" -lt "$rollback_tmp_line" ] \
+  && [ "$cleanup_trap_line" -lt "$commit_tmp_line" ] \
+  || fail "temporary-path cleanup is not armed before temporary paths are created"
+for contract in \
+  '"$dev_root"/.rollback.*) rm -rf -- "$rollback_tmp" || status=1' \
+  '"$artifacts"/.commit.*) rm -f -- "$commit_tmp" || status=1' \
+  '  rollback_tmp=' \
+  '  commit_tmp='
+do
+  grep -qF -- "$contract" "$INSTALLER" || fail "missing temporary cleanup contract: $contract"
 done
 if grep -Eq 'cp[[:space:]]+-R.*(canonical_cfg|/boot/config/plugins/ci-runner-farm)' "$INSTALLER"; then
   fail "installer recursively copies the persistent config/credential directory"
@@ -98,6 +122,22 @@ for resource in \
 do
   grep -qF -- "$resource" "$INSTALLER" || fail "rollback omits empty check: $resource"
 done
+for contract in \
+  'legacy_name="$(docker inspect -f '\''{{.Name}}'\'' ci-runner-mirror 2>/dev/null)"' \
+  'legacy_image="$(docker inspect -f '\''{{.Config.Image}}'\'' ci-runner-mirror 2>/dev/null)"' \
+  'legacy_source="$(docker inspect -f '\''{{range .Mounts}}{{if eq .Destination "/var/lib/registry"}}{{.Source}}{{end}}{{end}}'\'' ci-runner-mirror 2>/dev/null)"' \
+  'REGISTRY_PROXY_REMOTEURL=https://registry-1.docker.io' \
+  '[ "$legacy_name" = /ci-runner-mirror ]' \
+  '[ "$legacy_image" = registry:2 ]' \
+  '[ "$legacy_source" = "$legacy_cache_root/registry-mirror" ]'
+do
+  grep -qF -- "$contract" "$INSTALLER" || fail "rollback omits legacy mirror provenance: $contract"
+done
+legacy_name_line="$(line_of "$INSTALLER" 'legacy_name="$(docker inspect')"
+legacy_tuple_line="$(line_of "$INSTALLER" '  if [ "$legacy_name" = /ci-runner-mirror ]')"
+legacy_fail_line="$(line_of "$INSTALLER" '    fail "fixed-name registry mirror remains after Stop"')"
+[ "$legacy_name_line" -lt "$legacy_tuple_line" ] && [ "$legacy_tuple_line" -lt "$legacy_fail_line" ] \
+  || fail "an unrelated fixed-name mirror can still trigger rollback failure before provenance matches"
 rollback_block="$(awk '
   /^ssh -- "\$HOST" \/bin\/bash -s <<'"'"'REMOTE_ROLLBACK'"'"'$/ { emit=1 }
   emit { print }
@@ -120,6 +160,35 @@ fi
 # deploy/SSH commands.  The remote heredocs are deliberately not executed.
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
+
+# Execute the install transaction's actual EXIT-trap function against both
+# temporary path classes. An implicit set -e failure must retain its non-zero
+# status while removing the baseline directory and the artifact staging file.
+cleanup_function="$(awk '
+  /^cleanup_install_temps\(\) \{$/ { emit=1 }
+  emit { print }
+  emit && /^}$/ { exit }
+' "$INSTALLER")"
+[ -n "$cleanup_function" ] || fail "could not extract temporary cleanup function"
+cleanup_root="$tmp/cleanup-probe"
+cleanup_artifacts="$cleanup_root/artifacts"
+cleanup_rollback="$cleanup_root/.rollback.ABC123"
+cleanup_commit="$cleanup_artifacts/.commit.ABC123"
+mkdir -p "$cleanup_rollback" "$cleanup_artifacts"
+printf 'partial artifact\n' >"$cleanup_commit"
+cleanup_probe="$tmp/cleanup-probe.sh"
+{
+  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail'
+  printf '%s\n' 'dev_root="$1"' 'artifacts="$2"' 'rollback_tmp="$3"' 'commit_tmp="$4"'
+  printf '%s\n' "$cleanup_function"
+  printf '%s\n' 'trap cleanup_install_temps EXIT' 'false'
+} >"$cleanup_probe"
+if bash "$cleanup_probe" "$cleanup_root" "$cleanup_artifacts" "$cleanup_rollback" "$cleanup_commit"; then
+  fail "temporary cleanup probe lost the triggering failure status"
+fi
+[ ! -e "$cleanup_rollback" ] || fail "rollback temporary directory survived a transaction failure"
+[ ! -e "$cleanup_commit" ] || fail "artifact temporary file survived a transaction failure"
+
 repo="$tmp/repo"
 mkdir -p "$repo/tmp/dev-package" "$tmp/bin"
 cp "$INSTALLER" "$repo/install-dev.sh"

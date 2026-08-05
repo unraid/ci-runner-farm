@@ -42,9 +42,9 @@ declare -A ENG CFGV UIV
 # plugin config. PHP's INI scanner accepts `;` comments, not shell-style `#`
 # comments on current Unraid releases; catch a file that is textually correct
 # for the shell tests but unusable by the webGUI.
-command -v php >/dev/null 2>&1 || bad "php is required to validate default.cfg"
-if command -v php >/dev/null 2>&1 \
-   && ! php -r '$v = parse_ini_file($argv[1]); exit(is_array($v) ? 0 : 1);' "$CFG"; then
+if ! command -v php >/dev/null 2>&1; then
+  bad "php is required to validate default.cfg"
+elif ! php -r '$v = parse_ini_file($argv[1]); exit(is_array($v) ? 0 : 1);' "$CFG"; then
   bad "default.cfg is not valid for PHP parse_ini_file (and therefore Unraid parse_plugin_cfg)"
 fi
 

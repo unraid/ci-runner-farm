@@ -8,7 +8,7 @@ DEPLOY="deploy.sh"
 BUILD="build-plg.sh"
 
 fail() { printf 'DEPLOY/UNINSTALL SAFETY FAIL: %s\n' "$*" >&2; exit 1; }
-first_line() { grep -nF -- "$2" "$1" | head -1 | cut -d: -f1; }
+first_line() { grep -nF -- "$2" "$1" | head -1 | cut -d: -f1 || true; }
 
 lock_line="$(first_line "$DEPLOY" 'flock -w 20 8')"
 manager_check_line="$(first_line "$DEPLOY" 'owned_managers="$(docker ps -a')"
@@ -24,6 +24,25 @@ grep -qF 'COPYFILE_DISABLE=1 tar --no-xattrs -C "$SRC" -cf - .' "$DEPLOY" \
   || fail "deploy does not suppress macOS AppleDouble metadata at the source"
 grep -qF "find \"\$stage\" -name '._*' -print" "$DEPLOY" \
   || fail "deploy does not reject AppleDouble metadata in the staged runtime"
+grep -qF 'remote_stage_suffix="${REMOTE_STAGE#"$DEST".deploy.}"' "$DEPLOY" \
+  && grep -qF 'stage_suffix="${stage#"$dest".deploy.}"' "$DEPLOY" \
+  && [ "$(grep -cF "''|*[!A-Za-z0-9]*)" "$DEPLOY" || true)" -eq 2 ] \
+  || fail "deploy does not require a nonempty alphanumeric staging suffix locally and remotely"
+for executable_tree in nchan event; do
+  grep -qxF "find \"\$stage/$executable_tree\" -type f -exec chmod 0755 {} +" "$DEPLOY" \
+    || fail "deploy does not propagate $executable_tree permission failures"
+done
+grep -qF 'trap rollback ERR' "$DEPLOY" \
+  && grep -qF 'if [ "$#" -gt 0 ]; then status="$1"; fi' "$DEPLOY" \
+  || fail "deploy rollback does not preserve ERR status separately from signals"
+for signal_trap in \
+  "trap 'rollback 129' HUP" \
+  "trap 'rollback 130' INT" \
+  "trap 'rollback 143' TERM"
+do
+  grep -qF "$signal_trap" "$DEPLOY" \
+    || fail "deploy rollback lacks nonzero signal status: $signal_trap"
+done
 if sed -n "${lock_line},${swap_line}p" "$DEPLOY" | grep -F 'flock -u 8' >/dev/null; then
   fail "deploy releases fleet.lock before the staged tree swap"
 fi
@@ -125,9 +144,11 @@ printf '%s\n' "$remove_block" | grep -qF 'if ! rm -rf -- "\$PLGDIR" || [ -e "\$P
 printf '%s\n' "$remove_block" | grep -qF 'if ! rm -f -- "\$CFGDIR"/${NAME}-*.tgz; then' \
   || fail "plugin remove action does not fail on cached-package deletion"
 
-runtime_delete_line="$(printf '%s\n' "$remove_block" | grep -nF 'if ! rm -rf -- "\$PLGDIR"' | head -1 | cut -d: -f1)"
-package_delete_line="$(printf '%s\n' "$remove_block" | grep -nF 'if ! rm -f -- "\$CFGDIR"/${NAME}-*.tgz' | head -1 | cut -d: -f1)"
-success_line="$(printf '%s\n' "$remove_block" | grep -nF 'ci-runner-farm removed. Config + credentials left' | head -1 | cut -d: -f1)"
+runtime_delete_line="$(printf '%s\n' "$remove_block" | grep -nF 'if ! rm -rf -- "\$PLGDIR"' | head -1 | cut -d: -f1 || true)"
+package_delete_line="$(printf '%s\n' "$remove_block" | grep -nF 'if ! rm -f -- "\$CFGDIR"/${NAME}-*.tgz' | head -1 | cut -d: -f1 || true)"
+success_line="$(printf '%s\n' "$remove_block" | grep -nF 'ci-runner-farm removed. Config + credentials left' | head -1 | cut -d: -f1 || true)"
+[ -n "$runtime_delete_line" ] && [ -n "$package_delete_line" ] && [ -n "$success_line" ] \
+  || fail "could not locate runtime deletion, cached-package deletion, and uninstall success"
 [ "$runtime_delete_line" -lt "$success_line" ] && [ "$package_delete_line" -lt "$success_line" ] \
   || fail "plugin remove action can announce success before cleanup completes"
 

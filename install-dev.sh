@@ -157,7 +157,6 @@ PY
   IFS=$'\t' read -r PACKAGE_FILE PACKAGE_SHA256 PLUGIN_SHA256 MANIFEST_SHA256 <<< "$values"
   [ -n "$PACKAGE_FILE" ] && [ -n "$PACKAGE_SHA256" ] && [ -n "$PLUGIN_SHA256" ] && [ -n "$MANIFEST_SHA256" ] \
     || die "bundle validator returned an incomplete result"
-  PACKAGE="$BUNDLE_DIR/$PACKAGE_FILE"
 }
 
 if [ "$ACTION" = install ]; then
@@ -233,6 +232,24 @@ canonical_cfg=/boot/config/plugins/ci-runner-farm
 dev_root=/boot/config/ci-runner-farm-dev
 rollback="$dev_root/rollback"
 artifacts="$dev_root/artifacts"
+rollback_tmp=
+commit_tmp=
+cleanup_install_temps() {
+  local status=$?
+  trap - EXIT
+  case "$rollback_tmp" in
+    '') ;;
+    "$dev_root"/.rollback.*) rm -rf -- "$rollback_tmp" || status=1 ;;
+    *) printf 'install-dev remote: refusing to clean unsafe rollback temporary path: %s\n' "$rollback_tmp" >&2; status=1 ;;
+  esac
+  case "$commit_tmp" in
+    '') ;;
+    "$artifacts"/.commit.*) rm -f -- "$commit_tmp" || status=1 ;;
+    *) printf 'install-dev remote: refusing to clean unsafe artifact temporary path: %s\n' "$commit_tmp" >&2; status=1 ;;
+  esac
+  exit "$status"
+}
+trap cleanup_install_temps EXIT
 umask 077
 mkdir -p "$dev_root"
 [ -d "$dev_root" ] && [ ! -L "$dev_root" ] || fail "development state root is unsafe"
@@ -298,6 +315,7 @@ else
   find "$rollback_tmp" -type d -exec chmod 0700 {} +
   find "$rollback_tmp" -type f -exec chmod 0600 {} +
   mv -- "$rollback_tmp" "$rollback"
+  rollback_tmp=
   validate_baseline
 fi
 
@@ -339,18 +357,19 @@ fi
 chmod 0700 "$artifacts"
 
 commit_artifact() {
-  local source="$1" destination="$2" expected="$3" tmp
+  local source="$1" destination="$2" expected="$3"
   if [ -e "$destination" ] || [ -L "$destination" ]; then
     regular_file "$destination" || fail "artifact destination is unsafe: $destination"
     [ "$(sha256_of "$destination")" = "$expected" ] \
       || fail "artifact basename already exists with different bytes: $destination"
     return 0
   fi
-  tmp="$(mktemp "$artifacts/.commit.XXXXXX")"
-  cp -- "$source" "$tmp"
-  chmod 0600 "$tmp"
-  [ "$(sha256_of "$tmp")" = "$expected" ] || fail "artifact changed during commit"
-  mv -- "$tmp" "$destination"
+  commit_tmp="$(mktemp "$artifacts/.commit.XXXXXX")"
+  cp -- "$source" "$commit_tmp"
+  chmod 0600 "$commit_tmp"
+  [ "$(sha256_of "$commit_tmp")" = "$expected" ] || fail "artifact changed during commit"
+  mv -- "$commit_tmp" "$destination"
+  commit_tmp=
   [ "$(sha256_of "$destination")" = "$expected" ] || fail "committed artifact verification failed"
 }
 
@@ -453,7 +472,32 @@ docker_names "GitLab validation jobs" \
 all_names="$(docker ps -a --format '{{.Names}}' 2>/dev/null)" \
   || fail "cannot enumerate Docker names for legacy mirror verification"
 if printf '%s\n' "$all_names" | grep -qxF ci-runner-mirror; then
-  fail "fixed-name registry mirror remains after Stop"
+  legacy_cache_root=/mnt/cache/github-runner
+  cfg="$canonical_cfg/ci-runner-farm.cfg"
+  if [ -e "$cfg" ]; then
+    [ -r "$cfg" ] || fail "cannot read plugin config for legacy mirror verification"
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in ''|\#*) continue ;; esac
+      [ "${line#*=}" = "$line" ] && continue
+      key="${line%%=*}"; value="${line#*=}"
+      key="${key//[[:space:]]/}"
+      [ "$key" = CACHE_ROOT ] || continue
+      value="${value%\"}"; value="${value#\"}"
+      value="${value%\'}"; value="${value#\'}"
+      legacy_cache_root="$value"
+    done < "$cfg"
+  fi
+  legacy_name="$(docker inspect -f '{{.Name}}' ci-runner-mirror 2>/dev/null)" \
+    && legacy_image="$(docker inspect -f '{{.Config.Image}}' ci-runner-mirror 2>/dev/null)" \
+    && legacy_source="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/registry"}}{{.Source}}{{end}}{{end}}' ci-runner-mirror 2>/dev/null)" \
+    && legacy_env="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' ci-runner-mirror 2>/dev/null)" \
+    || fail "cannot verify fixed-name registry mirror provenance"
+  if [ "$legacy_name" = /ci-runner-mirror ] \
+     && [ "$legacy_image" = registry:2 ] \
+     && [ "$legacy_source" = "$legacy_cache_root/registry-mirror" ] \
+     && printf '%s\n' "$legacy_env" | grep -qx 'REGISTRY_PROXY_REMOTEURL=https://registry-1.docker.io'; then
+    fail "fixed-name registry mirror remains after Stop"
+  fi
 fi
 daemon_status=0
 pgrep -f '[r]unner-farm.sh (autoscale-daemon|imageupdate-daemon|reconcile-drain|boot-autostart)' >/dev/null 2>&1 \

@@ -742,7 +742,8 @@ gitlab_write_config() {
 }
 
 gitlab_build_manager_args() {
-  local idx="$1" name="${2:-${NAME_PREFIX}-${idx}}" dir sock sockdir socket_mount authdir slot_ca
+  local idx="$1"
+  local name="${2:-${NAME_PREFIX}-${idx}}" dir sock sockdir socket_mount authdir slot_ca
   gitlab_validate_settings || return 1
   gitlab_token_ready || { err "no valid GitLab glrt- runner token configured"; return 1; }
   gitlab_write_config "$idx" "$name" || { err "could not write GitLab config for $name"; return 1; }

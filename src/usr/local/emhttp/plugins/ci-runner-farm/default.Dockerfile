@@ -34,6 +34,7 @@ RUN printf '%s\n' \
   '( while true; do docker info >/dev/null 2>&1 || { rm -f /var/run/docker.pid; service docker start >>/var/log/dockerd.log 2>&1; }; sleep 3; done ) &' \
   '# wait for first readiness before the runner accepts jobs' \
   'for i in $(seq 1 90); do docker info >/dev/null 2>&1 && break; sleep 1; done' \
+  'docker info >/dev/null 2>&1 || { echo "Docker did not become ready" >&2; exit 1; }' \
   'exec "$@"' \
   > /usr/local/bin/wait-docker.sh \
  && chmod +x /usr/local/bin/wait-docker.sh

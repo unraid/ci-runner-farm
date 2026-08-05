@@ -21,6 +21,8 @@ GITLAB_URL=https://gitlab.example.test
 # version/length/CRC separators that originally exposed a stale local parser.
 GITLAB_RUNNER_TOKEN=glrt-AAECAwQFBgcICQoLDA0OD286MQpwOjIKdTozCnQ6Mw8.01.170z6aiyq
 GITLAB_RUNNER_IMAGE="$(sed -n 's/^GITLAB_RUNNER_IMAGE="\([^"]*\)".*/\1/p' src/usr/local/emhttp/plugins/ci-runner-farm/default.cfg | head -1)"
+[ -n "$GITLAB_RUNNER_IMAGE" ] \
+  || { echo "gitlab-runner-lint: could not read GITLAB_RUNNER_IMAGE from default.cfg" >&2; exit 1; }
 CACHE_ROOT="$tmp/cache"
 CACHE_MOUNTS=''
 RUNNER_CPUS='2'
@@ -35,8 +37,11 @@ mkdir -p "$CACHE_ROOT"
 # can open the configured path as well as parse it.
 if [ -r /etc/ssl/certs/ca-certificates.crt ]; then
   cp /etc/ssl/certs/ca-certificates.crt "$GITLAB_CA_FILE"
-else
+elif [ -r /etc/ssl/cert.pem ]; then
   cp /etc/ssl/cert.pem "$GITLAB_CA_FILE"
+else
+  echo "gitlab-runner-lint: no host CA bundle found for the self-managed CA case" >&2
+  exit 1
 fi
 printf '%s' "$GITLAB_RUNNER_TOKEN" > "$GITLAB_RUNNER_TOKEN_FILE"
 reload_secret_files

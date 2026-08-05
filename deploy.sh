@@ -41,7 +41,14 @@ done
 echo "[deploy] staging complete runtime tree for $HOST:$DEST"
 REMOTE_STAGE="$(ssh -- "$HOST" "umask 022; mktemp -d '${DEST}.deploy.XXXXXX'")"
 case "$REMOTE_STAGE" in
-  "$DEST".deploy.*) ;;
+  "$DEST".deploy.*)
+    remote_stage_suffix="${REMOTE_STAGE#"$DEST".deploy.}"
+    case "$remote_stage_suffix" in
+      ''|*[!A-Za-z0-9]*)
+        echo "deploy: remote host returned an unsafe staging path: $REMOTE_STAGE" >&2
+        exit 1 ;;
+    esac
+    ;;
   *) echo "deploy: remote host returned an unsafe staging path: $REMOTE_STAGE" >&2; exit 1 ;;
 esac
 
@@ -68,7 +75,14 @@ if [ "$dest" != "/usr/local/emhttp/plugins/ci-runner-farm" ]; then
   exit 1
 fi
 case "$stage" in
-  "$dest".deploy.*) ;;
+  "$dest".deploy.*)
+    stage_suffix="${stage#"$dest".deploy.}"
+    case "$stage_suffix" in
+      ''|*[!A-Za-z0-9]*)
+        echo "deploy: refusing unexpected staging path: $stage" >&2
+        exit 1 ;;
+    esac
+    ;;
   *) echo "deploy: refusing unexpected staging path: $stage" >&2; exit 1 ;;
 esac
 
@@ -99,8 +113,8 @@ chown -R root:root "$stage"
 find "$stage" -type d -exec chmod 0755 {} +
 find "$stage" -type f -exec chmod 0644 {} +
 chmod 0755 "$stage/include/runner-farm.sh"
-find "$stage/nchan" -type f -exec chmod 0755 {} + 2>/dev/null || true
-find "$stage/event" -type f -exec chmod 0755 {} + 2>/dev/null || true
+find "$stage/nchan" -type f -exec chmod 0755 {} +
+find "$stage/event" -type f -exec chmod 0755 {} +
 
 # Use the exact runtime lock location/fallback used by the installed engine. Hold
 # it from the final inactive-state snapshot through the tree swap, preventing a
@@ -261,10 +275,14 @@ esac
 backup="${dest}.deploy-backup.$$"
 rollback() {
   status=$?
+  if [ "$#" -gt 0 ]; then status="$1"; fi
   if [ ! -e "$dest" ] && [ -e "$backup" ]; then mv "$backup" "$dest"; fi
   exit "$status"
 }
-trap rollback ERR HUP INT TERM
+trap rollback ERR
+trap 'rollback 129' HUP
+trap 'rollback 130' INT
+trap 'rollback 143' TERM
 
 if [ -e "$dest" ]; then mv "$dest" "$backup"; fi
 mv "$stage" "$dest"

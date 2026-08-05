@@ -70,8 +70,10 @@ grep -qF 'POST /repos/example/one/actions/runners/registration-token' "$GH_API_L
   || fail "GitHub repo registration endpoint changed"
 
 GH_SCOPE=repo
-github_build_args 2 ci-runner-2 || fail "GitHub repo argv generation failed"
+github_build_args 2 || fail "GitHub default-name repo argv generation failed"
 github_args="$(printf '%s\n' "${ARGS[@]}")"
+printf '%s\n' "$github_args" | grep -qx 'ci-runner-2' \
+  || fail "GitHub default runner name did not use its function argument"
 printf '%s\n' "$github_args" | grep -qx 'REPO_URL=https://github.com/example/two' \
   || fail "GitHub repo round-robin assignment changed"
 printf '%s\n' "$github_args" | grep -qx 'RUNNER_TOKEN=short-registration-token' \
@@ -385,7 +387,9 @@ fi
 grep -qx corrupt-system-id "$CRF_CFGDIR/gitlab-runners/ci-runner-4/.runner_system_id" \
   || fail "invalid persisted GitLab system ID was mutated"
 
-gitlab_build_manager_args 1 ci-runner-1 || fail "manager argv generation failed"
+gitlab_build_manager_args 1 || fail "default-name manager argv generation failed"
+printf '%s\n' "${ARGS[@]}" | grep -qx 'ci-runner-1' \
+  || fail "GitLab default manager name did not use its function argument"
 if printf '%s\n' "${ARGS[@]}" | grep -qF "$GITLAB_RUNNER_TOKEN"; then fail "runner token leaked into Docker argv"; fi
 printf '%s\n' "${ARGS[@]}" | grep -qF 'wget -qO- http://127.0.0.1:9252/metrics' \
   || fail "GitLab manager health check is not a local metrics probe"
@@ -1183,9 +1187,9 @@ grep -q "^DOCKER inspect -f {{.Image}} $LIFECYCLE_MANAGER_ID$" "$LIFECYCLE_LOG" 
   || fail "stopped manager image validation did not use its immutable ID"
 grep -q "^DOCKER start $LIFECYCLE_MANAGER_ID$" "$LIFECYCLE_LOG" \
   || fail "stopped manager was not started by immutable ID"
-job_image_line="$(grep -n '^JOB_IMAGE ci-runner-1$' "$LIFECYCLE_LOG" | head -1 | cut -d: -f1)"
-manager_start_line="$(grep -n "^DOCKER start $LIFECYCLE_MANAGER_ID$" "$LIFECYCLE_LOG" | head -1 | cut -d: -f1)"
-[ "$job_image_line" -lt "$manager_start_line" ] \
+job_image_line="$(grep -n '^JOB_IMAGE ci-runner-1$' "$LIFECYCLE_LOG" | head -1 | cut -d: -f1 || true)"
+manager_start_line="$(grep -n "^DOCKER start $LIFECYCLE_MANAGER_ID$" "$LIFECYCLE_LOG" | head -1 | cut -d: -f1 || true)"
+[ -n "$job_image_line" ] && [ -n "$manager_start_line" ] && [ "$job_image_line" -lt "$manager_start_line" ] \
   || fail "stopped manager resumed before its default job image was prepared"
 if grep -q unregister "$LIFECYCLE_LOG"; then fail "ordinary stopped-manager restart attempted unregister"; fi
 
@@ -1331,8 +1335,8 @@ gitlab_remove_sidecar() { :; }
 mkdir -p "$slot_dir/docker"
 printf '%s\n' retired-registry-auth > "$slot_dir/docker/config.json"
 if gitlab_remove_runner ci-runner-1 false; then fail "GitLab removal ignored a local Docker-rm failure"; fi
-stop_line="$(grep -n '^DOCKER stop --signal SIGQUIT --timeout 7200 ci-runner-1$' "$LIFECYCLE_LOG" | head -1 | cut -d: -f1)"
-unregister_line="$(grep -n 'DOCKER run --rm .* unregister --name persisted-host-ci-runner-1$' "$LIFECYCLE_LOG" | head -1 | cut -d: -f1)"
+stop_line="$(grep -n '^DOCKER stop --signal SIGQUIT --timeout 7200 ci-runner-1$' "$LIFECYCLE_LOG" | head -1 | cut -d: -f1 || true)"
+unregister_line="$(grep -n 'DOCKER run --rm .* unregister --name persisted-host-ci-runner-1$' "$LIFECYCLE_LOG" | head -1 | cut -d: -f1 || true)"
 [ -n "$stop_line" ] && [ -n "$unregister_line" ] && [ "$stop_line" -lt "$unregister_line" ] \
   || fail "GitLab manager did not drain before manager-only unregister"
 [ -s "$slot_dir/.remote-unregister-complete" ] \

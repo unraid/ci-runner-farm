@@ -184,12 +184,15 @@ for file in default.Dockerfile default.github.Dockerfile default.gitlab.Dockerfi
 done
 cmp -s "$RUNTIME/default.Dockerfile" "$RUNTIME/default.github.Dockerfile" || \
   bad "default.github.Dockerfile must remain byte-identical to legacy default.Dockerfile"
+grep -qF 'Docker did not become ready' "$RUNTIME/default.github.Dockerfile" || \
+  bad "GitHub runner image does not fail closed when nested Docker stays unavailable"
 if grep -Eiq '^[[:space:]]*FROM[[:space:]]+gitlab/gitlab-runner' "$RUNTIME/default.gitlab.Dockerfile"; then
   bad "default.gitlab.Dockerfile must be a job image, not the runner manager"
 fi
 grep -qF 'Dockerfile.$CI_PROVIDER' "$ENGINE" || bad "engine does not select an editable Dockerfile by provider"
 grep -qF 'default.$CI_PROVIDER.Dockerfile' "$ENGINE" || bad "engine does not select a shipped Dockerfile by provider"
-grep -qF 'Dockerfile' "$ENGINE" || bad "engine does not retain the legacy GitHub Dockerfile fallback"
+grep -qF '[ "$CI_PROVIDER" = github ] && [ ! -f "$df" ] && [ -f "$CFGDIR/Dockerfile" ] && df="$CFGDIR/Dockerfile"' "$ENGINE" \
+  || bad "engine does not retain the legacy unsuffixed GitHub Dockerfile fallback"
 grep -qF 'Dockerfile.$suffix' "$EXEC" || bad "endpoint does not select an editable Dockerfile by provider"
 grep -qF 'default.$suffix.Dockerfile' "$EXEC" || bad "endpoint does not select a shipped default by provider"
 grep -qF 'Dockerfile.$crf_provider' "$IMAGE_UI" || bad "image UI does not select the provider-specific editable Dockerfile"
