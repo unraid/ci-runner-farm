@@ -18,7 +18,7 @@ Tag="server"
   <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label">Runners up</span><span class="crf-stat-value" id="crf-s-up">&ndash;</span></div></uui-card-wrapper>
   <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label">Busy</span><span class="crf-stat-value crf-c-busy" id="crf-s-busy">&ndash;</span></div></uui-card-wrapper>
   <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label">Idle</span><span class="crf-stat-value crf-c-ok" id="crf-s-idle">&ndash;</span></div></uui-card-wrapper>
-  <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label">Queued</span><span class="crf-stat-value" id="crf-s-q">&ndash;</span></div></uui-card-wrapper>
+  <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label" id="crf-s-q-label">Queued</span><span class="crf-stat-value" id="crf-s-q">&ndash;</span></div></uui-card-wrapper>
   <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label">Autoscale</span><span class="crf-stat-small" id="crf-s-as">&ndash;</span></div></uui-card-wrapper>
   <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label">Image update</span><span class="crf-stat-small" id="crf-s-iu">&ndash;</span></div></uui-card-wrapper>
   <uui-card-wrapper class="crf-stat"><div class="crf-stat-inner"><span class="crf-stat-label">Cache</span><span class="crf-stat-value" id="crf-s-cache">&ndash;</span><a class="crf-cache-clear" id="crf-cache-clear" href="javascript:void(0)" role="button" onclick="crfCacheClear()">Clear caches</a></div></uui-card-wrapper>
@@ -46,7 +46,7 @@ Tag="server"
   <span class="crf-rs-seg"><b id="crf-rs-fail" style="color:var(--crf-err)">&ndash;</b> failed</span>
   <span class="crf-rs-seg"><b class="crf-muted" id="crf-rs-cancel">&ndash;</b> cancelled</span>
   <span class="crf-rs-seg"><b id="crf-rs-rate">&ndash;</b> pass rate</span>
-  <span class="crf-rs-seg crf-muted" id="crf-rs-total">&ndash; total across your repos</span>
+  <span class="crf-rs-seg crf-muted" id="crf-rs-total">&ndash; total across configured projects</span>
 </div>
 
 <div class="crf-console">
@@ -81,7 +81,7 @@ Tag="server"
   .crf-scale{margin-left:auto;display:flex;align-items:center;gap:6px;color:var(--alt-text-color);font-size:13px}
   .crf-scale input[type=number]{width:4em;height:26px;box-sizing:border-box;border-radius:6px;padding:0 8px;font-size:12px;margin:0}
   .crf-bays{border:1px solid var(--border-color);border-radius:6px;overflow:hidden;margin:0 0 8px}
-  .crf-bay{display:grid;grid-template-columns:22px minmax(110px,1fr) 88px minmax(120px,1.6fr) 120px 160px 26px;gap:8px;align-items:center;padding:4px 10px;border-top:1px solid var(--table-border-color,var(--border-color))}
+  .crf-bay{display:grid;grid-template-columns:22px minmax(110px,1fr) 88px minmax(120px,1.6fr) 120px 160px 48px;gap:8px;align-items:center;padding:4px 10px;border-top:1px solid var(--table-border-color,var(--border-color))}
   .crf-bay:first-child{border-top:none}
   .crf-bay-head{background:var(--table-header-background-color);font-size:11px;color:var(--alt-text-color);padding:5px 10px}
   #crf-bays-body .crf-bay:hover{background:var(--hover-table-row-background-color)}
@@ -104,7 +104,10 @@ Tag="server"
   #crf-bays-body .crf-bay{cursor:pointer}
   .crf-recycle{cursor:pointer;color:var(--alt-text-color);font-size:15px;line-height:1;text-align:center;border-radius:4px;padding:1px 2px}
   .crf-recycle:hover{color:var(--crf-busy)}
-  #crf-bays-body .crf-bay:focus-visible,.crf-recycle:focus-visible{outline:2px solid var(--link-text-color,#29b6f6);outline-offset:-2px;border-radius:4px}
+  .crf-row-actions{display:flex;align-items:center;justify-content:flex-end;gap:5px}
+  .crf-forget{cursor:pointer;color:var(--crf-err);font-size:13px;line-height:1;text-align:center;border-radius:4px;padding:1px 2px;opacity:.72}
+  .crf-forget:hover{opacity:1}
+  #crf-bays-body .crf-bay:focus-visible,.crf-recycle:focus-visible,.crf-forget:focus-visible{outline:2px solid var(--link-text-color,#29b6f6);outline-offset:-2px;border-radius:4px}
   @media (max-width:860px){
     .crf-bay{grid-template-columns:22px minmax(80px,1fr) 74px minmax(70px,1.3fr) 26px}
     .crf-bay > :nth-child(5),.crf-bay > :nth-child(6){display:none}
@@ -138,14 +141,21 @@ crfFarmLog(); setInterval(crfFarmLog,10000);
 const CRF_TOAST_MSG={start:'Fleet started',stop:'Fleet stopped',restart:'Fleet restarted',validate:'Validation finished'};
 function crfDoAction(a){ crfPost({action:a}).then(o=>{crfLog(o); crfRefresh(); if(o.ok!==false) crfToast(CRF_TOAST_MSG[a]||a); else crfToast((CRF_TOAST_MSG[a]||a)+' failed'+(o.error?': '+o.error:'')); }).catch(e=>{ crfToast((CRF_TOAST_MSG[a]||a)+' failed'); console.error('ci-runner-farm '+a+':',e); }); }
 function crfAction(a){
-  /* Stop/Restart kill whatever the runners are building — confirm with the
-     live impact when any runner is mid-job (sweetalert ships with the webgui). */
+  /* Confirm the live impact when any runner is mid-job. GitLab managers drain
+     gracefully with SIGQUIT; GitHub keeps its existing force-stop behavior. */
   if((a==='stop'||a==='restart')&&window.swal){
     const busy=((window.CRF_LAST||{}).runners||[]).filter(r=>r.state==='running'&&r.phase==='busy');
     if(busy.length){
       const lines=busy.map(r=>r.name+(r.job?' — '+r.job:'')).join('\n');
+      const farmProvider=(window.CRF_LAST||{}).provider||'github';
+      const gitlabBusy=busy.filter(r=>(r.provider||farmProvider)==='gitlab');
+      const githubBusy=busy.filter(r=>(r.provider||farmProvider)!=='gitlab');
+      const impact=[
+        gitlabBusy.length ? 'GitLab managers stop accepting work and wait for their '+gitlabBusy.length+' job'+(gitlabBusy.length>1?'s':'')+' to finish; the configured graceful-shutdown timeout is the force-stop limit.' : '',
+        githubBusy.length ? githubBusy.length+' GitHub job'+(githubBusy.length>1?'s will':' will')+' fail and re-queue.' : ''
+      ].filter(Boolean).join(' ');
       swal({title:(a==='stop'?'Stop':'Restart')+' the fleet?',
-        text:busy.length+' runner'+(busy.length>1?'s are':' is')+' mid-job:\n'+lines+'\n\nTheir jobs will fail and re-queue.',
+        text:busy.length+' runner'+(busy.length>1?'s are':' is')+' mid-job:\n'+lines+'\n\n'+impact,
         type:'warning',showCancelButton:true,confirmButtonText:a==='stop'?'Stop fleet':'Restart fleet',cancelButtonText:'Cancel'},
         ok=>{ if(ok) crfDoAction(a); });
       return;
@@ -164,6 +174,28 @@ function crfBar(pct){
   const p=Math.max(0,Math.min(100,Math.round(pct)));
   const cls=p>90?' crf-hot':p>60?' crf-mid':'';
   return '<span class="crf-ubar'+cls+'"><span style="width:'+p+'%"></span></span>';
+}
+function crfSafeUrl(value){
+  if(!value)return '';
+  const raw=String(value); if(!/^https?:\/\//i.test(raw))return '';
+  try{const u=new URL(raw);return (u.protocol==='https:'||u.protocol==='http:')?u.href:'';}catch(_){return '';}
+}
+/* Normalize the provider-neutral status contract while retaining support for
+   the original GitHub repo/run_id/pr/branch fields during rolling upgrades. */
+function crfJobMeta(r,provider){
+  const project=r.project||r.repo||'';
+  const jobId=String(r.job_id||r.run_id||'');
+  let jobUrl=crfSafeUrl(r.job_url||'');
+  let ref='',refUrl='';
+  if(!jobUrl&&provider==='github'&&project&&/^\d+$/.test(jobId))jobUrl=crfSafeUrl('https://github.com/'+project+'/actions/runs/'+jobId);
+  if(r.ref){
+    ref=r.ref; refUrl=crfSafeUrl(r.ref_url||'');
+  }else if(provider==='github'&&project&&/^\d+$/.test(String(r.pr||''))){
+    ref='#'+r.pr; refUrl=crfSafeUrl('https://github.com/'+project+'/pull/'+r.pr);
+  }else{
+    ref=r.branch||''; refUrl=crfSafeUrl(r.ref_url||'');
+  }
+  return {project,jobId,jobUrl,ref,refUrl};
 }
 /* The per-poll VOLATILE cells — the elapsed timer and the CPU/mem bars, which tick
    every 5s for a busy runner. Factored out so the full row builder and crfRefresh's
@@ -190,6 +222,7 @@ function crfRefresh(){
   window.__crfBusyStatus=true;
   crfPost({action:'status-json'}).then(d=>{
     window.CRF_LAST=d;
+    const provider=(d.provider==='gitlab'||d.provider==='github')?d.provider:((d.runners||[]).some(r=>r.provider==='gitlab')?'gitlab':'github');
     const warn=document.getElementById('crf-warn');
     if(warn){ if(d.warning){ warn.textContent='⚠ '+d.warning; warn.style.display='block'; } else { warn.textContent=''; warn.style.display='none'; } }
     const sec=document.getElementById('crf-sec');
@@ -212,7 +245,7 @@ function crfRefresh(){
     if(odr){ window.CRF_DRAWER_PINNED=crfDrawerPinned(odr); window.CRF_DRAWER_SCROLL=odr.scrollTop; }
     if(!rs.length){
       tb.innerHTML='<div class="crf-empty"><span class="crf-ball"></span>'+
-        '<div><strong>No managed runners</strong><div class="crf-muted">Configured for '+crfEsc(d.configured||0)+' — start the fleet to register them with GitHub.</div></div>'+
+        '<div><strong>No managed runners</strong><div class="crf-muted">Configured for '+crfEsc(d.configured||0)+' — start the '+(provider==='gitlab'?'GitLab':'GitHub')+' fleet.</div></div>'+
         '<uui-button size="sm"'+(crfDark()?' class="dark"':'')+' onclick="crfAction(\'start\')">Start the fleet</uui-button></div>';
       return;
     }
@@ -226,7 +259,7 @@ function crfRefresh(){
     // and falls through to the full rebuild below. busy-with-job_started is in the
     // signature so the .crf-elapsed span's presence always matches what the row was built
     // with — the in-place branch can then update it without ever needing to create it.
-    const sig=JSON.stringify([dark,window.CRF_DRAWER,rs.map(r=>[r.name,r.state,r.phase,r.job,r.repo,r.run_id,r.pr,r.branch,r.cpus,r.mem_gb,r.state==='running'&&r.phase==='busy'&&!!r.job_started])]);
+    const sig=JSON.stringify([dark,provider,window.CRF_DRAWER,rs.map(r=>[r.name,r.provider,r.state,r.phase,r.job,r.project,r.job_id,r.job_url,r.ref,r.ref_url,r.repo,r.run_id,r.pr,r.branch,r.cpus,r.mem_gb,r.state==='running'&&r.phase==='busy'&&!!r.job_started])]);
     if(tb.__crfSig===sig && tb.querySelector('.crf-bay[data-name]')){
       rs.forEach(r=>{
         const row=tb.querySelector('.crf-bay[data-name="'+(window.CSS&&CSS.escape?CSS.escape(r.name):r.name)+'"]'); if(!row) return;
@@ -242,6 +275,7 @@ function crfRefresh(){
     }
     tb.__crfSig=sig;
     tb.innerHTML=rs.map(r=>{
+      const rowProvider=(r.provider==='gitlab'||r.provider==='github')?r.provider:provider;
       const running=r.state==='running';
       const ph=running?r.phase:'exited';
       const ball=running?('crf-ball-'+r.phase):'crf-ball';
@@ -249,26 +283,27 @@ function crfRefresh(){
       let jobHtml;
       const v=crfVolatile(r);
       if(running&&r.phase==='busy'){
-        const repoShort=r.repo?crfEsc(String(r.repo).split('/').pop()):'';
-        const runOk=/^\d+$/.test(r.run_id||'');
-        const jobTxt=crfEsc(r.job||'\u2014');
-        const core=(repoShort?'<span class="crf-repo" title="'+crfEsc(r.repo)+'">'+repoShort+'</span> \u00b7 ':'')+jobTxt;
-        jobHtml=(runOk&&r.repo)?'<a href="https://github.com/'+crfEsc(r.repo)+'/actions/runs/'+r.run_id+'" target="_blank" rel="noopener" title="open run">'+core+'</a>':core;
-        if(/^\d+$/.test(r.pr||'')&&r.repo) jobHtml+='<a class="crf-ref" href="https://github.com/'+crfEsc(r.repo)+'/pull/'+r.pr+'" target="_blank" rel="noopener">#'+r.pr+'</a>';
-        else if(r.branch) jobHtml+='<span class="crf-ref">'+crfEsc(r.branch)+'</span>';
+        const meta=crfJobMeta(r,rowProvider);
+        const projectShort=meta.project?crfEsc(String(meta.project).split('/').pop()):'';
+        const jobTxt=crfEsc(r.job||(meta.jobId?'job #'+meta.jobId:'\u2014'));
+        const core=(projectShort?'<span class="crf-repo" title="'+crfEsc(meta.project)+'">'+projectShort+'</span> \u00b7 ':'')+jobTxt;
+        jobHtml=meta.jobUrl?'<a href="'+crfEsc(meta.jobUrl)+'" target="_blank" rel="noopener" title="open job">'+core+'</a>':core;
+        if(meta.refUrl&&meta.ref)jobHtml+='<a class="crf-ref" href="'+crfEsc(meta.refUrl)+'" target="_blank" rel="noopener">'+crfEsc(meta.ref)+'</a>';
+        else if(meta.ref)jobHtml+='<span class="crf-ref">'+crfEsc(meta.ref)+'</span>';
         jobHtml+=v.elapsedHtml;
       } else {
         jobHtml=crfEsc(running?'waiting for jobs':r.state);
       }
-      const jobCls=running&&r.phase==='busy'&&r.job?'crf-job':'crf-job crf-muted';
+      const jobCls=running&&r.phase==='busy'&&(r.job||r.job_id||r.run_id)?'crf-job':'crf-job crf-muted';
       return '<div class="crf-bay" data-name="'+crfEsc(r.name)+'" tabindex="0" role="button" aria-expanded="'+(window.CRF_DRAWER===r.name?'true':'false')+'" aria-label="Runner '+crfEsc(r.name)+', toggle log">'+
         '<span class="crf-ball '+ball+'"></span>'+
         '<span class="crf-name">'+crfEsc(r.name)+'</span>'+
         '<span class="crf-phase"><uui-badge variant="'+bvar+'" size="xs"'+dark+'>'+crfEsc(ph)+'</uui-badge></span>'+
-        '<span class="'+jobCls+'" title="'+crfEsc(r.job||'')+'">'+jobHtml+'</span>'+
+        '<span class="'+jobCls+'" title="'+crfEsc(r.job||(r.job_id?'job #'+r.job_id:''))+'">'+jobHtml+'</span>'+
         '<span class="crf-usage">'+crfBar(v.cpuPct)+'<span class="crf-uval">'+v.cpuTxt+'</span></span>'+
         '<span class="crf-usage">'+crfBar(v.memPct)+'<span class="crf-uval">'+v.memTxt+'</span></span>'+
-        '<span class="crf-recycle" tabindex="0" role="button" aria-label="Recycle '+crfEsc(r.name)+'" title="Recycle this runner">&#10227;</span>'+
+        '<span class="crf-row-actions"><span class="crf-recycle" tabindex="0" role="button" aria-label="Recycle '+crfEsc(r.name)+'" title="Recycle this runner">&#10227;</span>'+
+        (rowProvider==='gitlab'?'<span class="crf-forget" tabindex="0" role="button" aria-label="Force local forget '+crfEsc(r.name)+'" title="Emergency: forget this GitLab manager locally without unregistering">&#9888;</span>':'')+'</span>'+
       '</div>';
     }).join('');
     crfDrawerMount();
@@ -287,6 +322,8 @@ function crfQueued(){
   if(!crfFleetActive()) return;
   crfPost({action:'queued-json'}).then(d=>{
     const el=document.getElementById('crf-s-q'); if(!el) return;
+    const label=document.getElementById('crf-s-q-label');
+    if(label){const gl=d.provider==='gitlab'||((window.CRF_LAST||{}).provider==='gitlab');label.textContent=gl?'Queued*':'Queued';label.title=gl?'Advisory count across configured monitored projects only':'';}
     const q=(typeof d.queued==='number'&&d.queued>=0)?d.queued:null;
     el.textContent=q===null?'\u2013':q;
     el.classList.toggle('crf-c-busy',!!q);
@@ -310,12 +347,13 @@ function crfStats(){
     const dash='\u2013';
     if(!(typeof d.total==='number'&&d.total>=0)){  // no token / API down — signal, don't show a confident 0
       put('crf-rs-ok',dash); put('crf-rs-fail',dash); put('crf-rs-cancel',dash); put('crf-rs-rate',dash);
-      put('crf-rs-total',dash+' total across your repos'); return;
+      put('crf-rs-total',dash+' total across configured projects'); return;
     }
     const settled=(d.ok||0)+(d.fail||0)+(d.cancel||0);
     put('crf-rs-ok',d.ok??dash); put('crf-rs-fail',d.fail??dash); put('crf-rs-cancel',d.cancel??dash);
     put('crf-rs-rate', settled>0 ? Math.round(100*(d.ok||0)/settled)+'%' : dash);
-    put('crf-rs-total', d.total+' total across your repos');
+    const gl=d.provider==='gitlab'||((window.CRF_LAST||{}).provider==='gitlab');
+    put('crf-rs-total',d.total+' total across '+(gl?'monitored projects':'your repos'));
   }).catch(()=>{});
 }
 crfStats(); setInterval(crfStats,60000);
@@ -334,8 +372,20 @@ function crfRecycle(name){
     .then(o=>{ crfToast(o.ok?('Recycled '+name):('Recycle failed'+(o.error?': '+o.error:''))); crfRefresh(); })
     .catch(e=>{ crfToast('Recycle failed'); console.error('ci-runner-farm recycle:',e); });
   if(r.state==='running'&&r.phase==='busy'&&window.swal){
-    swal({title:'Recycle '+name+'?',text:'It is mid-job'+(r.job?': '+r.job:'')+'.\nThe job will fail and re-queue.',type:'warning',showCancelButton:true,confirmButtonText:'Recycle',cancelButtonText:'Cancel'},ok=>{ if(ok) go(); });
+    const impact=r.provider==='gitlab'
+      ? 'The manager stops accepting work and waits for this job to finish, up to the configured graceful-shutdown timeout.'
+      : 'The job will fail and re-queue.';
+    swal({title:'Recycle '+name+'?',text:'It is mid-job'+(r.job?': '+r.job:'')+'.\n'+impact,type:'warning',showCancelButton:true,confirmButtonText:'Recycle',cancelButtonText:'Cancel'},ok=>{ if(ok) go(); });
   } else go();
+}
+function crfForceForgetGitLab(name){
+  const warning='Emergency recovery only. This immediately interrupts the manager and every job/helper/service container in its slot, removes its privileged sidecar and local token-bearing config, and does NOT contact GitLab. An offline manager record may remain in GitLab and must be removed there manually.';
+  const go=()=>crfPost({action:'force-forget-gitlab',name,confirm:'FORGET_LOCAL_GITLAB_MANAGER'})
+    .then(o=>{crfLog(o);crfToast(o.ok?('Locally forgot '+name+'; check GitLab for an offline manager'):('Local forget failed'+(o.error?': '+o.error:'')));crfRefresh();})
+    .catch(e=>{crfToast('Local forget failed');console.error('ci-runner-farm force-forget:',e);});
+  if(window.swal){
+    swal({title:'Force local forget '+name+'?',text:warning,type:'warning',showCancelButton:true,confirmButtonText:'Interrupt and forget locally',cancelButtonText:'Cancel'},ok=>{if(ok)go();});
+  }else if(window.confirm(warning))go();
 }
 /* Click a bay to open a live log drawer for that runner. It persists across the
    5s re-render: crfRefresh rebuilds crf-bays-body's innerHTML (destroying this
@@ -384,6 +434,8 @@ function crfToggleDrawer(name){
   crfDrawerMount();
 }
 document.getElementById('crf-bays-body').addEventListener('click',e=>{
+  const fg=e.target.closest('.crf-forget');
+  if(fg){ const b=fg.closest('.crf-bay[data-name]'); if(b) crfForceForgetGitLab(b.dataset.name); return; }
   const rc=e.target.closest('.crf-recycle');
   if(rc){ const b=rc.closest('.crf-bay[data-name]'); if(b) crfRecycle(b.dataset.name); return; }
   if(e.target.closest('a,uui-button,.crf-bay-drawer')) return;
@@ -392,6 +444,8 @@ document.getElementById('crf-bays-body').addEventListener('click',e=>{
 });
 document.getElementById('crf-bays-body').addEventListener('keydown',e=>{
   if(e.key!=='Enter'&&e.key!==' ') return;
+  const fg=e.target.closest('.crf-forget');
+  if(fg){ e.preventDefault(); const b=fg.closest('.crf-bay[data-name]'); if(b) crfForceForgetGitLab(b.dataset.name); return; }
   const rc=e.target.closest('.crf-recycle');
   if(rc){ e.preventDefault(); const b=rc.closest('.crf-bay[data-name]'); if(b) crfRecycle(b.dataset.name); return; }
   const row=e.target.closest('.crf-bay[data-name]');

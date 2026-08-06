@@ -7,18 +7,18 @@
 <Category>Tools:System: Network:Management: Productivity:</Category>
 <Name>CI Runner Farm</Name>
 <Description>
-Turn your Unraid server into a fleet of GitHub Actions self-hosted BUILD runners — multiple concurrent, resource-capped runners running as Docker containers (no VM), with warm shared caches on a fast pool, queue-aware autoscaling, and Docker-in-Docker so jobs that use services: and docker build just work.
+Turn your Unraid server into a fleet of GitHub Actions or GitLab CI/CD self-hosted build runners — multiple concurrent, resource-capped runner slots as Docker containers (no VM), with warm shared caches on a fast pool, idle-buffer autoscaling, and Docker-in-Docker for services and image builds.
 [br][br]
-Point it at a repo or organization, paste a GitHub token, and your CI runs on your own hardware — as many jobs in parallel as your box can handle, with pnpm/npm/yarn/Playwright caches that stay hot between runs, at zero cost per minute. Everything is configured from a single webGUI page: store your token, Start/Stop/Restart/Scale, watch live status, and build your runner image.
+Select one active provider, save a GitHub PAT or modern GitLab glrt- runner token, and run CI on your own hardware. GitLab mode uses the official Runner manager and Docker executor; GitHub mode retains the existing runner-container workflow. Everything is configured from a single webGUI page.
 [br][br]
-[b]Security:[/b] self-hosted runners execute arbitrary workflow code on your hardware, and DinD runners run privileged. Use them only for trusted/private repositories — never let public/fork-PR code run on a privileged self-hosted runner. The plugin actively warns you when a privileged runner is pointed at a public repo. See the README for full guidance.
+[b]Security:[/b] self-hosted runners execute arbitrary pipeline code on your hardware, and DinD runners run privileged. Per-slot DinD avoids exposing Unraid's existing Docker socket but is not a host security boundary. Use runners only for trusted/private projects and repositories — never let public fork or merge-request code run on a privileged self-hosted runner. See the README for full guidance.
 </Description>
 <Requires>
 [b]&#9888; Security — this plugin runs arbitrary CI code as root on your server.[/b]
 [br][br]
-CI Runner Farm executes GitHub Actions jobs in [b]privileged Docker-in-Docker[/b] containers on this Unraid box. Any workflow scheduled onto the fleet — [b]including a pull request from a fork of a public repo[/b] — runs with root-equivalent access to the host Docker daemon and to any shares you expose to it.
+CI Runner Farm can execute GitHub Actions or GitLab CI/CD jobs with a [b]privileged Docker-in-Docker[/b] daemon on this Unraid box. Any pipeline scheduled onto the fleet — [b]including public fork or merge-request code if provider protections are misconfigured[/b] — can control its slot's job, helper, and service containers. Per-slot DinD reduces accidental cross-slot access but is not a host security boundary; host-socket mode directly grants root-equivalent access to Unraid's existing Docker daemon.
 [br][br]
-[b]Only run trusted workflows on trusted runners.[/b] Point the fleet at [b]private / trusted repositories only[/b]; never let public or fork-PR code run on a privileged self-hosted runner. At org scope, use a runner group restricted to your private repos. The plugin also warns you live in its settings page if it detects a public repo on a privileged fleet.
+[b]Only run trusted pipelines on trusted runners.[/b] Restrict the fleet to [b]private / trusted projects and repositories[/b]; use GitHub runner groups or GitLab protected runners, tags, and project/group scope. Never expose the Unraid Docker socket to untrusted code.
 [br][br]
 By installing you acknowledge these risks and accept responsibility for what runs on your fleet.
 </Requires>

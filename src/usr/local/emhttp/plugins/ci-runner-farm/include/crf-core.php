@@ -6,7 +6,9 @@
    relied on by document order (renaming crfPost or reordering the tab ordinals used
    to silently break the other tabs). Emitted once per document via include_once.
    Runs in the tab's scope, so $var (the CSRF token) is available. */
-$crf_csrf = $var['csrf_token'] ?? '';
+$crf_var = @parse_ini_file('/var/local/emhttp/var.ini');
+$crf_csrf = is_array($crf_var) && is_string($crf_var['csrf_token'] ?? null)
+  ? $crf_var['csrf_token'] : '';
 $crf_uui_base = '/plugins/dynamix.my.servers/unraid-components/uui/';
 $crf_util_css = '';
 foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/standalone/standalone-apps-*.css') ?: [] as $f) {
@@ -42,7 +44,7 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
   @media (prefers-reduced-motion:reduce){.crf-ball-busy,.crf-ball-starting{animation:none}}
 </style>
 <script>
-const CRF_CSRF = "<?=$crf_csrf?>";
+const CRF_CSRF_FALLBACK = <?=json_encode($crf_csrf, JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT)?>;
 const CRF_URL  = "/plugins/ci-runner-farm/include/exec.php";
 const CRF_UUI_BASE = "<?=$crf_uui_base?>";
 const CRF_UTIL_CSS = "<?=$crf_util_css?>";
@@ -85,7 +87,11 @@ window.CRF_UUI = (async () => {
   } catch (e) { console.warn('ci-runner-farm: @unraid/ui unavailable, using fallback styling', e); return false; }
 })();
 function crfPost(p){
-  p.csrf_token = CRF_CSRF;
+  // Unraid 7.3 publishes the request token from DefaultPageLayout as a global.
+  // Resolve it when the action runs; the PHP fallback covers older layouts and
+  // avoids depending on whichever include scope happened to render this tab.
+  const liveCsrf=(typeof globalThis.csrf_token==='string'&&globalThis.csrf_token)?globalThis.csrf_token:CRF_CSRF_FALLBACK;
+  p.csrf_token = liveCsrf;
   return fetch(CRF_URL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body:Object.entries(p).map(([k,v])=>encodeURIComponent(k)+'='+encodeURIComponent(v)).join('&')})
     .then(r=>r.text().then(t=>{

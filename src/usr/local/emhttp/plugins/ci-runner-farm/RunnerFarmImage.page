@@ -9,9 +9,18 @@ include_once '/usr/local/emhttp/plugins/ci-runner-farm/include/crf-core.php';
    The crf* JS core + .crf-* styles come from include/crf-core.php (above, shared
    by all tabs via include_once). */
 $crf_plugin = 'ci-runner-farm';
-$crf_df     = "/boot/config/plugins/$crf_plugin/Dockerfile";
+$crf_cfgdir = "/boot/config/plugins/$crf_plugin";
+$crf_cfg = @parse_ini_file("$crf_cfgdir/ci-runner-farm.cfg") ?: [];
+$crf_provider = (($crf_cfg['CI_PROVIDER'] ?? 'github') === 'gitlab') ? 'gitlab' : 'github';
+$crf_df = "$crf_cfgdir/Dockerfile.$crf_provider";
 $crf_df_saved = is_file($crf_df);
-if (!$crf_df_saved) $crf_df = "/usr/local/emhttp/plugins/$crf_plugin/default.Dockerfile";
+/* Compatibility: releases before provider support stored the GitHub editor in
+   an unsuffixed Dockerfile. Read it until the next Save migrates naturally. */
+if (!$crf_df_saved && $crf_provider === 'github' && is_file("$crf_cfgdir/Dockerfile")) {
+  $crf_df = "$crf_cfgdir/Dockerfile";
+  $crf_df_saved = true;
+}
+if (!$crf_df_saved) $crf_df = "/usr/local/emhttp/plugins/$crf_plugin/default.$crf_provider.Dockerfile";
 $crf_dockerfile = is_file($crf_df) ? file_get_contents($crf_df) : '';
 
 /* Toolchain install blocks the Runner image tab can splice into the Dockerfile.
@@ -65,8 +74,8 @@ DFBLOCK;
   <div class="crfs-tok-status">
     <span class="crf-ball" id="crfi-ball"></span>
     <span class="crfs-tok-text">
-      <strong id="crfi-title">Checking runner image...</strong>
-      <span class="crfs-tok-sub" id="crfi-sub">ci-runner-farm-runner:latest</span>
+      <strong id="crfi-title">Checking <?= $crf_provider === 'gitlab' ? 'GitLab default job' : 'GitHub runner' ?> image...</strong>
+      <span class="crfs-tok-sub" id="crfi-sub"><?= $crf_provider === 'gitlab' ? 'ci-runner-farm-gitlab-job:latest' : 'ci-runner-farm-runner:latest' ?></span>
     </span>
   </div>
   <div class="crfi-chips" id="crfi-chips"></div>
@@ -100,7 +109,7 @@ DFBLOCK;
     <span>Build log</span>
     <uui-button variant="outline" size="xs" onclick="crfCopyFrom('crf-build-log',this)">Copy</uui-button>
   </div>
-  <div id="crf-build-log" class="crf-console-body"><span class="crf-muted">Build output appears here. Set Image source to Built-in on the Settings tab and restart the fleet to use a new build.</span></div>
+  <div id="crf-build-log" class="crf-console-body"><span class="crf-muted">Build output appears here. Set Image source to Built-in on the Settings tab and restart the fleet to use the new <?= $crf_provider === 'gitlab' ? 'default job' : 'runner' ?> image.</span></div>
 </div>
 
 <style>
@@ -129,6 +138,7 @@ DFBLOCK;
 </style>
 
 <script>
+let CRFI_EDITOR_PROVIDER=<?=json_encode($crf_provider)?>;
 function crfiRelTime(iso){
   const t=Date.parse(iso); if(isNaN(t)) return '';
   const m=Math.round((Date.now()-t)/60000);
@@ -140,21 +150,30 @@ function crfiInfo(){
   crfPost({action:'image-info'}).then(d=>{
     const ball=document.getElementById('crfi-ball'), title=document.getElementById('crfi-title'),
           sub=document.getElementById('crfi-sub'), chips=document.getElementById('crfi-chips');
+    const provider=d.provider==='gitlab'?'gitlab':(d.provider==='github'?'github':CRFI_EDITOR_PROVIDER);
+    const role=provider==='gitlab'?'GitLab default job image':'GitHub runner image';
+    const fallbackTag=provider==='gitlab'?'ci-runner-farm-gitlab-job:latest':'ci-runner-farm-runner:latest';
     if(!d.exists){
-      ball.className='crf-ball crf-ball-error';
-      title.textContent='Runner image not built yet';
-      sub.textContent=(d.image||'ci-runner-farm-runner:latest')+' — save the Dockerfile and press Save + Build.';
+      if(d.source==='remote'){
+        ball.className='crf-ball crf-ball-idle';
+        title.textContent=role+' configured remotely';
+        sub.textContent=(d.image||fallbackTag)+' — pulled by the selected Docker endpoint when a slot starts.';
+      }else{
+        ball.className='crf-ball crf-ball-error';
+        title.textContent=role+' not built yet';
+        sub.textContent=(d.image||fallbackTag)+' — save the Dockerfile and press Save + Build.';
+      }
       chips.innerHTML='';
       return;
     }
     ball.className='crf-ball crf-ball-idle';
-    title.textContent='Runner image built '+crfiRelTime(d.created);
+    title.textContent=role+(d.source==='remote'?' cached ':' built ')+crfiRelTime(d.created);
     sub.textContent=d.image+' · '+d.id;
     const chip=(l,v)=>'<span class="crfi-chip">'+l+' <b>'+crfEsc(v)+'</b></span>';
     chips.innerHTML=
       chip('base',d.base||'?')+
       chip('size',(d.size_mb||0)+' MB')+
-      chip('runners on it',d.in_use+'')+
+      chip(provider==='gitlab'?'slots configured for it':'runners on it',d.in_use+'')+
       (d.source==='remote'?chip('image source','Remote — builds here are unused until Settings switches to Built-in'):'');
   }).catch(()=>{});
 }
@@ -183,11 +202,31 @@ let crfiAce=null, crfiSaved='';
    first click. Switching to a dynamix sub-tab doesn't fire visibilitychange, so
    re-measure when the Runner image sub-tab (tab2) is shown. */
 document.getElementById('tab2') && document.getElementById('tab2').addEventListener('click',()=>{ setTimeout(()=>{ if(crfiAce) crfiAce.resize(true); },60); });
+document.getElementById('tab2') && document.getElementById('tab2').addEventListener('click',crfiReloadForProvider);
 crfiSyncTC();
+function crfiReloadForProvider(){
+  crfPost({action:'get-dockerfile'}).then(d=>{
+    if(!d.ok||!d.provider||d.provider===CRFI_EDITOR_PROVIDER)return;
+    const load=()=>{
+      CRFI_EDITOR_PROVIDER=d.provider;
+      crfiSet(d.dockerfile||''); crfiSaved=d.dockerfile||'';
+      document.getElementById('crfi-dirty').classList.remove('on');
+      document.getElementById('crfi-df-path').textContent=d.path||'';
+      document.getElementById('crf-build-status').textContent=(d.provider==='gitlab'?'GitLab default job':'GitHub runner')+' Dockerfile loaded';
+      crfiSyncTC(); crfiInfo();
+    };
+    if(crfiGet()!==crfiSaved){
+      if(window.swal)swal({title:'The active provider changed',text:'Load the '+(d.provider==='gitlab'?'GitLab default job':'GitHub runner')+' Dockerfile? Unsaved edits for the previous provider will be discarded.',type:'warning',showCancelButton:true,confirmButtonText:'Load Dockerfile',cancelButtonText:'Keep editor'},ok=>{if(ok)load();});
+      else document.getElementById('crf-build-status').textContent='active provider changed — reload before saving';
+    } else load();
+  }).catch(e=>console.error('ci-runner-farm provider Dockerfile refresh:',e));
+}
 function crfiResetDf(){
   crfPost({action:'get-default-dockerfile'}).then(d=>{
     if(!d.dockerfile) return;
+    if(d.provider)CRFI_EDITOR_PROVIDER=d.provider;
     crfiSet(d.dockerfile);  // via crfiSet so the dirty marker updates in both the ACE and textarea-fallback paths
+    if(d.path)document.getElementById('crfi-df-path').textContent=d.path;
     document.getElementById('crf-build-status').textContent='shipped default loaded — not saved yet';
     crfiSyncTC();
   }).catch(e=>{ document.getElementById('crf-build-status').textContent='could not load default — see console'; console.error('ci-runner-farm reset:',e); });
@@ -195,7 +234,7 @@ function crfiResetDf(){
 // NOTE: the toolchain install blocks + their splice/idempotency logic are a
 // BROWSER-ONLY convenience of the image builder — there is no engine (runner-farm.sh
 // / CLI) equivalent, so they can't be composed headlessly, and the block library
-// must be kept in sync with default.Dockerfile by hand.
+// must be kept in sync with both shipped provider Dockerfiles by hand.
 const CRFI_TC = <?=json_encode($crfi_tc)?>;
 function crfiGet(){ return crfiAce ? crfiAce.getValue() : document.getElementById('crf-dockerfile').value; }
 function crfiSet(v){
@@ -233,9 +272,9 @@ function crfiBuildState(state,msg){
   b.className='crf-ball '+(state==='busy'?'crf-ball-busy':state==='ok'?'crf-ball-idle':state==='err'?'crf-ball-error':'');
   document.getElementById('crf-build-status').textContent=msg||'';
 }
-function crfSaveDf(cb){ crfPost({action:'save-dockerfile',dockerfile:document.getElementById('crf-dockerfile').value}).then(o=>{
+function crfSaveDf(cb){ crfPost({action:'save-dockerfile',provider:CRFI_EDITOR_PROVIDER,dockerfile:document.getElementById('crf-dockerfile').value}).then(o=>{
   if(o.ok){ crfiSaved=document.getElementById('crf-dockerfile').value; document.getElementById('crfi-dirty').classList.remove('on');
-    document.getElementById('crfi-df-path').textContent='/boot/config/plugins/ci-runner-farm/Dockerfile'; }
+    document.getElementById('crfi-df-path').textContent=o.path||('/boot/config/plugins/ci-runner-farm/Dockerfile.'+CRFI_EDITOR_PROVIDER); }
   crfiBuildState(o.ok?'ok':'err', o.ok?'saved':('error: '+(o.error||'')));
   if(typeof cb==='function') cb(!!o.ok); }).catch(e=>{ crfiBuildState('err','could not save Dockerfile — see console'); console.error('ci-runner-farm save-dockerfile:',e); if(typeof cb==='function') cb(false); }); }
 function crfBuild(){

@@ -17,6 +17,9 @@ concurrency:
 
 jobs:
   release-please:
+    # Forks keep this workflow for upstream parity, but must never create a
+    # release PR, tag, release, or asset from their own main branch.
+    if: ${{ github.repository == 'unraid/ci-runner-farm' }}
     runs-on: ubuntu-latest
     outputs:
       pr: ${{ steps.release.outputs.pr || '' }}
@@ -34,7 +37,7 @@ jobs:
   # then commit it back onto the PR branch.
   prepare-plugin-release-pr:
     needs: release-please
-    if: ${{ needs.release-please.outputs.pr != '' }}
+    if: ${{ github.repository == 'unraid/ci-runner-farm' && needs.release-please.outputs.pr != '' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout release PR
@@ -72,7 +75,7 @@ jobs:
 
   validate-plugin-release:
     needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    if: ${{ github.repository == 'unraid/ci-runner-farm' && needs.release-please.outputs.release_created == 'true' }}
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
@@ -83,7 +86,7 @@ jobs:
     needs:
       - release-please
       - validate-plugin-release
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    if: ${{ github.repository == 'unraid/ci-runner-farm' && needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout release tag
