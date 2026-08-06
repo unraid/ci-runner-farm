@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.0](https://github.com/unraid/ci-runner-farm/compare/v1.8.0...v1.9.0) (2026-08-06)
+
+
+### Features
+
+* add GitLab runner provider ([#44](https://github.com/unraid/ci-runner-farm/issues/44)) ([ae09e32](https://github.com/unraid/ci-runner-farm/commit/ae09e3256a5e5fc1c69ccb524c0bbdb5207a95da))
+
 ## [1.8.0](https://github.com/unraid/ci-runner-farm/compare/v1.7.0...v1.8.0) (2026-07-30)
 
 
