@@ -304,28 +304,38 @@ gitlab_api_token_ready() {
 
 # Deliberately no --location. curl strips only Authorization on a cross-host
 # redirect, so a followed 3xx would resend PRIVATE-TOKEN to whatever host the
-# instance names. These are plain /api/v4 GETs against the configured base URL
-# and have no legitimate reason to leave it.
-gitlab_api() {
-  local method="$1" path="$2" ca=()
+# instance names. These are plain /api/v4 requests against the configured base
+# URL and have no legitimate reason to leave it. `-q` must be curl's first
+# argument so an operator's ~/.curlrc cannot turn redirects back on.
+gitlab_api_request() {
+  local method="$1" path="$2" body="$3" headers="$4" status ca=()
   gitlab_validate_url >/dev/null 2>&1 || return 1
   gitlab_api_token_ready || return 1
   [ -f "$GITLAB_CA_FILE" ] && ca=( --cacert "$GITLAB_CA_FILE" )
-  printf 'header = "PRIVATE-TOKEN: %s"\n' "$GITLAB_API_TOKEN" \
-    | curl -fsS -g -m 12 -X "$method" --config - \
-      -H 'Accept: application/json' ${ca[@]+"${ca[@]}"} \
-      "$(gitlab_url)/api/v4${path}" 2>/dev/null
+  : > "$body" && : > "$headers" || return 1
+  status="$(
+    printf 'header = "PRIVATE-TOKEN: %s"\n' "$GITLAB_API_TOKEN" \
+      | curl -q -fsS -g -m 12 -X "$method" --config - \
+        -H 'Accept: application/json' ${ca[@]+"${ca[@]}"} \
+        -D "$headers" -o "$body" -w '%{http_code}' \
+        "$(gitlab_url)/api/v4${path}" 2>/dev/null
+  )" || return 1
+  case "$status" in 2[0-9][0-9]) return 0 ;; *) return 1 ;; esac
+}
+
+gitlab_api() {
+  local method="$1" path="$2" tmpdir body headers rc=1
+  tmpdir="$(mktemp -d "$RUNDIR/gitlab-api.XXXXXX" 2>/dev/null)" || return 1
+  body="$tmpdir/body"; headers="$tmpdir/headers"
+  if gitlab_api_request "$method" "$path" "$body" "$headers"; then
+    cat "$body"; rc=$?
+  fi
+  rm -rf -- "$tmpdir"
+  return "$rc"
 }
 
 gitlab_api_capture() {
-  local path="$1" body="$2" headers="$3" ca=()
-  gitlab_validate_url >/dev/null 2>&1 || return 1
-  gitlab_api_token_ready || return 1
-  [ -f "$GITLAB_CA_FILE" ] && ca=( --cacert "$GITLAB_CA_FILE" )
-  printf 'header = "PRIVATE-TOKEN: %s"\n' "$GITLAB_API_TOKEN" \
-    | curl -fsS -g -m 12 --config - -H 'Accept: application/json' \
-      ${ca[@]+"${ca[@]}"} -D "$headers" -o "$body" \
-      "$(gitlab_url)/api/v4${path}" 2>/dev/null
+  gitlab_api_request GET "$1" "$2" "$3"
 }
 
 # Split the operator-entered monitored-project list without pathname expansion:
@@ -334,14 +344,26 @@ gitlab_api_capture() {
 # well-formed namespace/project paths are emitted; anything else is advisory
 # input that cannot address a real project, so it is skipped rather than
 # blocking the fleet on a telemetry-only field.
+gitlab_project_path_valid() {
+  local path="$1" segment
+  local -a segments=()
+  case "$path" in ''|/*|*/|*'//'*) return 1 ;; esac
+  IFS='/' read -r -a segments <<< "$path"
+  [ "${#segments[@]}" -ge 2 ] || return 1
+  for segment in "${segments[@]}"; do
+    case "$segment" in ''|.|..|-*) return 1 ;; esac
+    printf '%s' "$segment" \
+      | grep -qE '^[A-Za-z0-9_.][A-Za-z0-9._-]*$' || return 1
+  done
+}
+
 gitlab_projects_list() {
   local -a items=()
   local item
   read -r -a items <<< "$GITLAB_PROJECTS"
   [ "${#items[@]}" -gt 0 ] || return 0
   for item in "${items[@]}"; do
-    printf '%s' "$item" \
-      | grep -qE '^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)+$' || continue
+    gitlab_project_path_valid "$item" || continue
     printf '%s\n' "$item"
   done
 }

@@ -155,14 +155,16 @@ done
 # directory names happened to match. Malformed entries cannot address a real
 # project, so they are dropped rather than blocking a fleet on telemetry input.
 projects_probe="$tmp/projects-probe"
-mkdir -p "$projects_probe/group" "$projects_probe/decoy-match"
-GITLAB_PROJECTS='group/proj group/* ../escape bare group/sub/proj'
+mkdir -p "$projects_probe/group/decoy-match"
+GITLAB_PROJECTS='group/proj group/* ../escape group/../escape bare /absolute group/trailing/ group//double -group/project group/-project group/sub/proj _group/_project .group/.project'
 ( cd "$projects_probe" && gitlab_projects_list ) > "$tmp/projects.out" \
   || fail "monitored-project list could not be enumerated"
 expected="group/proj
-group/sub/proj"
+group/sub/proj
+_group/_project
+.group/.project"
 [ "$(cat "$tmp/projects.out")" = "$expected" ] \
-  || fail "monitored-project list did not drop glob/relative/bare entries safely"
+  || fail "monitored-project list did not preserve valid paths and drop glob/relative/bare entries safely"
 GITLAB_PROJECTS=''
 [ -z "$(gitlab_projects_list)" ] || fail "an empty monitored-project list emitted entries"
 
