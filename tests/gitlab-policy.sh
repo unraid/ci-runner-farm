@@ -165,6 +165,12 @@ _group/_project
 .group/.project"
 [ "$(cat "$tmp/projects.out")" = "$expected" ] \
   || fail "monitored-project list did not preserve valid paths and drop glob/relative/bare entries safely"
+GITLAB_PROJECTS=$'group/one\ngroup/two\tgroup/three\n_group/.project'
+[ "$(gitlab_projects_list)" = "group/one
+group/two
+group/three
+_group/.project" ] \
+  || fail "newline/tab-delimited monitored projects were truncated or parsed incorrectly"
 GITLAB_PROJECTS=''
 [ -z "$(gitlab_projects_list)" ] || fail "an empty monitored-project list emitted entries"
 

@@ -359,8 +359,12 @@ gitlab_project_path_valid() {
 
 gitlab_projects_list() {
   local -a items=()
-  local item
-  read -r -a items <<< "$GITLAB_PROJECTS"
+  local item normalized
+  # `read -a` consumes only one physical line. Normalize newlines to another
+  # default-IFS character first so the complete setting retains the historical
+  # space/tab/newline word-list behavior without ever enabling pathname globbing.
+  normalized="${GITLAB_PROJECTS//$'\n'/ }"
+  read -r -a items <<< "$normalized"
   [ "${#items[@]}" -gt 0 ] || return 0
   for item in "${items[@]}"; do
     gitlab_project_path_valid "$item" || continue
