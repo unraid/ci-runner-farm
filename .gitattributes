@@ -1,0 +1,25 @@
+# Normalise all text to LF in the repository and in the working tree.
+* text=auto eol=lf
+
+# Shell and Unraid plugin sources — always LF; these are executed on Linux.
+*.sh            text eol=lf
+*.php           text eol=lf
+*.page          text eol=lf
+*.plg           text eol=lf
+*.cfg           text eol=lf
+*.Dockerfile    text eol=lf
+
+# Extensionless scripts shipped into the plugin tree.
+src/usr/local/emhttp/plugins/ci-runner-farm/event/*  text eol=lf
+src/usr/local/emhttp/plugins/ci-runner-farm/nchan/*  text eol=lf
+
+# Common text formats.
+*.md   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.xml  text eol=lf
+*.svg  text eol=lf
+
+# Binary — never diff or convert.
+*.png binary
