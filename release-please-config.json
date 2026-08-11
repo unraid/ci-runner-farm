@@ -6,7 +6,6 @@
     }
   },
   "include-component-in-tag": false,
-  "include-commit-authors": true,
   "changelog-path": "CHANGELOG.md",
   "draft": false
 }
