@@ -78,8 +78,41 @@ fail() { printf 'NUMERIC CONFIG FAIL: %s\n' "$*" >&2; exit 1; }
 ) || exit 1
 
 # The autoscale anti-flap counter is read back from a file into the same kind of
-# arithmetic context, so it carries the identical guard.
-grep -qF "case \"\$over\" in ''|*[!0-9]*|0[0-9]*) over=0 ;; esac" "$ENGINE" \
-  || fail "autoscale_tick no longer shape-checks the persisted 'over' counter"
+# arithmetic context, so it carries the identical guard — proven here by driving
+# autoscale_tick itself rather than grepping for the guard's source text.
+(
+  export CRF_SOURCE_ONLY=1 CRF_CFGDIR="$tmp/autoscale-cfg" CRF_RUNDIR="$tmp/autoscale-run"
+  mkdir -p "$CRF_CFGDIR" "$CRF_RUNDIR"
+  # shellcheck source=/dev/null
+  source "$ENGINE"
+
+  # Shape the fleet so the shrink branch runs every tick: idle comfortably above
+  # the min+step buffer, current above the floor. That's the only branch that
+  # reads the persisted counter into `over + 1` arithmetic.
+  AUTOSCALE=true AUTOSCALE_MIN=1 AUTOSCALE_MAX=10 AUTOSCALE_MIN_IDLE=1 \
+    AUTOSCALE_STEP=1 AUTOSCALE_IDLE_GRACE=5
+  reap_dead_runners() { return 0; }
+  provider_call() { cur=3; busy=0; idle=3; return 0; }
+  reconcile_stale_runners() { :; }
+
+  statef="$CRF_RUNDIR/autoscale.state"
+  canary="$tmp/autoscale-canary"
+
+  printf 'not-a-number\n' > "$statef"
+  autoscale_tick || fail "autoscale_tick rejected a malformed persisted counter"
+  [ "$(cat "$statef")" = 1 ] || fail "malformed 'over' counter did not restart at 0: '$(cat "$statef")'"
+
+  # Leading zeros are rejected the same as in load_cfg (bash treats them as octal).
+  printf '007\n' > "$statef"
+  autoscale_tick || fail "autoscale_tick rejected a leading-zero persisted counter"
+  [ "$(cat "$statef")" = 1 ] || fail "leading-zero 'over' counter did not restart at 0: '$(cat "$statef")'"
+
+  # An array-subscript shape is what turns 'over + 1' into code execution: bash
+  # runs a $(...) inside an array subscript even in an otherwise-arithmetic context.
+  printf 'a[$(touch %s)]\n' "$canary" > "$statef"
+  autoscale_tick || fail "autoscale_tick rejected a crafted persisted counter"
+  [ "$(cat "$statef")" = 1 ] || fail "crafted 'over' counter did not restart at 0: '$(cat "$statef")'"
+  if [ -e "$canary" ]; then fail "crafted 'over' counter reached an arithmetic context"; fi
+) || exit 1
 
 echo "numeric-config: OK — numeric cfg keys are shape-checked before assignment."
