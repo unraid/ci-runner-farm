@@ -10,6 +10,7 @@ ENGINE="src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-farm.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+# Print a labeled failure message to stderr and abort the test script.
 fail() { printf 'NUMERIC CONFIG FAIL: %s\n' "$*" >&2; exit 1; }
 
 (
@@ -18,7 +19,8 @@ fail() { printf 'NUMERIC CONFIG FAIL: %s\n' "$*" >&2; exit 1; }
   # shellcheck source=/dev/null
   source "$ENGINE"
 
-  # $CFG resolves under CRF_CFGDIR, so load_cfg can be driven directly.
+  # Write each argument as its own line to $CFG (resolved under CRF_CFGDIR), so
+  # load_cfg can be driven directly against a scratch cfg file.
   write_cfg() { printf '%s\n' "$@" > "$CFG"; }
 
   # A command substitution in an array-subscript shape is what makes this a code
@@ -91,8 +93,11 @@ fail() { printf 'NUMERIC CONFIG FAIL: %s\n' "$*" >&2; exit 1; }
   # reads the persisted counter into `over + 1` arithmetic.
   AUTOSCALE=true AUTOSCALE_MIN=1 AUTOSCALE_MAX=10 AUTOSCALE_MIN_IDLE=1 \
     AUTOSCALE_STEP=1 AUTOSCALE_IDLE_GRACE=5
+  # Stub out reaping so the tick can't be short-circuited by real container state.
   reap_dead_runners() { return 0; }
+  # Stub the provider query autoscale_tick reads fleet counts from: 3 running, all idle.
   provider_call() { cur=3; busy=0; idle=3; return 0; }
+  # Stub out stale-runner reconciliation; irrelevant to the counter guard under test.
   reconcile_stale_runners() { :; }
 
   statef="$CRF_RUNDIR/autoscale.state"
