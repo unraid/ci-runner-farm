@@ -90,6 +90,17 @@ grep -qF '\(glrt-[A-Za-z0-9_.-]*\)' "$GITLAB_ADAPTER" \
   || bad "GitLab saved-probe parser truncates routable runner tokens at the first dot"
 grep -qF 'glrt(r)?-[A-Za-z0-9_.-]{10,507}' "$ENGINE" \
   || bad "GitLab diagnostic redaction does not consume full routable runner tokens"
+grep -qF 'glrt(r)?-[A-Za-z0-9_.-]{10,507}' "$EXEC" \
+  || bad "endpoint redaction does not share the engine's routable runner-token shape"
+# The engine only filters its own log verbs. stderr is where an unanticipated
+# secret would surface, and run() merges stderr into the response body, so both
+# command wrappers must return through the redactor — that one choke point is
+# what stops a future action from reopening the gap. tests/log-redaction.sh pins
+# the endpoint and the engine to byte-identical output.
+grep -Eq '^function run\(\$cmd\) \{.*return \[crf_redact\(' "$EXEC" \
+  || bad "endpoint returns merged command output without log redaction"
+grep -Eq '^function run_json\(\$cmd\) \{.*return \[crf_redact\(' "$EXEC" \
+  || bad "endpoint returns command JSON output without log redaction"
 # Self-managed GitLab can customize its PAT prefix. The optional API token must
 # use a narrow token-safe alphabet, but `glpat-` is only the common default.
 grep -qF 'A-Za-z0-9_.@:+\/=~-' "$EXEC" || bad "API-token endpoint does not enforce a narrow token-safe alphabet"
