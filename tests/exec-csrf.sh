@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Exercise both CSRF paths in exec.php. Unraid 7.3 validates and consumes the
-# request token in auto_prepend_file before the endpoint runs; CLI/tests need the
-# endpoint's standalone fallback instead. Every action input below is invalid so
-# this test can never write the real /boot credential path.
+# Exercise every CSRF path in exec.php. Unraid validates and consumes the request
+# token in auto_prepend_file before the endpoint runs; releases through 7.2 do
+# not retain a local token variable, while 7.3 does. CLI/tests need the endpoint's
+# standalone fallback instead. Every action below is invalid, so this test can
+# never write the real /boot credential path.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -78,9 +79,17 @@ if ($csrfCase === 'platform') {
   $csrf_token = 'known-test-token';
   // This is the state Unraid 7.3 leaves after successful prevalidation.
   $_POST = ['action'=>'set-gitlab-runner-token', 'token'=>$token];
+} elseif ($csrfCase === 'platform-legacy') {
+  function csrf_terminate($reason) {}
+  // This is the state Unraid 6.12 through 7.2 leave after prevalidation.
+  $_POST = ['action'=>'set-gitlab-runner-token', 'token'=>$token];
 } elseif ($csrfCase === 'platform-spoof') {
   function csrf_terminate($reason) {}
   $csrf_token = 'wrong-test-token';
+  $_POST = ['action'=>'set-gitlab-runner-token', 'token'=>$token];
+} elseif ($csrfCase === 'platform-nonscalar') {
+  function csrf_terminate($reason) {}
+  $csrf_token = ['known-test-token'];
   $_POST = ['action'=>'set-gitlab-runner-token', 'token'=>$token];
 } elseif ($csrfCase === 'standalone') {
   $_POST = [
@@ -123,7 +132,7 @@ assert_action_error() {
 
 check_token_case() {
   local token_case="$1" expected_code="$2" expected_message="$3" csrf_case actual
-  for csrf_case in platform standalone; do
+  for csrf_case in platform platform-legacy standalone; do
     actual="$(run_case "$csrf_case" "$token_case")" \
       || fail "$csrf_case/$token_case endpoint invocation failed"
     assert_action_error "$csrf_case/$token_case" "$actual" "$expected_code" "$expected_message"
@@ -157,6 +166,8 @@ check_token_case non-scalar runner_token_prefix "$prefix_message"
 csrf_error='{"ok":false,"error":"csrf"}'
 [ "$(run_case platform-spoof prefix)" = "$csrf_error" ] \
   || fail "spoofed platform CSRF variable bypassed validation"
+[ "$(run_case platform-nonscalar prefix)" = "$csrf_error" ] \
+  || fail "non-scalar platform CSRF variable bypassed validation"
 [ "$(run_case standalone-bad prefix)" = "$csrf_error" ] \
   || fail "standalone invalid CSRF token bypassed validation"
 

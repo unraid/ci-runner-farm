@@ -19,15 +19,17 @@ $csrfState = isset($var) && is_array($var)
   ? $var : @parse_ini_file('/var/local/emhttp/var.ini');
 $csrf = is_array($csrfState) && is_string($csrfState['csrf_token'] ?? null)
   ? $csrfState['csrf_token'] : '';
+$platformCsrfTokenPresent = array_key_exists('csrf_token', get_defined_vars());
+$platformCsrfTokenMatches = !$platformCsrfTokenPresent
+  || (is_string($csrf_token) && hash_equals($csrf, $csrf_token));
 $platformCsrfValidated = function_exists('csrf_terminate')
-  && isset($csrf_token) && is_string($csrf_token)
   && $csrf !== ''
-  // Unraid 7.3's auto_prepend_file validates either transport, then unsets both
-  // before this endpoint runs. Requiring that consumed state prevents a stray
-  // same-named variable from bypassing the standalone fallback below.
+  // Unraid's auto_prepend_file validates either transport, then consumes both
+  // keys before this endpoint runs. Releases through 7.2 do not retain a local
+  // $csrf_token; 7.3 does. If the platform supplies one, it must still match.
   && !array_key_exists('csrf_token', $_POST)
   && !array_key_exists('HTTP_X_CSRF_TOKEN', $_SERVER)
-  && hash_equals($csrf, $csrf_token);
+  && $platformCsrfTokenMatches;
 if (!$platformCsrfValidated) {
   // Standalone/CLI fallback for tests and any host that does not use Unraid's
   // local_prepend.php. On Unraid, a missing or incorrect token has already been

@@ -724,7 +724,7 @@ REGISTRY_TOKEN=''
 export MOCK_CURL_ARGS="$tmp/curl.argv"
 : > "$MOCK_CURL_ARGS"
 curl() {
-  local headers='' output='' url='' arg input
+  local headers='' output='' url='' arg input code="${MOCK_CURL_STATUS:-200}"
   printf '%s\n' "$*" >> "$MOCK_CURL_ARGS"
   input="$(cat)"
   case "$input" in 'header = "PRIVATE-TOKEN: '*'"') ;; *) return 22 ;; esac
@@ -736,27 +736,77 @@ curl() {
       http*) url="$arg" ;;
     esac
   done
-  if [ -n "$headers" ]; then
-    printf 'HTTP/2 200\r\nx-total: 3\r\n\r\n' > "$headers"
-    printf '[{"id":101,"status":"pending","pipeline":{"id":9},"runner":{"id":4}}]' > "$output"
-  elif printf '%s' "$url" | grep -q '/jobs?per_page=50'; then
-    printf '%s' '[{"id":1,"status":"success","pipeline":{"id":2,"status":"failed"},"runner":{"id":3,"status":"online"}},{"id":4,"status":"failed","pipeline":{"id":5,"status":"success"},"runner":{"id":6,"status":"offline"}}]'
-  else
-    printf '%s' '{"visibility":"private"}'
+  [ -n "$headers" ] && printf 'HTTP/2 %s\r\n' "$code" > "$headers"
+  if [ "$code" != 200 ]; then
+    printf 'location: https://redirect.invalid/token-catcher\r\n\r\n' >> "$headers"
+    printf '%s' '{"visibility":"public","id":999,"status":"success"}' > "$output"
+    printf '%s' "$code"
+    return 0
   fi
+  if printf '%s' "$url" | grep -q 'scope%5B%5D=pending'; then
+    if printf '%s' "$url" | grep -q 'group%2Fsub%2Fproject'; then
+      printf 'x-total: 2\r\n\r\n' >> "$headers"
+    else
+      printf 'x-total: 3\r\n\r\n' >> "$headers"
+    fi
+    printf '%s' '[{"id":101,"status":"pending","pipeline":{"id":9},"runner":{"id":4}}]' > "$output"
+  elif printf '%s' "$url" | grep -q '/jobs?per_page=50'; then
+    if printf '%s' "$url" | grep -q 'group%2Fsub%2Fproject'; then
+      printf '%s' '[{"id":7,"status":"canceled","pipeline":{"id":8,"status":"success"},"runner":{"id":9,"status":"online"}},{"id":10,"status":"skipped","pipeline":{"id":11,"status":"failed"},"runner":{"id":12,"status":"offline"}}]' > "$output"
+    else
+      printf '%s' '[{"id":1,"status":"success","pipeline":{"id":2,"status":"failed"},"runner":{"id":3,"status":"online"}},{"id":4,"status":"failed","pipeline":{"id":5,"status":"success"},"runner":{"id":6,"status":"offline"}}]' > "$output"
+    fi
+  else
+    if printf '%s' "$url" | grep -q 'group%2Fsub%2Fproject'; then
+      printf '%s' '{"visibility":"public"}' > "$output"
+    else
+      printf '%s' '{"visibility":"private"}' > "$output"
+    fi
+  fi
+  printf '%s' "$code"
 }
 
 GITLAB_API_TOKEN='custom@prefix-token_1234567890'
-GITLAB_PROJECTS='group/project'
+GITLAB_PROJECTS='group/project group/sub/project'
 gitlab_queued_refresh
 read -r qprovider _ qcount < "$CRF_RUNDIR/queued.cache"
-[ "$qprovider" = gitlab ] && [ "$qcount" = 3 ] || fail "GitLab queue pagination mapping is wrong"
+[ "$qprovider" = gitlab ] && [ "$qcount" = 5 ] || fail "GitLab multi-project queue pagination mapping is wrong"
 gitlab_stats_refresh
 read -r sprovider _ sok sfail scancel sother stotal < "$CRF_RUNDIR/stats.cache"
 [ "$sprovider" = gitlab ] && [ "$sok" = 1 ] && [ "$sfail" = 1 ] \
-  && [ "$scancel" = 0 ] && [ "$sother" = 0 ] && [ "$stotal" = 2 ] \
-  || fail "GitLab stats counted nested status fields"
+  && [ "$scancel" = 1 ] && [ "$sother" = 1 ] && [ "$stotal" = 4 ] \
+  || fail "GitLab multi-project stats aggregation counted nested status fields"
+rm -f "$SECURITY_CACHE"
+public_warning="$(gitlab_public_repo_problem)"
+printf '%s' "$public_warning" | grep -qF 'group/sub/project' \
+  || fail "GitLab public-project warning did not inspect every monitored project"
 if grep -qF "$GITLAB_API_TOKEN" "$MOCK_CURL_ARGS"; then fail "API token leaked into curl argv"; fi
+while IFS= read -r curl_args; do
+  read -r -a curl_argv <<< "$curl_args"
+  [ "${curl_argv[0]:-}" = -q ] || fail "GitLab API curl did not disable curlrc first"
+  for curl_arg in "${curl_argv[@]}"; do
+    case "$curl_arg" in
+      --location|--location-trusted|--follow) fail "GitLab API curl can follow a redirect" ;;
+      --*) ;;
+      -*) case "${curl_arg#-}" in *L*) fail "GitLab API curl can follow a redirect" ;; esac ;;
+    esac
+  done
+done < "$MOCK_CURL_ARGS"
+
+# curl's fail mode treats 3xx as success. Every redirect status must therefore
+# be rejected explicitly so a redirect body cannot become dashboard data and
+# the custom PRIVATE-TOKEN can never reach its Location target.
+for redirect_code in 300 301 302 303 307 308 399; do
+  MOCK_CURL_STATUS="$redirect_code"
+  gitlab_queued_refresh
+  read -r _ _ qcount < "$CRF_RUNDIR/queued.cache"
+  [ "$qcount" = -1 ] || fail "GitLab $redirect_code queue redirect was treated as API data"
+  gitlab_stats_refresh
+  read -r _ _ _ _ _ _ stotal < "$CRF_RUNDIR/stats.cache"
+  [ "$stotal" = -1 ] || fail "GitLab $redirect_code stats redirect was treated as API data"
+done
+unset MOCK_CURL_STATUS
+
 GITLAB_API_TOKEN=''
 gitlab_queued_refresh
 read -r _ _ qcount < "$CRF_RUNDIR/queued.cache"

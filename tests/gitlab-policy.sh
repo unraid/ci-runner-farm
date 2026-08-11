@@ -149,4 +149,29 @@ do
   [ "$(crf_confgen)" != "$baseline" ] || fail "confgen ignores $key"
 done
 
-echo "gitlab-policy: OK — executor allowlists, pull policy, shm size, validation, and confgen are wired"
+# The monitored-project list is advisory operator text, not a shell word list.
+# An entry such as group/* must stay a literal telemetry path: iterating it
+# unquoted would expand it against the process CWD and silently query whatever
+# directory names happened to match. Malformed entries cannot address a real
+# project, so they are dropped rather than blocking a fleet on telemetry input.
+projects_probe="$tmp/projects-probe"
+mkdir -p "$projects_probe/group/decoy-match"
+GITLAB_PROJECTS='group/proj group/* ../escape group/../escape bare /absolute group/trailing/ group//double -group/project group/-project group/sub/proj _group/_project .group/.project'
+( cd "$projects_probe" && gitlab_projects_list ) > "$tmp/projects.out" \
+  || fail "monitored-project list could not be enumerated"
+expected="group/proj
+group/sub/proj
+_group/_project
+.group/.project"
+[ "$(cat "$tmp/projects.out")" = "$expected" ] \
+  || fail "monitored-project list did not preserve valid paths and drop glob/relative/bare entries safely"
+GITLAB_PROJECTS=$'group/one\ngroup/two\tgroup/three\n_group/.project'
+[ "$(gitlab_projects_list)" = "group/one
+group/two
+group/three
+_group/.project" ] \
+  || fail "newline/tab-delimited monitored projects were truncated or parsed incorrectly"
+GITLAB_PROJECTS=''
+[ -z "$(gitlab_projects_list)" ] || fail "an empty monitored-project list emitted entries"
+
+echo "gitlab-policy: OK — executor allowlists, pull policy, shm size, monitored projects, validation, and confgen are wired"
