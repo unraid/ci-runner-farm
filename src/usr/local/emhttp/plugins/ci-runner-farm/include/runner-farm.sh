@@ -1439,6 +1439,30 @@ recycle_image_preflight() {
 # Provider adapters own the complete docker argv contract.
 build_args() { provider_call build_args "$@"; }
 
+# An adapter may stage secret material for its argv (a mode-0600 --env-file, so a
+# credential never reaches /proc/<pid>/cmdline) and publish that directory as
+# ARGS_TMPDIR. ARGS outlives the adapter call and has more than one consumer, so
+# the engine retires the directory once the run it was built for is dispatched.
+# Like every other destructive path here the target is validated first: realpath -m
+# collapses ../ . and trailing slashes lexically so the guard checks the REAL
+# location, and only a path strictly under RUNDIR — never an empty value — may be
+# removed, so a stale or misdirected ARGS_TMPDIR cannot delete anything else.
+clear_args_tmpdir() {
+  local dir="${ARGS_TMPDIR:-}" resolved root
+  ARGS_TMPDIR=""
+  [ -n "$dir" ] || return 0
+  resolved="$(realpath -m -- "$dir" 2>/dev/null)"
+  root="$(realpath -m -- "$RUNDIR" 2>/dev/null)"
+  [ -n "$resolved" ] && [ -n "$root" ] \
+    || { err "refusing to remove unresolvable temporary argv dir '$dir'"; return 1; }
+  case "$resolved" in
+    "$root"/?*) ;;
+    *) err "refusing to remove temporary argv dir '$dir' outside $RUNDIR"; return 1 ;;
+  esac
+  rm -rf "${resolved:?}" 2>/dev/null \
+    || { err "could not remove temporary argv dir '$dir'"; return 1; }
+}
+
 start_one() {
   local idx="$1" name="${NAME_PREFIX}-$1" snapshot
   if docker inspect "$name" >/dev/null 2>&1; then
@@ -2676,8 +2700,10 @@ cmd_recycle() {
       echo '{"ok":false,"error":"removed but a fresh GitHub registration token could not be minted"}'; return 1
     fi
     if ! docker run "${ARGS[@]}" >/dev/null 2>&1; then
+      clear_args_tmpdir
       echo '{"ok":false,"error":"removed but not recreated"}'; return 1
     fi
+    clear_args_tmpdir
   fi
 
   # Verify final state without converting a failed Docker inspect into zero.
