@@ -126,6 +126,16 @@ AUTOSCALE_MAX AUTOSCALE_MIN_IDLE AUTOSCALE_STEP AUTOSCALE_INTERVAL \
 AUTOSCALE_IDLE_GRACE IMAGE_AUTOUPDATE IMAGE_AUTOUPDATE_INTERVAL IMAGE_DRAIN_TIMEOUT \
 DASHBOARD_WIDGET_ENABLE"
 
+# The subset of the allowlist whose values reach arithmetic contexts ($(( )), seq,
+# sleep, integer tests). Bash EVALUATES the contents of a variable used inside
+# $(( )), so a cfg value like 'a[$(cmd)]' would not merely be wrong there — it
+# would run. Shape-check these at parse time so nothing else has to. Keys whose
+# values are legitimately non-integer stay off this list: RUNNER_CPUS (decimal),
+# RUNNER_MEMORY and WORK_TMPFS_SIZE (unit-suffixed).
+CFG_NUMERIC_KEYS="RUNNER_COUNT MIRROR_PORT AUTOSCALE_MIN AUTOSCALE_MAX AUTOSCALE_MIN_IDLE \
+AUTOSCALE_STEP AUTOSCALE_INTERVAL AUTOSCALE_IDLE_GRACE IMAGE_AUTOUPDATE_INTERVAL \
+IMAGE_DRAIN_TIMEOUT GITLAB_SHUTDOWN_TIMEOUT GITLAB_SHM_SIZE"
+
 # Read ci-runner-farm.cfg WITHOUT sourcing it (the file is written by the web form, so
 # sourcing would execute anything a crafted value smuggled in). Parse KEY="value"
 # lines ourselves and assign via printf -v — a literal string set, never eval'd —
@@ -141,6 +151,14 @@ load_cfg() {
     case "$key" in *[!A-Za-z0-9_]*|'') continue;; esac
     case " $CFG_KEYS " in *" $key "*) ;; *) continue;; esac
     val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
+    case " $CFG_NUMERIC_KEYS " in *" $key "*)
+      case "$val" in
+        # A rejected key keeps its built-in default. log() is defined below and
+        # load_cfg already runs at source time, so it is not callable here; the
+        # key is named but the value is never echoed back.
+        ''|*[!0-9]*|0[0-9]*) printf '%s\n' "load_cfg: ignoring non-numeric $key" >&2; continue ;;
+      esac ;;
+    esac
     printf -v "$key" '%s' "$val"
   done < "$CFG"
 }
@@ -501,6 +519,9 @@ autoscale_tick() {
   esac
   statef="${RUNDIR}/autoscale.state"; over=0
   [ -f "$statef" ] && over=$(cat "$statef" 2>/dev/null || echo 0)
+  # over feeds $(( over + 1 )) below, which evaluates whatever the file held; a
+  # truncated or tampered state file restarts the anti-flap counter instead.
+  case "$over" in ''|*[!0-9]*|0[0-9]*) over=0 ;; esac
 
   # runner churn (crash, reap, or ephemeral exit) can drop the fleet below the
   # floor between ticks; the grow branch below only ever adds STEP to the
