@@ -51,12 +51,55 @@ $rawAction = $_POST['action'] ?? 'status-json';
 // trigger PHP type juggling/warnings in switch. Bound the dispatch string too.
 $action = is_string($rawAction) && strlen($rawAction) <= 64 ? $rawAction : '';
 
-function run($cmd) { exec($cmd . ' 2>&1', $out, $rc); return [implode("\n", $out), $rc]; }
+// The currently stored credential snapshot, for the literal pass of crf_redact.
+// These are the same four files the engine loads into its redaction set; a value
+// under 4 bytes is too short to substitute without mangling ordinary log text.
+function crf_secret_values($cfgdir) {
+  $secrets = [];
+  foreach (['token', 'gitlab-runner-token', 'gitlab-api-token', 'registry-token'] as $name) {
+    $value = @file_get_contents("$cfgdir/$name");
+    // The engine reads these through command substitution, which drops trailing
+    // newlines; an opaque registry password's edge spaces are still significant.
+    if (is_string($value)) $value = rtrim($value, "\n");
+    if (is_string($value) && strlen($value) >= 4) $secrets[] = $value;
+  }
+  return $secrets;
+}
+
+// Command output is not a trusted redaction boundary: stderr in particular is
+// unanticipated text from docker and the engine's dependencies. Every response
+// body leaves through run()/run_json(), so filter here, with the same locked-
+// credential-then-token-shape order and the same markers as redact_log_stream
+// in runner-farm.sh. The $secrets injection point keeps this testable without
+// giving a root endpoint an environment override for $CFGDIR.
+function crf_redact($s, $secrets = null) {
+  if (!is_string($s) || $s === '') return $s;
+  if ($secrets === null) $secrets = crf_secret_values($GLOBALS['CFGDIR'] ?? '');
+  foreach ($secrets as $secret) {
+    if (is_string($secret) && strlen($secret) >= 4) $s = str_replace($secret, '[REDACTED]', $s);
+  }
+  $out = preg_replace([
+    '/([A-Za-z0-9_.@-]{1,64}-)?glrt(r)?-[A-Za-z0-9_.-]{10,507}/',
+    '/github_pat_[A-Za-z0-9_]{10,}/',
+    '/gh[pousr]_[A-Za-z0-9_]{10,}/',
+    '/glpat-[A-Za-z0-9_-]{8,}/',
+  ], [
+    '[REDACTED_GITLAB_TOKEN]',
+    '[REDACTED_GITHUB_TOKEN]',
+    '[REDACTED_GITHUB_TOKEN]',
+    '[REDACTED_GITLAB_TOKEN]',
+  ], $s);
+  // preg_replace returns null only when PCRE itself fails. Fall back to the
+  // empty body every caller already handles, never to the unfiltered input.
+  return is_string($out) ? $out : '';
+}
+
+function run($cmd) { exec($cmd . ' 2>&1', $out, $rc); return [crf_redact(implode("\n", $out)), $rc]; }
 // For actions whose stdout is a JSON body the frontend parses: keep stderr OUT of
 // it, so a stray docker/system warning can't corrupt the JSON (JSON.parse would
 // throw and the consumer's .catch would silently freeze the panel). run() keeps
 // 2>&1 for the action responses where the merged log IS the payload.
-function run_json($cmd) { exec($cmd . ' 2>/dev/null', $out, $rc); return [implode("\n", $out), $rc]; }
+function run_json($cmd) { exec($cmd . ' 2>/dev/null', $out, $rc); return [crf_redact(implode("\n", $out)), $rc]; }
 // The last non-empty stdout line, if it is a JSON object — lets an emitter print
 // progress logs then its {ok,error?} verdict as the final line and have us pass
 // that verdict through with its specific reason intact.

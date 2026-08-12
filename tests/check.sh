@@ -33,6 +33,7 @@ bash tests/numeric-config.sh
 bash tests/safe-paths.sh
 bash tests/provider-contract.sh
 bash tests/exec-csrf.sh
+bash tests/log-redaction.sh
 bash tests/provider-mocks.sh
 bash tests/ownership-safety.sh
 bash tests/resource-ownership.sh
