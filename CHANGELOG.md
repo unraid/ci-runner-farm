@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.9.1](https://github.com/unraid/ci-runner-farm/compare/v1.9.0...v1.9.1) (2026-08-12)
+
+
+### Bug Fixes
+
+* add .gitattributes to pin line endings to LF ([#52](https://github.com/unraid/ci-runner-farm/issues/52)) ([4c70b12](https://github.com/unraid/ci-runner-farm/commit/4c70b12fcb2e15da92ae9a72a8422cc66b0638c6)), closes [#50](https://github.com/unraid/ci-runner-farm/issues/50)
+* **config:** validate numeric config values at parse time ([#57](https://github.com/unraid/ci-runner-farm/issues/57)) ([d24af37](https://github.com/unraid/ci-runner-farm/commit/d24af379c0a80a51992ac90c77f1a39ba0feeca8))
+* **github:** keep the runner registration token out of docker argv ([#58](https://github.com/unraid/ci-runner-farm/issues/58)) ([81b7b2d](https://github.com/unraid/ci-runner-farm/commit/81b7b2d84bf892aa2444dae7905ae62e83933913))
+* **gitlab:** harden API redirects and CSRF compatibility ([#46](https://github.com/unraid/ci-runner-farm/issues/46)) ([ad1e5fa](https://github.com/unraid/ci-runner-farm/commit/ad1e5faf4e8cdc851eb7f53504fd1583859b6c66))
+* pin release-please-action to a commit, bump actions/checkout, annotate all pins ([#53](https://github.com/unraid/ci-runner-farm/issues/53)) ([703459a](https://github.com/unraid/ci-runner-farm/commit/703459a1e5d67b0aed51a3c12cb36b46cde257f8))
+* **web:** redact secrets on every path that reaches the browser ([#59](https://github.com/unraid/ci-runner-farm/issues/59)) ([19f4796](https://github.com/unraid/ci-runner-farm/commit/19f47960d785d220f98313167b24d9d7294103ce))
+
 ## [1.9.0](https://github.com/unraid/ci-runner-farm/compare/v1.8.0...v1.9.0) (2026-08-06)
 
 
