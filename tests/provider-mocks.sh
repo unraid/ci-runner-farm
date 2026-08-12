@@ -76,12 +76,32 @@ printf '%s\n' "$github_args" | grep -qx 'ci-runner-2' \
   || fail "GitHub default runner name did not use its function argument"
 printf '%s\n' "$github_args" | grep -qx 'REPO_URL=https://github.com/example/two' \
   || fail "GitHub repo round-robin assignment changed"
-printf '%s\n' "$github_args" | grep -qx 'RUNNER_TOKEN=short-registration-token' \
-  || fail "short-lived GitHub registration token missing from runner argv"
+if printf '%s\n' "$github_args" | grep -qF short-registration-token; then
+  fail "short-lived GitHub registration token leaked into Docker argv"
+fi
+gh_envfile="$(printf '%s\n' "$github_args" | grep -A1 -Fx -- '--env-file' | tail -1)"
+[ -n "$gh_envfile" ] || fail "GitHub registration token is not passed through an env file"
+grep -qx 'RUNNER_TOKEN=short-registration-token' "$gh_envfile" \
+  || fail "short-lived GitHub registration token missing from its protected env file"
+[ "$(mode_of "$gh_envfile")" = 600 ] || fail "GitHub registration-token env file is not mode 0600"
+[ "$ARGS_TMPDIR" = "${gh_envfile%/*}" ] || fail "GitHub adapter did not publish its token dir for engine cleanup"
 if printf '%s\n' "$github_args" | grep -qF "$ACCESS_TOKEN"; then fail "GitHub PAT leaked into runner argv"; fi
 printf '%s\n' "$github_args" | grep -qx -- '--privileged' || fail "GitHub DinD privilege flag missing"
 printf '%s\n' "$github_args" | grep -qx 'START_DOCKER_SERVICE=true' || fail "GitHub DinD environment missing"
 printf '%s\n' "$github_args" | grep -qx '/_work:rw,exec,size=2g' || fail "GitHub workspace tmpfs changed"
+
+# The engine owns that staged directory's lifetime, and its removal must refuse
+# any target that is empty or resolves outside RUNDIR.
+clear_args_tmpdir || fail "engine could not retire the GitHub registration-token dir"
+[ ! -e "$gh_envfile" ] || fail "engine left the GitHub registration-token file on disk"
+[ -z "$ARGS_TMPDIR" ] || fail "engine kept a stale ARGS_TMPDIR after cleanup"
+outside_rundir="$tmp/outside-rundir"; mkdir -p "$outside_rundir"
+ARGS_TMPDIR="$outside_rundir"
+if clear_args_tmpdir 2>/dev/null; then fail "engine removed a temporary argv dir outside RUNDIR"; fi
+[ -d "$outside_rundir" ] || fail "engine deleted a temporary argv dir outside RUNDIR"
+ARGS_TMPDIR="$CRF_RUNDIR/../outside-rundir"
+if clear_args_tmpdir 2>/dev/null; then fail "engine accepted a traversal out of RUNDIR"; fi
+[ -d "$outside_rundir" ] || fail "engine deleted a traversal target outside RUNDIR"
 
 GH_SCOPE=org
 github_build_args 1 ci-runner-1 || fail "GitHub org argv generation failed"

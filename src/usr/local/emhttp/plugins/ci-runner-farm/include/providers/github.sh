@@ -165,6 +165,7 @@ github_registry_credentials() {
 github_build_args() {
   local idx="$1"
   local name="${2:-${NAME_PREFIX}-${idx}}" role="${CRF_CONTAINER_ROLE:-runner}"
+  ARGS_TMPDIR=""
   ARGS=(
     -d --restart=no
     --name "$name" --hostname "$name"
@@ -209,7 +210,7 @@ github_build_args() {
     mkdir -p "$CACHE_ROOT/work/$name"
     ARGS+=( -v "$CACHE_ROOT/work/$name:/_work" )
   fi
-  local scope_target="" repo reg
+  local scope_target="" repo reg envdir envf
   if [ "$GH_SCOPE" = "org" ]; then
     ARGS+=( -e RUNNER_SCOPE="org" -e ORG_NAME="$GH_OWNER" )
     [ -n "$RUNNER_GROUP" ] && ARGS+=( -e RUNNER_GROUP="$RUNNER_GROUP" )
@@ -222,16 +223,34 @@ github_build_args() {
   if [ -n "$ACCESS_TOKEN" ] && [ "${NO_REGISTER:-0}" != "1" ]; then
     reg="$(github_registration_token "$scope_target")"
     [ -z "$reg" ] && { err "could not mint a runner registration token for ${scope_target#*:} (check the PAT's scope/permissions)"; return 1; }
-    ARGS+=( -e RUNNER_TOKEN="$reg" )
+    # The image only accepts this token as RUNNER_TOKEN in its environment, so it
+    # still lands in Config.Env — but a restricted --env-file keeps it out of
+    # docker's argv, where /proc/<pid>/cmdline exposes it to every local user for
+    # the lifetime of the run. The engine retires ARGS_TMPDIR once the run this
+    # argv was built for has been dispatched.
+    envdir="$(mktemp -d "$RUNDIR/github-runner-token.XXXXXX" 2>/dev/null)" \
+      || { err "could not create a protected registration-token file for $name"; return 1; }
+    envf="$envdir/runner.env"
+    chmod 700 "$envdir" 2>/dev/null \
+      || { rm -rf "$envdir"; err "could not protect the registration-token directory for $name"; return 1; }
+    ( umask 077; printf 'RUNNER_TOKEN=%s\n' "$reg" > "$envf" ) \
+      || { rm -rf "$envdir"; err "could not write the registration-token file for $name"; return 1; }
+    chmod 600 "$envf" 2>/dev/null \
+      || { rm -rf "$envdir"; err "could not protect the registration-token file for $name"; return 1; }
+    ARGS+=( --env-file "$envf" )
+    ARGS_TMPDIR="$envdir"
   fi
   ARGS+=( "$(effective_image)" )
 }
 
 github_start_one() {
-  local idx="$1" name="$2"
+  local idx="$1" name="$2" rc
   github_build_args "$idx" "$name" || { err "runner $name not started (registration-token error)"; return 1; }
   log "starting $name (cpus=$RUNNER_CPUS mem=$RUNNER_MEMORY scope=$GH_SCOPE)"
   docker run "${ARGS[@]}" >/dev/null
+  rc=$?
+  clear_args_tmpdir
+  return "$rc"
 }
 
 github_remove_runner() {
