@@ -29,6 +29,7 @@ done < <(find "$RUNTIME" -type f \( -name '*.php' -o -name '*.page' \) -print | 
 
 echo "== Contracts and package =="
 bash tests/config-parity.sh
+bash tests/numeric-config.sh
 bash tests/safe-paths.sh
 bash tests/provider-contract.sh
 bash tests/exec-csrf.sh
