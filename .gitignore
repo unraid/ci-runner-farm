@@ -6,3 +6,10 @@
 
 # Local session logs (save-to-md / quick-push notes) — dev artifacts, never committed.
 docs/sessions/
+
+# Linter reports and caches (MegaLinter and the tools it wraps).
+/megalinter-reports/
+/mega-linter.log
+/.php-cs-fixer.cache
+/.phplint.cache/
+/*-megalinter_file_names_cspell.txt

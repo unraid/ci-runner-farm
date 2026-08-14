@@ -3,3 +3,9 @@
 ci-runner-farm.tgz
 docs/sessions
 *.err
+
+megalinter-reports
+mega-linter.log
+.php-cs-fixer.cache
+.phplint.cache
+*-megalinter_file_names_cspell.txt
