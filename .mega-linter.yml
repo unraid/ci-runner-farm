@@ -1,21 +1,23 @@
 ---
 # MegaLinter — https://megalinter.io/
-# PHP flavor (github.com/oxsecurity/megalinter/tree/main/flavors/php): this
-# repo has no JS/TS, Go, Python, Rust, etc., so the full flavor's image would
-# only add unused linters and pull time.
+# Full image, not a language flavor: flavors trim their linter set to match a
+# detected language, and that also drops general-purpose scanners (DevSkim,
+# Dustilock, Kingfisher, ...) that aren't language-specific. This repo is
+# small enough that the full image's extra pull time isn't worth trading
+# those away.
 #
-# Everything the PHP flavor runs is enabled except what's explicitly disabled
-# below. Each entry is removed by the tracking issue that enables and fixes
-# that linter — see DISABLE_LINTERS for the current baseline and why it's
-# structured this way rather than as an ENABLE_LINTERS allowlist.
+# Everything is enabled except what's explicitly disabled below. Each entry
+# is removed by the tracking issue that enables and fixes that linter — see
+# DISABLE_LINTERS for the current baseline and why it's structured this way
+# rather than as an ENABLE_LINTERS allowlist.
 APPLY_FIXES: none
 SHOW_ELAPSED_TIME: true
 PARALLEL: true
 FILEIO_REPORTER: false
 
 # All linters run except this list. Baseline measured 2026-08-15 against
-# oxsecurity/megalinter-php:v10.0.0, VALIDATE_ALL_CODEBASE=true, on a clean
-# LF checkout (see docs/sessions/upstream-issues/00-megalinter-baseline-report.md
+# oxsecurity/megalinter:v10.0.0 (full image), VALIDATE_ALL_CODEBASE=true, on a
+# clean LF checkout (see docs/sessions/upstream-issues/00-megalinter-baseline-report.md
 # for the CRLF pitfall this avoids). Each follow-up issue opens by removing its
 # linter from this list, then fixing whatever it flags — smaller diffs than
 # growing an allowlist, and any linter MegaLinter adds later is on by default.
@@ -33,6 +35,7 @@ DISABLE_LINTERS:
   - PHP_PSALM
   - REPOSITORY_BETTERLEAKS
   - REPOSITORY_CHECKOV
+  - REPOSITORY_DEVSKIM
   - REPOSITORY_TRIVY
   - SPELL_CSPELL
   - YAML_PRETTIER
