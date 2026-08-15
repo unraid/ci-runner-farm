@@ -1,5 +1,17 @@
 .git
+
+### Build ###
 /tmp/
 ci-runner-farm.tgz
-docs/sessions
 *.err
+
+### Session Logs ###
+docs/sessions
+
+### Linters ###
+.megalinter_github_conf
+megalinter-reports
+mega-linter.log
+.php-cs-fixer.cache
+.phplint.cache
+*-megalinter_file_names_cspell.txt
