@@ -14,6 +14,13 @@ APPLY_FIXES: none
 SHOW_ELAPSED_TIME: true
 PARALLEL: true
 FILEIO_REPORTER: false
+# Most PRs here come from contributor forks, where GitHub always forces a
+# read-only GITHUB_TOKEN on pull_request-triggered workflows no matter what
+# the workflow's permissions block grants. This reporter would only ever
+# succeed on same-repo branches (e.g. release-please's), so it's off rather
+# than 403-ing on every contributor PR; the job summary and uploaded report
+# artifact already cover every PR type without needing write permissions.
+GITHUB_COMMENT_REPORTER: false
 
 # All linters run except this list. Baseline measured 2026-08-15 against
 # oxsecurity/megalinter:v10.0.0 (full image), VALIDATE_ALL_CODEBASE=true, on a
