@@ -154,6 +154,107 @@ github_public_repo_problem() {
   printf '%s' "$msg"
 }
 
+# ── Build-poison detection ───────────────────────────────────────────────────
+# A crashed nested dockerd can leave a slot's persistent buildkit store with
+# dangling lease references; every later build on that slot then fails with
+#   ERROR: failed to solve: lease "...": not found
+# while the runner stays healthy and keeps accepting jobs. Nothing host-side
+# ever sees that error: the nested daemon does not log solve failures and job
+# step output exists only in the uploaded GitHub job log. So detection reads
+# what the jobs themselves saw — recent failed workflow runs, their jobs that
+# ran on THIS host's slots, and each such job's log — looking for the lease
+# signature. Rate-bounded and cached so an idle fleet costs one runs listing
+# per repo per POISON_SCAN_INTERVAL, and log downloads happen at most once per
+# failed job ever (the seen cache).
+GITHUB_POISON_SIGNATURE='failed to solve: lease "[^"]*": not found'
+
+# IDs of recent failed workflow runs for one repo, newest first. The pretty
+# GitHub JSON puts every field on its own line; a run object's own "id" is the
+# only anchored "id" key that is later followed by "head_branch", which nested
+# objects (repository, check suite) never carry.
+github_recent_failed_runs() {
+  local repo="$1" cutoff="$2" url body
+  url="/repos/${repo}/actions/runs?status=failure&per_page=5"
+  [ -n "$cutoff" ] && url="${url}&created=%3E${cutoff}"
+  body="$(gh_api GET "$url")" || return 1
+  printf '%s\n' "$body" | awk '
+    /^[[:space:]]*"id":/ { if (match($0, /[0-9]+/)) last = substr($0, RSTART, RLENGTH) }
+    /^[[:space:]]*"head_branch":/ { if (last != "") { print last; last = "" } }'
+}
+
+# "jobid|slot" for each failed job of one run (latest attempt) that executed on
+# one of this host's managed slots. Per job object the fields arrive as: "id",
+# then the job-level "conclusion" (before the steps array, whose steps carry
+# their own "conclusion" but never an anchored "id"), then "runner_name".
+github_failed_local_jobs() {
+  local repo="$1" run_id="$2" body
+  body="$(gh_api GET "/repos/${repo}/actions/runs/${run_id}/jobs?per_page=50")" || return 1
+  printf '%s\n' "$body" | awk -v host="$(host)-" -v prefix="${NAME_PREFIX}-" '
+    /^[[:space:]]*"id":/ { if (match($0, /[0-9]+/)) { jid = substr($0, RSTART, RLENGTH); conc = "" } }
+    /^[[:space:]]*"conclusion":/ {
+      if (conc == "") { s = $0; sub(/^[^:]*:[[:space:]]*"?/, "", s); sub(/"?,?[[:space:]]*$/, "", s); conc = s }
+    }
+    /^[[:space:]]*"runner_name":/ {
+      s = $0; sub(/^[^:]*:[[:space:]]*"/, "", s); sub(/".*/, "", s)
+      if (jid != "" && conc == "failure" && index(s, host) == 1) {
+        slot = substr(s, length(host) + 1)
+        if (slot ~ ("^" prefix "[0-9]+$")) print jid "|" slot
+      }
+      jid = ""; conc = ""
+    }'
+}
+
+# Does one failed job's log carry the dangling-lease signature? The logs
+# endpoint redirects to short-lived blob storage; the PAT enters curl through
+# config stdin (never argv), like gh_api. Size/time caps keep a runaway log
+# from stalling the tick — a poisoned build dies in its first minute, so the
+# logs that matter are small. grep without -q reads to EOF, so pipefail cannot
+# turn an early-match SIGPIPE into a false negative.
+github_job_log_poisoned() {
+  local repo="$1" job_id="$2"
+  [ -n "$ACCESS_TOKEN" ] || return 1
+  printf 'header = "Authorization: Bearer %s"\n' "$ACCESS_TOKEN" \
+    | curl -fsSL -m 30 --max-filesize 8000000 --config - \
+      -H "Accept: application/vnd.github+json" \
+      "https://api.github.com/repos/${repo}/actions/jobs/${job_id}/logs" 2>/dev/null \
+    | grep -E "$GITHUB_POISON_SIGNATURE" >/dev/null 2>&1
+}
+
+github_build_poison_scan() {
+  [ "$DIND" = "true" ] || return 0     # no nested daemon, no buildkit store to poison
+  [ -n "$ACCESS_TOKEN" ] || return 0
+  local stampf="$RUNDIR/poison-scan.stamp" seenf="$RUNDIR/poison-scan.seen"
+  local now last=0 cutoff repo run_id line jid slot snapshot id provider role index gen
+  now="$(date +%s)"
+  [ -f "$stampf" ] && read -r last < "$stampf"
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  [ $((now - last)) -lt "$POISON_SCAN_INTERVAL" ] && return 0
+  echo "$now" > "$stampf"
+  # GNU date on Unraid; an environment without epoch -d support just drops the
+  # created filter and lets the seen cache bound the rework instead.
+  cutoff="$(date -u -d "@$((now - POISON_SCAN_LOOKBACK))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+  [ -f "$seenf" ] || : > "$seenf"
+  for repo in $GH_REPOS; do
+    [ -n "$repo" ] || continue
+    for run_id in $(github_recent_failed_runs "$repo" "$cutoff"); do
+      for line in $(github_failed_local_jobs "$repo" "$run_id"); do
+        jid="${line%%|*}"; slot="${line##*|}"
+        grep -qx "$jid" "$seenf" 2>/dev/null && continue
+        echo "$jid" >> "$seenf"
+        github_job_log_poisoned "$repo" "$jid" || continue
+        # Flag the slot with its current immutable container ID so the healer
+        # can discard the flag if the slot is replaced before repair runs.
+        snapshot="$(managed_runner_snapshot "$slot" 2>/dev/null)" || continue
+        IFS='|' read -r id provider role index gen <<< "$snapshot"
+        log "selfheal: job $jid on $slot failed with a dangling buildkit lease -> flagging for repair"
+        echo "$id" > "$RUNDIR/poison-pending.$slot"
+      done
+    done
+  done
+  tail -500 "$seenf" > "$seenf.tmp" 2>/dev/null && mv "$seenf.tmp" "$seenf"
+  return 0
+}
+
 github_registry_credentials() {
   if [ -z "$pass" ]; then
     case "$REGISTRY_SERVER" in

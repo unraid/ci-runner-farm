@@ -105,6 +105,12 @@ AUTOSCALE_MIN_IDLE="2"                # keep at least this many idle (warm) runn
 AUTOSCALE_STEP="2"                    # add/remove this many per adjustment
 AUTOSCALE_INTERVAL="30"              # seconds between checks
 AUTOSCALE_IDLE_GRACE="5"             # consecutive over-idle checks before scaling down (anti-flap)
+# ---- build-poison self-heal (see heal_poisoned_runners) ----------------------
+# Internal cadence/bounds, deliberately not web-settable. The CRF_* environment
+# overrides exist for the test harness, not for operators.
+POISON_SCAN_INTERVAL="${CRF_POISON_SCAN_INTERVAL:-300}"           # min seconds between failed-job log scans
+POISON_SCAN_LOOKBACK="${CRF_POISON_SCAN_LOOKBACK:-1800}"          # only consider workflow runs created this recently
+POISON_HEAL_MIN_INTERVAL="${CRF_POISON_HEAL_MIN_INTERVAL:-3600}"  # at most one buildkit reset per slot per hour
 # ---- image auto-update: keep the runner image current, roll the fleet --------
 IMAGE_AUTOUPDATE="false"             # true => a daemon periodically pulls the runner image and,
                                      # when the digest moves, recreates runners on the new image.
@@ -303,6 +309,7 @@ provider_imageupdate_pull() { provider_call imageupdate_pull; }
 provider_remote_image_host_pull_required() { provider_call remote_image_host_pull_required; }
 provider_prepare_remote_image() { provider_call prepare_remote_image "$@"; }
 provider_remote_image_update_allowed() { provider_call remote_image_update_allowed; }
+provider_build_poison_scan() { provider_call build_poison_scan; }
 
 container_docker_stopping_timeout() {
   local provider
@@ -505,6 +512,80 @@ reap_dead_runners() {
   return "$failed"
 }
 
+# A runner whose nested dockerd crashed mid-build can be left with dangling
+# buildkit lease metadata in its persistent DinD root: every later build on that
+# slot fails with `failed to solve: lease "...": not found` while the container
+# stays running, healthy, and registered — so it keeps taking (and failing)
+# jobs, invisible to reap_dead_runners, which only sees dead containers and
+# lost registrations. The provider scan classifies a slot as build-poisoned by
+# that exact signature (GitHub reads recent failed-job logs, the only place the
+# error is visible — the nested daemon does not log solve failures) and drops a
+# poison-pending flag; this pass repairs flagged IDLE slots by stopping the
+# container, clearing ONLY the buildkit/ subdir of its DinD root (the warm
+# image/layer caches survive), and starting the same container again (runner
+# registration persists across stop/start). Conservative by design: busy slots
+# are never touched, each slot gets at most one reset attempt per
+# POISON_HEAL_MIN_INTERVAL, and a flag whose container was replaced since
+# detection is discarded (replacements always start with a fresh DinD root).
+# Like the reaper this runs from the autoscale tick under the fleet lock; with
+# autoscaling off, an operator recycle remains the repair path.
+heal_poisoned_runners() {
+  provider_build_poison_scan \
+    || err "selfheal: build-poison scan failed; acting on existing flags only"
+  local f c snapshot id provider role index gen flagged_id root now last healf failed=0
+  for f in "$RUNDIR"/poison-pending.*; do
+    [ -e "$f" ] || break
+    c="${f##*/poison-pending.}"
+    printf '%s' "$c" | grep -qE "^${NAME_PREFIX}-[0-9]+$" || { rm -f "$f"; continue; }
+    flagged_id="$(head -1 "$f" 2>/dev/null)"
+    if ! snapshot="$(managed_runner_snapshot "$c" 2>/dev/null)"; then
+      log "selfheal: dropping poison flag for $c (slot no longer present)"
+      rm -f "$f"; continue
+    fi
+    IFS='|' read -r id provider role index gen <<< "$snapshot"
+    [ "$provider" = github ] || { rm -f "$f"; continue; }
+    if [ "$flagged_id" != "$id" ]; then
+      log "selfheal: dropping poison flag for $c (container replaced since detection)"
+      rm -f "$f"; continue
+    fi
+    healf="$RUNDIR/poison-healed.$c"; last=0
+    [ -f "$healf" ] && read -r last < "$healf"
+    case "$last" in ''|*[!0-9]*) last=0 ;; esac
+    now="$(date +%s)"
+    if [ $((now - last)) -lt "$POISON_HEAL_MIN_INTERVAL" ]; then
+      log "selfheal: $c flagged again after a recent buildkit reset; waiting out the per-slot bound"
+      continue
+    fi
+    if runner_busy "$c"; then
+      log "selfheal: $c is build-poisoned but busy; deferring its buildkit reset"
+      continue
+    fi
+    root="$(crf_safe_cache_root)" \
+      || { err "selfheal: refusing buildkit reset under unsafe CACHE_ROOT '$CACHE_ROOT'"; return 1; }
+    # Stamp the ATTEMPT before acting: whatever fails below, this slot cannot
+    # be stop/start-cycled more than once per bound interval.
+    echo "$now" > "$healf"
+    log "selfheal: $c is build-poisoned (dangling buildkit lease) -> stop, clear buildkit metadata, restart"
+    provider_stop_owned_runner "$c" "$id" "$provider" \
+      || { err "selfheal: could not stop $c for its buildkit reset"; failed=1; continue; }
+    if rm -rf "$root/docker/$c/buildkit" 2>/dev/null; then
+      rm -f "$f"
+    else
+      err "selfheal: could not clear $root/docker/$c/buildkit; restarting $c unrepaired"
+      failed=1
+    fi
+    if docker start "$id" >/dev/null 2>&1; then
+      log "selfheal: $c restarted with fresh buildkit metadata (image/layer cache preserved)"
+    else
+      # A slot left stopped is not lost capacity for long: the reaper removes
+      # it and the floor refills it with a freshly registered runner.
+      err "selfheal: could not restart $c after its buildkit reset; the reaper will replace it"
+      failed=1
+    fi
+  done
+  return "$failed"
+}
+
 # one autoscaling evaluation: keep AUTOSCALE_MIN_IDLE warm runners, within [MIN,MAX]
 autoscale_tick() {
   [ "$AUTOSCALE" = "true" ] || return 0
@@ -550,6 +631,11 @@ autoscale_tick() {
   else
     echo 0 > "$statef"
   fi
+  # Self-heal build-poisoned slots after the scale math: healing stop/starts an
+  # idle container inside the tick, which would otherwise perturb the idle/busy
+  # counts above. Non-fatal so a failed repair never blocks reconciliation.
+  heal_poisoned_runners \
+    || err "autoscale: one or more build-poisoned runners could not be repaired this tick"
   # Continuous safety net behind the Apply-triggered drain: migrate one runner still on a
   # previous baked config onto the current one (idle only). Also the path that eventually
   # picks up a direct cfg edit, or a runner whose job outlasted the Apply drain timeout.
