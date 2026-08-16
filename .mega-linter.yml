@@ -27,6 +27,12 @@ DISABLE_LINTERS:
   - BASH_SHFMT
   - COPYPASTE_JSCPD
   - DOCKERFILE_HADOLINT
+  # Not part of the PHP-flavor linter set the original baseline measured
+  # against; switching to the full image turned it on and it fell through
+  # that sweep. Repo-wide indentation debt (README.md, shell scripts, .plg,
+  # .page files, ...) — needs its own tracking issue rather than a
+  # sprawling reformat bundled into unrelated PRs.
+  - EDITORCONFIG_EDITORCONFIG_CHECKER
   - JSON_PRETTIER
   - MARKDOWN_MARKDOWNLINT
   - MARKDOWN_MARKDOWN_TABLE_FORMATTER
