@@ -176,6 +176,7 @@ github_build_args() {
     --label "net.unraid.ci-runner-farm.index=${idx}"
     --label "net.unraid.ci-runner-farm.pool=${CRF_POOL_ID:-default}"
     --label "net.unraid.ci-runner-farm.confgen=$(crf_confgen)"
+    --add-host "host.docker.internal:host-gateway"
     -e RUNNER_NAME="$(host)-${name}"
     -e LABELS="$RUNNER_LABELS"
     -e DISABLE_AUTO_UPDATE="true"
@@ -201,7 +202,6 @@ github_build_args() {
     ARGS+=( -v "$CACHE_ROOT/docker/$name:/var/lib/docker" )
     ARGS+=( -v "$CACHE_ROOT/dind-daemon.json:/etc/docker/daemon.json:ro" )
     ARGS+=( -v "$CACHE_ROOT/dind-logs/$name:/var/log/dind" )
-    [ "$SHARED_IMAGE_CACHE" = "true" ] && [ "$NETWORK_ISOLATION" = "off" ] && ARGS+=( --add-host "host.docker.internal:host-gateway" )
   elif [ "$SHARE_DOCKER_SOCK" = "true" ]; then
     ARGS+=( -v /var/run/docker.sock:/var/run/docker.sock )
   fi

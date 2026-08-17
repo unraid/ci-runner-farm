@@ -369,6 +369,11 @@ privileged or socket-mounted runners only for trusted private projects.
   other Unraid containers. `strict` also blocks the Unraid host and LAN, apart
   from narrowly configured service endpoints.
 
+GitHub runner containers resolve `host.docker.internal` to their own Unraid
+farm host. Use this stable local address for a service that is deliberately
+colocated with a runner pool. The alias does not weaken network policy:
+`strict` mode still blocks host access.
+
 See [GitHub's self-hosted runner security guidance](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/about-self-hosted-runners#self-hosted-runner-security)
 and [GitLab's self-managed runner security guidance](https://docs.gitlab.com/runner/security/).
 

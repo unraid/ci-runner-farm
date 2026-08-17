@@ -29,6 +29,8 @@ github_build_args 1 ci-runner-qa-vm-1 || fail 'GitHub pool argv failed'
 args="$(printf '%s\n' "${ARGS[@]}")"
 printf '%s\n' "$args" | grep -qx 'net.unraid.ci-runner-farm.pool=qa-vm' || fail 'GitHub pool label missing'
 printf '%s\n' "$args" | grep -qx 'LABELS=qa-vm-client,linux,x64' || fail 'GitHub routing labels missing'
+printf '%s\n' "$args" | grep -qx 'host.docker.internal:host-gateway' \
+  || fail 'GitHub runner does not expose its local farm host gateway'
 printf '%s\n' "$args" | grep -qx 'ghcr.io/unraid/qa-vm-client:latest' || fail 'GitHub pool image missing'
 
 start_log="$tmp/starts"
