@@ -57,6 +57,11 @@ gitlab_shutdown_timeout() {
 }
 gitlab_docker_stopping_timeout() { gitlab_shutdown_timeout; }
 gitlab_docker_stopping() { provider_stop_container "$1"; }
+# Build-poison self-heal is GitHub-only for now: the dangling-lease failure has
+# only been observed under the GitHub DinD slots, and GitLab job logs live in
+# GitLab, outside the scan this hook feeds. heal_poisoned_runners also ignores
+# any flag that resolves to a GitLab slot.
+gitlab_build_poison_scan() { return 0; }
 
 gitlab_confgen() {
   # Hash the exact token values loaded after fleet.lock was acquired. Reading the
