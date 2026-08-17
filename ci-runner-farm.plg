@@ -2,13 +2,13 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name          "ci-runner-farm">
 <!ENTITY author        "Lime Technology">
-<!ENTITY version       "2026.08.12.0257.49-1.9.1">
-<!ENTITY pluginVersion "1.9.1">
-<!ENTITY releaseTag    "v1.9.1">
+<!ENTITY version       "2026.08.17.1141.56-1.10.0">
+<!ENTITY pluginVersion "1.10.0">
+<!ENTITY releaseTag    "v1.10.0">
 <!ENTITY pluginURL     "https://github.com/unraid/ci-runner-farm/releases/latest/download/ci-runner-farm.plg">
-<!ENTITY packageName   "ci-runner-farm-2026.08.12.0257.49-1.9.1.tgz">
-<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/v1.9.1/ci-runner-farm-2026.08.12.0257.49-1.9.1.tgz">
-<!ENTITY packageMD5    "0e20196c095ffde00f0cf56d891ee19d">
+<!ENTITY packageName   "ci-runner-farm-2026.08.17.1141.56-1.10.0.tgz">
+<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/v1.10.0/ci-runner-farm-2026.08.17.1141.56-1.10.0.tgz">
+<!ENTITY packageMD5    "1cef554cfc23c084edbd85170a74b552">
 <!ENTITY plgdir        "/usr/local/emhttp/plugins/&name;">
 <!ENTITY cfgdir        "/boot/config/plugins/&name;">
 ]>
@@ -22,13 +22,13 @@
 
 <CHANGES>
 ### &version;
+### Features
+* add .editorconfig and VS Code editor settings ([#69](https://github.com/unraid/ci-runner-farm/issues/69)) ([a8d6aac](https://github.com/unraid/ci-runner-farm/commit/a8d6aac2cdf3f41c0540bced687bb97d0bdc3e36)), closes [#65](https://github.com/unraid/ci-runner-farm/issues/65)
+* add provider-neutral runner pools ([#74](https://github.com/unraid/ci-runner-farm/issues/74)) ([2fbc077](https://github.com/unraid/ci-runner-farm/commit/2fbc07781df3d0f537d9cf17603bb0088eb1656c))
 ### Bug Fixes
-* add .gitattributes to pin line endings to LF ([#52](https://github.com/unraid/ci-runner-farm/issues/52)) ([4c70b12](https://github.com/unraid/ci-runner-farm/commit/4c70b12fcb2e15da92ae9a72a8422cc66b0638c6)), closes [#50](https://github.com/unraid/ci-runner-farm/issues/50)
-* **config:** validate numeric config values at parse time ([#57](https://github.com/unraid/ci-runner-farm/issues/57)) ([d24af37](https://github.com/unraid/ci-runner-farm/commit/d24af379c0a80a51992ac90c77f1a39ba0feeca8))
-* **github:** keep the runner registration token out of docker argv ([#58](https://github.com/unraid/ci-runner-farm/issues/58)) ([81b7b2d](https://github.com/unraid/ci-runner-farm/commit/81b7b2d84bf892aa2444dae7905ae62e83933913))
-* **gitlab:** harden API redirects and CSRF compatibility ([#46](https://github.com/unraid/ci-runner-farm/issues/46)) ([ad1e5fa](https://github.com/unraid/ci-runner-farm/commit/ad1e5faf4e8cdc851eb7f53504fd1583859b6c66))
-* pin release-please-action to a commit, bump actions/checkout, annotate all pins ([#53](https://github.com/unraid/ci-runner-farm/issues/53)) ([703459a](https://github.com/unraid/ci-runner-farm/commit/703459a1e5d67b0aed51a3c12cb36b46cde257f8))
-* **web:** redact secrets on every path that reaches the browser ([#59](https://github.com/unraid/ci-runner-farm/issues/59)) ([19f4796](https://github.com/unraid/ci-runner-farm/commit/19f47960d785d220f98313167b24d9d7294103ce))
+* allow colocated QA VM transport ([#77](https://github.com/unraid/ci-runner-farm/issues/77)) ([a96940a](https://github.com/unraid/ci-runner-farm/commit/a96940a5dc85006019c4bef81418a697aacc7c85))
+* **github:** expose local farm host gateway ([#75](https://github.com/unraid/ci-runner-farm/issues/75)) ([b001402](https://github.com/unraid/ci-runner-farm/commit/b001402eee748753625ffb610484894c4d704fab))
+* **github:** route colocated services to local farm ([#76](https://github.com/unraid/ci-runner-farm/issues/76)) ([30eb3b5](https://github.com/unraid/ci-runner-farm/commit/30eb3b552d130398b3b0b91a43940b9f92e9bf1b))
 </CHANGES>
 
 <!-- plugin package: Unraid downloads it to flash and verifies the MD5 -->
@@ -45,11 +45,11 @@ PLGDIR="/usr/local/emhttp/plugins/ci-runner-farm"
 CFGDIR="/boot/config/plugins/ci-runner-farm"
 mkdir -p "$CFGDIR" "$PLGDIR"
 # Sweep any older package versions off flash, keeping this build's package.
-find "$CFGDIR" -maxdepth 1 -name 'ci-runner-farm-*.tgz' ! -name 'ci-runner-farm-2026.08.12.0257.49-1.9.1.tgz' -delete 2>/dev/null || true
+find "$CFGDIR" -maxdepth 1 -name 'ci-runner-farm-*.tgz' ! -name 'ci-runner-farm-2026.08.17.1141.56-1.10.0.tgz' -delete 2>/dev/null || true
 # Extract ONLY into the plugin dir; --no-same-owner forces root ownership;
 # --no-overwrite-dir leaves existing dir metadata alone. System dirs untouched.
 # The .tgz is kept on flash so the on-boot reinstall works without a download.
-tar -xzf "$CFGDIR/ci-runner-farm-2026.08.12.0257.49-1.9.1.tgz" --no-same-owner --no-overwrite-dir -C "$PLGDIR"
+tar -xzf "$CFGDIR/ci-runner-farm-2026.08.17.1141.56-1.10.0.tgz" --no-same-owner --no-overwrite-dir -C "$PLGDIR"
 chown -R root:root "$PLGDIR"
 find "$PLGDIR" -type d -exec chmod 0755 {} +
 find "$PLGDIR" -type f -exec chmod 0644 {} +
@@ -109,7 +109,7 @@ fi
 ( nohup "$PLGDIR/include/runner-farm.sh" boot-autostart >>"$CFGDIR/boot.log" 2>&1 & ) || true
 echo ""
 echo "+=============================================================+"
-echo "| ci-runner-farm 2026.08.12.0257.49-1.9.1 installed.                         "
+echo "| ci-runner-farm 2026.08.17.1141.56-1.10.0 installed.                         "
 echo "| Settings > Utilities > CI Runner Farm                        "
 echo "| Select GitHub or GitLab, save its token, then Start.         "
 echo "+=============================================================+"
