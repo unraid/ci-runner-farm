@@ -234,6 +234,24 @@ log()  { echo "[ci-runner-farm] $*"; }
 err()  { echo "[ci-runner-farm] ERROR: $*" >&2; }
 host() { hostname -s; }
 
+# Resolve the IPv4 address used by this Unraid host for its default route. The
+# runner receives it under a fixed /etc/hosts alias, so colocated services can
+# be reached without putting one farm's machine address into repository config.
+# Strict isolation still blocks the resulting host/LAN route in the firewall.
+runner_host_service_ipv4() {
+  local route ip
+  if [ "${CRF_SOURCE_ONLY:-0}" = 1 ]; then
+    printf '192.0.2.10\n'
+    return 0
+  fi
+  route="$(ip -4 route get 1.1.1.1 2>/dev/null | head -n 1)" || return 1
+  ip="$(printf '%s\n' "$route" | awk '{ for (i = 1; i <= NF; i++) if ($i == "src" && (i + 1) <= NF) { print $(i + 1); exit } }')"
+  case "$ip" in
+    ''|*[!0-9.]*) return 1 ;;
+  esac
+  printf '%s\n' "$ip"
+}
+
 # Provider implementations live in adapters. CI_PROVIDER is normalized to the
 # two allowlisted names above, so dynamic dispatch cannot resolve an arbitrary
 # function. The files contain definitions only and are safe in source-only tests.

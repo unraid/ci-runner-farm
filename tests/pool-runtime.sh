@@ -11,6 +11,12 @@ mkdir -p "$CRF_CFGDIR" "$CRF_RUNDIR" "$tmp/cache"
 
 fail() { printf 'POOL RUNTIME FAIL: %s\n' "$*" >&2; exit 1; }
 
+CRF_SOURCE_ONLY=0
+ip() { printf '1.1.1.1 via 192.0.2.1 dev eth0 src 192.0.2.55 uid 0\n'; }
+[ "$(runner_host_service_ipv4)" = 192.0.2.55 ] || fail 'local farm service address resolution failed'
+unset -f ip
+CRF_SOURCE_ONLY=1
+
 build='v3|build|ci-build|linux,x64|2|0|2|0|2|8g|builtin'
 qa='v3|qa-vm|qa-vm-client|linux,x64|1|0|1|0|1.5|4g|ghcr.io/unraid/qa-vm-client:latest'
 RUNNER_MODE=pools RUNNER_POOLS="$build;$qa" GH_SCOPE=org CI_PROVIDER=github
@@ -31,6 +37,8 @@ printf '%s\n' "$args" | grep -qx 'net.unraid.ci-runner-farm.pool=qa-vm' || fail 
 printf '%s\n' "$args" | grep -qx 'LABELS=qa-vm-client,linux,x64' || fail 'GitHub routing labels missing'
 printf '%s\n' "$args" | grep -qx 'host.docker.internal:host-gateway' \
   || fail 'GitHub runner does not expose its local farm host gateway'
+printf '%s\n' "$args" | grep -qx 'runner-farm.host:192.0.2.10' \
+  || fail 'GitHub runner does not expose its local farm service address'
 printf '%s\n' "$args" | grep -qx 'ghcr.io/unraid/qa-vm-client:latest' || fail 'GitHub pool image missing'
 
 start_log="$tmp/starts"

@@ -34,6 +34,7 @@ RUNNER_CPUS='2'; RUNNER_MEMORY='4g'; IMAGE_SOURCE=builtin
 WORK_TMPFS_SIZE='2g'; DIND=true; SHARE_DOCKER_SOCK=false
 SHARED_IMAGE_CACHE=true; NETWORK_ISOLATION=off; EPHEMERAL=false; RUN_AS_ROOT=false
 host() { printf 'mockhost\n'; }
+runner_host_service_ipv4() { printf '192.0.2.10\n'; }
 legacy_confgen="$(printf '%s\0' "$GH_SCOPE" "$GH_OWNER" "$GH_REPOS" "$RUNNER_GROUP" "$RUNNER_LABELS" \
   "$EPHEMERAL" "$RUNNER_CPUS" "$RUNNER_MEMORY" "$WORK_TMPFS_SIZE" "$CACHE_MOUNTS" \
   "$DIND" "$SHARE_DOCKER_SOCK" "$RUN_AS_ROOT" "$IMAGE_SOURCE" "$IMAGE" \
