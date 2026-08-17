@@ -372,8 +372,9 @@ privileged or socket-mounted runners only for trusted private projects.
 GitHub runner containers resolve `runner-farm.host` to the management address
 of the Unraid host that launched them. Use this stable alias for a service that
 is deliberately colocated with a runner pool. `host.docker.internal` remains
-the Docker bridge gateway for local Docker services. Neither alias weakens
-network policy: `strict` mode still blocks host access.
+the Docker bridge gateway for local Docker services. In `strict` mode, only TCP
+port 22 on the exact `runner-farm.host` address is allowed for the colocated QA
+VM MCP transport; other host and LAN access remains blocked.
 
 See [GitHub's self-hosted runner security guidance](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/about-self-hosted-runners#self-hosted-runner-security)
 and [GitLab's self-managed runner security guidance](https://docs.gitlab.com/runner/security/).

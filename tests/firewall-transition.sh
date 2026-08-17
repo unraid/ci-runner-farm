@@ -21,6 +21,8 @@ SHARED_IMAGE_CACHE=true
 DIND=true
 IPTABLES_LOG="$tmp/iptables.log"; export IPTABLES_LOG
 
+runner_host_service_ipv4() { printf '157.180.7.27\n'; }
+
 getent() {
   local host="${3:-${2:-}}"
   case "$host" in
@@ -82,6 +84,10 @@ grep -q -- '-I INPUT 1 -s 172.31.0.0/16 -j DROP' "$IPTABLES_LOG" \
   || fail "replacement subnet did not receive a host-input drop"
 grep -q -- '-s 172.31.0.0/16 -d 172.31.0.2 -p tcp --dport 5000' "$IPTABLES_LOG" \
   || fail "replacement subnet did not receive its mirror allow"
+grep -q -- '-s 172.31.0.0/16 -d 157.180.7.27 -p tcp --dport 22' "$IPTABLES_LOG" \
+  || fail "replacement subnet did not receive its local QA VM MCP allow"
+grep -q -- '-I INPUT 1 -s 172.31.0.0/16 -d 157.180.7.27 -p tcp --dport 22' "$IPTABLES_LOG" \
+  || fail "replacement subnet did not receive its local QA VM host-input allow"
 
 # A GitLab job/service can override a locally built default image. Keep the one
 # configured private-registry exception in that mode, while preserving GitHub's
@@ -139,5 +145,7 @@ grep -q ' -D DOCKER-USER ' "$IPTABLES_LOG" || fail "authoritative rebuild did no
 grep -q ' -D INPUT ' "$IPTABLES_LOG" || fail "authoritative rebuild did not remove old input rules"
 grep -q -- '-d 10.20.30.40 -p tcp --dport 8443' "$IPTABLES_LOG" \
   || fail "authoritative rebuild omitted current GitLab endpoint"
+grep -q -- '-d 157.180.7.27 -p tcp --dport 22' "$IPTABLES_LOG" \
+  || fail "authoritative rebuild omitted the local QA VM MCP endpoint"
 
 echo 'firewall-transition: OK — current endpoints are added before old exceptions are retired'

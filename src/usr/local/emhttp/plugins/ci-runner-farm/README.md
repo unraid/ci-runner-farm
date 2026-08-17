@@ -14,7 +14,9 @@ effect on Fleet Restart, so Settings Apply does not interrupt active jobs.
 GitHub runner containers resolve `runner-farm.host` to the management address
 of the Unraid host that launched them. A colocated service can use this stable
 alias without a machine-specific hostname. `host.docker.internal` remains the
-Docker bridge gateway. Strict network isolation still blocks host access.
+Docker bridge gateway. Strict network isolation allows only TCP port 22 on the
+exact `runner-farm.host` address for the colocated QA VM MCP transport; other
+host and LAN access remains blocked.
 
 For GitLab, create the runner and its tags/protection/scope in GitLab, then save
 the reusable `glrt-` runner authentication token in the plugin. A separate
