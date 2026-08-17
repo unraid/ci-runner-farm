@@ -1421,11 +1421,13 @@ firewall_allow_current_policy() {
     || { err "strict isolation needs iptables — egress NOT restricted"; return 1; }
   docker network inspect "$RUNNER_NETWORK" >/dev/null 2>&1 \
     || { err "strict isolation: $RUNNER_NETWORK missing — egress NOT restricted"; return 1; }
-  local s gw mip epip epport eplabel
+  local s gw mip host_service_ip epip epport eplabel
   s="$(docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}' "$RUNNER_NETWORK" 2>/dev/null)"
   gw="$(docker network inspect -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}' "$RUNNER_NETWORK" 2>/dev/null)"
   [ -n "$s" ] || { err "strict isolation: could not resolve $RUNNER_NETWORK subnet — egress NOT restricted"; return 1; }
   mip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$MIRROR_NAME" 2>/dev/null)"
+  host_service_ip="$(runner_host_service_ipv4)" \
+    || { err "strict isolation: could not resolve the local runner-farm service address"; return 1; }
 
   # Install a broad temporary egress guard before touching a live subnet. If any
   # later insert fails, the guard remains and the operation fails closed (jobs
@@ -1443,6 +1445,12 @@ firewall_allow_current_policy() {
   if [ -n "$gw" ]; then
     firewall_ensure_rule DOCKER-USER -s "$s" -d "$gw" -j DROP -m comment --comment "$FW_TAG:host" || return 1
   fi
+  # Reach only the SSH transport for the QA VM provider colocated on this farm.
+  # No other host or LAN service is opened by this exception.
+  firewall_ensure_rule DOCKER-USER -s "$s" -d "$host_service_ip" -p tcp --dport 22 \
+    -j RETURN -m comment --comment "$FW_TAG:local-qavm" || return 1
+  firewall_ensure_rule INPUT -s "$s" -d "$host_service_ip" -p tcp --dport 22 \
+    -j RETURN -m comment --comment "$FW_TAG:in-local-qavm" || return 1
   while read -r epip epport eplabel; do
     [ -n "$epip" ] || continue
     firewall_ensure_rule DOCKER-USER -s "$s" -d "$epip" -p tcp --dport "$epport" \
@@ -1504,11 +1512,13 @@ firewall_apply() {
   [ "$NETWORK_ISOLATION" = "strict" ] || return 0
   command -v iptables >/dev/null 2>&1 || { err "strict isolation needs iptables — egress NOT restricted"; return 1; }
   docker network inspect "$RUNNER_NETWORK" >/dev/null 2>&1 || { err "strict isolation: $RUNNER_NETWORK missing — egress NOT restricted"; return 1; }
-  local s gw mip i=1 epip epport eplabel ini=2
+  local s gw mip host_service_ip i=1 epip epport eplabel ini=2
   s="$(docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}' "$RUNNER_NETWORK" 2>/dev/null)"
   gw="$(docker network inspect -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}' "$RUNNER_NETWORK" 2>/dev/null)"
   [ -n "$s" ] || { err "strict isolation: could not resolve $RUNNER_NETWORK subnet — egress NOT restricted"; return 1; }
   mip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$MIRROR_NAME" 2>/dev/null)"
+  host_service_ip="$(runner_host_service_ipv4)" \
+    || { err "strict isolation: could not resolve the local runner-farm service address"; return 1; }
   # Order matters (top-down): allow mirror + established replies, THEN drop host +
   # every private range. Inserting at increasing indices keeps them in this order
   # ahead of Docker's trailing RETURN.
@@ -1517,6 +1527,8 @@ firewall_apply() {
     i=$((i+1))
   fi
   firewall_insert_rule DOCKER-USER "$i" -d "$s" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN -m comment --comment "$FW_TAG:estab" || return 1
+  i=$((i+1))
+  firewall_insert_rule DOCKER-USER "$i" -s "$s" -d "$host_service_ip" -p tcp --dport 22 -j RETURN -m comment --comment "$FW_TAG:local-qavm" || return 1
   i=$((i+1))
   # Narrow exceptions for an explicitly configured self-managed GitLab and/or
   # private job-image registry. These precede the LAN drops and match only the
@@ -1541,13 +1553,15 @@ firewall_apply() {
   # here too; the runner needs nothing that originates host-side (the mirror is a
   # container = forwarded, DNS is Docker's embedded resolver inside the netns).
   firewall_insert_rule INPUT 1 -s "$s" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN -m comment --comment "$FW_TAG:in-estab" || return 1
+  firewall_insert_rule INPUT "$ini" -s "$s" -d "$host_service_ip" -p tcp --dport 22 -j RETURN -m comment --comment "$FW_TAG:in-local-qavm" || return 1
+  ini=$((ini+1))
   while read -r epip epport eplabel; do
     [ -n "$epip" ] || continue
     firewall_insert_rule INPUT "$ini" -s "$s" -d "$epip" -p tcp --dport "$epport" -j RETURN -m comment --comment "$FW_TAG:in-$eplabel" || return 1
     ini=$((ini+1))
   done <<< "$(configured_strict_endpoints)"
   firewall_insert_rule INPUT "$ini" -s "$s" -j DROP -m comment --comment "$FW_TAG:in-drop" || return 1
-  log "strict isolation: egress locked to internet+mirror+configured CI endpoints for $s (other host/LAN access blocked)"
+  log "strict isolation: egress locked to internet+mirror+configured CI endpoints+local QA VM MCP for $s (other host/LAN access blocked)"
 }
 
 # Resolve the provider's executable/default-job image: the locally built tag or
