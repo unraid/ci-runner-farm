@@ -3,8 +3,12 @@
 # Uses persistent official Runner managers plus Docker-executor job containers.
 
 gitlab_token_ready() {
-  printf '%s' "$GITLAB_RUNNER_TOKEN" \
-    | grep -qE '^glrt-[A-Za-z0-9_.-]{10,507}$'
+  local token="$GITLAB_RUNNER_TOKEN" payload
+  case "$token" in glrt-*) ;; *) return 1 ;; esac
+  [ "${#token}" -le 512 ] || return 1
+  payload="${token#glrt-}"
+  [ "${#payload}" -ge 10 ] || return 1
+  case "$payload" in *[!A-Za-z0-9_.-]*) return 1 ;; esac
 }
 gitlab_token_name() { echo "GitLab runner authentication token"; }
 gitlab_builtin_image() { echo "$GITLAB_BUILTIN_IMAGE"; }
@@ -813,6 +817,7 @@ gitlab_build_manager_args() {
     --label "net.unraid.ci-runner-farm.provider=gitlab"
     --label "net.unraid.ci-runner-farm.role=manager"
     --label "net.unraid.ci-runner-farm.index=${idx}"
+    --label "net.unraid.ci-runner-farm.pool=${CRF_POOL_ID:-default}"
     --label "net.unraid.ci-runner-farm.confgen=$(crf_confgen)"
     --label "net.unraid.ci-runner-farm.socket=${sock}"
     # Local process liveness only. A GitLab/network/CA outage must not make a

@@ -56,8 +56,11 @@ $action = is_string($rawAction) && strlen($rawAction) <= 64 ? $rawAction : '';
 // under 4 bytes is too short to substitute without mangling ordinary log text.
 function crf_secret_values($cfgdir) {
   $secrets = [];
-  foreach (['token', 'gitlab-runner-token', 'gitlab-api-token', 'registry-token'] as $name) {
-    $value = @file_get_contents("$cfgdir/$name");
+  $paths = array_map(fn($name) => "$cfgdir/$name", ['token', 'gitlab-runner-token', 'gitlab-api-token', 'registry-token']);
+  $poolTokens = glob("$cfgdir/gitlab-runner-token.*", GLOB_NOSORT);
+  if (is_array($poolTokens)) $paths = array_merge($paths, $poolTokens);
+  foreach ($paths as $path) {
+    $value = @file_get_contents($path);
     // The engine reads these through command substitution, which drops trailing
     // newlines; an opaque registry password's edge spaces are still significant.
     if (is_string($value)) $value = rtrim($value, "\n");
@@ -317,6 +320,36 @@ switch ($action) {
     credential_response('set-gitlab-runner-token', $ok, 'write failed', $reconcile);
     break;
 
+  case 'set-gitlab-pool-token':
+    $pool = $_POST['pool'] ?? '';
+    if (!is_string($pool) || !preg_match('/^[a-z](?:[a-z0-9-]{0,22}[a-z0-9])?$/D', $pool)
+        || in_array($pool, ['default', 'invalid'], true)) {
+      echo json_encode(['ok'=>false,'error'=>'invalid pool id']); break;
+    }
+    $raw = $_POST['token'] ?? '';
+    $tok = '';
+    $validation = gitlab_runner_token_validation($raw, $tok);
+    if (is_array($validation)) {
+      echo json_encode(['ok'=>false, 'error_code'=>$validation['code'], 'error'=>$validation['error']]); break;
+    }
+    $ok = write_secret("$CFGDIR/gitlab-runner-token.$pool", $tok);
+    echo json_encode(['ok'=>$ok,'action'=>'set-gitlab-pool-token','pool'=>$pool,'error'=>$ok ? null : 'write failed']);
+    break;
+
+  case 'clear-gitlab-pool-token':
+    $pool = $_POST['pool'] ?? '';
+    if (!is_string($pool) || !preg_match('/^[a-z](?:[a-z0-9-]{0,22}[a-z0-9])?$/D', $pool)
+        || in_array($pool, ['default', 'invalid'], true)) {
+      echo json_encode(['ok'=>false,'error'=>'invalid pool id']); break;
+    }
+    [$active, $activeRc] = run_json('docker ps -a --filter ' . escapeshellarg('label=net.unraid.ci-runner-farm.pool=' . $pool) . " --format '{{.Names}}'");
+    if ($activeRc !== 0) { echo json_encode(['ok'=>false,'error'=>'could not verify pool usage']); break; }
+    if (trim($active) !== '') { echo json_encode(['ok'=>false,'error'=>'stop the fleet before clearing a pool token']); break; }
+    $path = "$CFGDIR/gitlab-runner-token.$pool";
+    $ok = !file_exists($path) || @unlink($path);
+    echo json_encode(['ok'=>$ok,'action'=>'clear-gitlab-pool-token','pool'=>$pool,'error'=>$ok ? null : 'remove failed']);
+    break;
+
   case 'clear-gitlab-runner-token':
     $active = active_provider($CFGDIR) === 'gitlab';
     $confirmStop = $_POST['confirm_stop'] ?? '';
@@ -465,7 +498,7 @@ switch ($action) {
 
   case 'recycle':
     $n = $_POST['name'] ?? '';
-    if (!is_string($n) || !preg_match('/^ci-runner-[0-9]+$/', $n)) { echo json_encode(['ok'=>false,'error'=>'bad name']); break; }
+    if (!is_string($n) || !preg_match('/^ci-runner-(?:[0-9]+|[a-z][a-z0-9-]{0,23}-[0-9]+)$/', $n)) { echo json_encode(['ok'=>false,'error'=>'bad name']); break; }
     [$out, $rc] = run_json(escapeshellarg($SCRIPT) . ' recycle ' . escapeshellarg($n));
     // cmd_recycle emits progress logs then its {ok,error?} verdict as the final
     // stdout line; pass it through so the specific reason (removed-not-recreated,
@@ -477,7 +510,7 @@ switch ($action) {
   case 'force-forget-gitlab':
     $n = $_POST['name'] ?? '';
     $confirm = $_POST['confirm'] ?? '';
-    if (!is_string($n) || !preg_match('/^ci-runner-[0-9]+$/', $n)) {
+    if (!is_string($n) || !preg_match('/^ci-runner-(?:[0-9]+|[a-z][a-z0-9-]{0,23}-[0-9]+)$/', $n)) {
       echo json_encode(['ok'=>false,'error'=>'bad name']); break;
     }
     // This is the escape hatch for a permanently unreachable GitLab instance
@@ -499,7 +532,7 @@ switch ($action) {
 
   case 'runner-log':
     $n = $_POST['name'] ?? '';
-    if (!is_string($n) || !preg_match('/^ci-runner-[0-9]+$/', $n)) { echo json_encode(['ok'=>false,'error'=>'bad name']); break; }
+    if (!is_string($n) || !preg_match('/^ci-runner-(?:[0-9]+|[a-z][a-z0-9-]{0,23}-[0-9]+)$/', $n)) { echo json_encode(['ok'=>false,'error'=>'bad name']); break; }
     [$out, $rc] = run(escapeshellarg($SCRIPT) . ' logs-tail ' . escapeshellarg($n) . ' 150');
     echo json_encode(['ok' => $rc === 0, 'log' => $out, 'error' => $rc === 0 ? null : 'runner is not an owned managed slot']);
     break;

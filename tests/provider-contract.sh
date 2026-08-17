@@ -84,7 +84,10 @@ grep -qF "preg_match('/\A[A-Za-z0-9_.-]+\z/D', \$payload)" "$EXEC" \
   || bad "runner-token endpoint rejects GitLab routable-token dots"
 grep -qF '$length < 10 || $length > 507' "$EXEC" \
   || bad "runner-token endpoint does not enforce the shared 10..507 post-prefix bound"
-[ "$(grep -Fc 'glrt-[A-Za-z0-9_.-]{10,507}' "$GITLAB_ADAPTER")" -ge 3 ] \
+grep -qF '[ "${#token}" -le 512 ]' "$GITLAB_ADAPTER" \
+  && grep -qF '[ "${#payload}" -ge 10 ]' "$GITLAB_ADAPTER" \
+  && grep -qF 'case "$payload" in *[!A-Za-z0-9_.-]*) return 1' "$GITLAB_ADAPTER" \
+  && [ "$(grep -Fc 'glrt-[A-Za-z0-9_.-]{10,507}' "$GITLAB_ADAPTER")" -ge 2 ] \
   || bad "GitLab readiness/probe/unregister validators do not share the dotted 10..507 token contract"
 grep -qF '\(glrt-[A-Za-z0-9_.-]*\)' "$GITLAB_ADAPTER" \
   || bad "GitLab saved-probe parser truncates routable runner tokens at the first dot"

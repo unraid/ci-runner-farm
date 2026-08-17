@@ -5,6 +5,12 @@ resource-capped slots, warm package/image caches, Docker-in-Docker, and optional
 autoscaling. One provider owns the farm at a time; GitHub remains the default so
 existing installations keep their behavior.
 
+Named pools work with both providers. Each pool can use its own fixed capacity,
+labels or tags, CPU, memory, and runner/job image. GitHub pools require
+organization scope. GitLab pools require a pool-specific `glrt-` runner token
+whose GitLab runner configuration owns the matching tags. Pool edits take
+effect on Fleet Restart, so Settings Apply does not interrupt active jobs.
+
 For GitLab, create the runner and its tags/protection/scope in GitLab, then save
 the reusable `glrt-` runner authentication token in the plugin. A separate
 `read_api` token is optional and is used only for advisory queue/recent-job

@@ -94,8 +94,8 @@ php_cap="$(grep -oE 'min\([0-9]+' "$EXEC" | head -1 | grep -oE '[0-9]+')"
 [ -n "$eng_cap" ] && [ "$eng_cap" = "$php_cap" ] || bad "scale hard-cap differs: engine HARD_MAX='$eng_cap' vs exec.php min='$php_cap'"
 
 prefix="$(grep -oE 'NAME_PREFIX="[^"]+"' "$ENGINE" | head -1 | sed -E 's/NAME_PREFIX="([^"]+)"/\1/')"
-if [ -n "$prefix" ] && ! grep -qF "^${prefix}-[0-9]" "$EXEC"; then
-  bad "exec.php runner-name regex does not match NAME_PREFIX='$prefix' (expected ^${prefix}-[0-9]+\$)"
+if [ -n "$prefix" ] && ! grep -qF "^${prefix}-(?:[0-9]" "$EXEC"; then
+  bad "exec.php runner-name regex does not match single and named-pool slots for NAME_PREFIX='$prefix'"
 fi
 
 if [ "$fail" -ne 0 ]; then
