@@ -19,6 +19,7 @@ provider's credentials and runtime.
 | Warm shared caches | Reuse npm, yarn, pnpm, Playwright, Cargo, sccache, or custom cache directories across jobs. |
 | Slot-scoped Docker-in-Docker | Give each runner slot a private privileged Docker daemon without exposing Unraid's existing Docker socket by default; privileged DinD is still capable of host compromise. |
 | Bring your own job image | Pull a remote image or edit and build a provider-specific starter image in the plugin. |
+| Named runner pools | Route jobs to purpose-built pools with independent fixed capacity, labels/tags, CPU, memory, and images. |
 | Fleet controls and telemetry | Validate, start, stop, scale, recycle, and inspect runner/job state from the Unraid webGUI. |
 | Optional autoscaling | Keep a warm idle buffer between configured minimum and maximum runner counts. |
 
@@ -45,6 +46,36 @@ it does not modify or fork GitLab Runner itself. Each slot contains:
 The reusable GitLab `glrt-` token identifies the runner configuration. Each
 manager retains its own system ID, so recycling a slot does not create a new
 shared runner configuration in GitLab.
+
+## Named pools and per-pool images
+
+Set **Runner layout** to **Named pools** when one host should offer different
+runner capabilities, for example a normal build pool and a QA-VM client pool.
+Each pool record declares a stable pool ID, routing label, additional labels,
+fixed capacity, resource limits, and either the built-in image or a registry
+image. Containers are named `ci-runner-<pool>-<index>` and carry the pool as a
+provider-neutral ownership label.
+
+GitHub pools require organization scope. Their routing and additional labels
+are passed to the GitHub runner directly. GitLab pools require a separate
+runner configuration and modern `glrt-` authentication token per pool; create
+that runner in GitLab with tags matching the pool's labels, then save the token
+with the pool ID in Settings. This keeps GitLab's server-owned tag routing
+authoritative instead of pretending local `config.toml` can change it.
+
+The V3 record format is:
+
+```text
+v3|id|routing-label|additional-labels|fixed|min|max|idle|cpus|memory|image
+```
+
+Records are separated by semicolons. `cpus` and `memory` may be `inherit`;
+`image` may be `builtin` or a full registry reference. The current classic-pool
+implementation uses `fixed` capacity and deliberately rejects global autoscale
+and global image auto-update in pool mode. `min`, `max`, and `idle` are retained
+in the versioned contract so adding per-pool autoscaling later does not require
+reformatting every pool. Saving pool changes does not interrupt jobs; use Fleet
+**Restart** when ready to apply exact membership, images, and limits.
 
 ## Install
 

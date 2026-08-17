@@ -29,6 +29,7 @@ $defaults = [
   'GITLAB_SHUTDOWN_TIMEOUT'=>'7200',
   'GITLAB_ALLOWED_IMAGES'=>'', 'GITLAB_ALLOWED_SERVICES'=>'', 'GITLAB_PULL_POLICY'=>'auto', 'GITLAB_SHM_SIZE'=>'0',
   'RUNNER_GROUP'=>'', 'RUNNER_COUNT'=>'4', 'RUNNER_LABELS'=>'self-hosted,unraid,build',
+  'RUNNER_MODE'=>'single', 'RUNNER_POOLS'=>'',
   'RUNNER_CPUS'=>'', 'RUNNER_MEMORY'=>'16g', 'EPHEMERAL'=>'false', 'RUN_AS_ROOT'=>'false',
   'IMAGE_SOURCE'=>'builtin', 'IMAGE'=>'', 'REGISTRY_SERVER'=>'', 'REGISTRY_USERNAME'=>'',
   'CACHE_ROOT'=>'/mnt/cache/github-runner', 'WORK_TMPFS_SIZE'=>'8g',
@@ -259,6 +260,30 @@ _(Monitored projects)_:
 :end
 
 ### Runners
+
+_(Runner layout)_:
+: <select name="RUNNER_MODE" id="crf-runner-mode">
+  <option value="single" <?=crf_sel($cfg,'RUNNER_MODE','single','single')?>>Single fleet</option>
+  <option value="pools" <?=crf_sel($cfg,'RUNNER_MODE','pools','single')?>>Named pools</option>
+  </select>
+
+:crf_runner_mode_plug:
+> Single fleet preserves the existing GitHub and GitLab behavior. Named pools let workflows select a purpose-built runner image by routing label. GitHub pools require organization scope. GitLab pools require one pool-specific runner authentication token per pool so routing tags remain distinct.
+:end
+
+_(Named pool records)_:
+: <input type="text" name="RUNNER_POOLS" id="crf-runner-pools" value="<?=crf_g($cfg,'RUNNER_POOLS','')?>" placeholder="v3|build|ci-build|linux,x64|3|0|3|0|inherit|inherit|builtin;v3|qa-vm|qa-vm-client|linux,x64|2|0|2|0|2|8g|ghcr.io/unraid/qa-vm-client:latest">
+
+:crf_runner_pools_plug:
+> Named-pool mode only. Enter semicolon-separated V3 records: <code>v3|id|routing-label|additional-labels|fixed|min|max|idle|cpus|memory|image</code>. The current classic-pool implementation uses <code>fixed</code>; min/max/idle are retained in the bounded contract for future per-pool autoscaling. Use <code>inherit</code> for global CPU or memory, <code>builtin</code> for the locally built image, or a full registry image reference. Pool mode requires GitHub organization scope and disables global autoscaling and global image auto-update.
+:end
+
+_(GitLab pool token)_:
+: <input type="text" id="crf-gitlab-pool-id" placeholder="pool id, e.g. qa-vm"> <input type="password" id="crf-gitlab-pool-token" autocomplete="new-password" placeholder="pool-specific glrt- token"> <uui-button type="button" size="xs" onclick="crfSetGitLabPoolToken()">Save</uui-button> <uui-button type="button" variant="secondary" size="xs" onclick="crfClearGitLabPoolToken()">Clear</uui-button>
+
+:crf_gitlab_pool_token_plug:
+> GitLab named-pool mode only. Create one GitLab runner configuration per pool with tags matching that pool's routing/additional labels, then save its modern <code>glrt-</code> authentication token here. Tokens are stored as mode-0600 files and never in the pool record. Stop the fleet before clearing a pool token.
+:end
 
 _(Concurrent runners)_:
 : <input type="number" name="RUNNER_COUNT" min="1" max="20" value="<?=crf_g($cfg,'RUNNER_COUNT','4')?>">
@@ -581,6 +606,16 @@ function crfDoClearGitLabRunnerToken(confirmed){
   }).catch(e=>console.error('ci-runner-farm clear-gitlab-runner-token:',e));
 }
 function crfClearGitLabRunnerToken(){crfDoClearGitLabRunnerToken(false);}
+function crfSetGitLabPoolToken(){
+  const p=document.getElementById('crf-gitlab-pool-id').value.trim(), el=document.getElementById('crf-gitlab-pool-token'), t=el.value;
+  if(!p||!t){crfToast('Enter a pool id and token');return;}
+  crfPost({action:'set-gitlab-pool-token',pool:p,token:t}).then(o=>{if(!crfCredentialOk(o,'Pool token rejected'))return;el.value='';crfCredentialDone(o,'GitLab pool token saved for '+p);}).catch(e=>{crfToast('Pool token save failed');console.error('ci-runner-farm set-gitlab-pool-token:',e);});
+}
+function crfClearGitLabPoolToken(){
+  const p=document.getElementById('crf-gitlab-pool-id').value.trim();
+  if(!p){crfToast('Enter a pool id');return;}
+  crfPost({action:'clear-gitlab-pool-token',pool:p}).then(o=>{if(!crfCredentialOk(o,'Pool token removal failed'))return;crfCredentialDone(o,'GitLab pool token removed for '+p);}).catch(e=>{crfToast('Pool token removal failed');console.error('ci-runner-farm clear-gitlab-pool-token:',e);});
+}
 function crfGitLabApiState(ok){
   document.getElementById('crf-gitlab-api-status').textContent=ok?'GitLab API token configured':'GitLab API token not set (optional)';
   document.getElementById('crf-gitlab-api-ball').className='crf-ball '+(ok?'crf-ball-idle':'');

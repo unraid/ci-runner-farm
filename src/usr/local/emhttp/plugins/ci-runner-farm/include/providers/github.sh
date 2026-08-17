@@ -174,6 +174,7 @@ github_build_args() {
     --label "net.unraid.ci-runner-farm.provider=github"
     --label "net.unraid.ci-runner-farm.role=${role}"
     --label "net.unraid.ci-runner-farm.index=${idx}"
+    --label "net.unraid.ci-runner-farm.pool=${CRF_POOL_ID:-default}"
     --label "net.unraid.ci-runner-farm.confgen=$(crf_confgen)"
     -e RUNNER_NAME="$(host)-${name}"
     -e LABELS="$RUNNER_LABELS"
@@ -246,7 +247,7 @@ github_build_args() {
 github_start_one() {
   local idx="$1" name="$2" rc
   github_build_args "$idx" "$name" || { err "runner $name not started (registration-token error)"; return 1; }
-  log "starting $name (cpus=$RUNNER_CPUS mem=$RUNNER_MEMORY scope=$GH_SCOPE)"
+  log "starting $name (pool=${CRF_POOL_ID:-default} cpus=$RUNNER_CPUS mem=$RUNNER_MEMORY scope=$GH_SCOPE image=$(effective_image))"
   docker run "${ARGS[@]}" >/dev/null
   rc=$?
   clear_args_tmpdir

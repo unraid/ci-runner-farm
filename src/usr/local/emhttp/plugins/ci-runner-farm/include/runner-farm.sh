@@ -52,6 +52,8 @@ GITLAB_SHM_SIZE="0"                   # job/service /dev/shm size in bytes; 0 = 
 GITLAB_DIND_IMAGE="docker:27-dind"    # private executor daemon; deliberately not user-configurable yet
 RUNNER_COUNT=4
 RUNNER_LABELS="self-hosted,unraid,build"
+RUNNER_MODE="single"                  # single | pools (provider-neutral classic pools)
+RUNNER_POOLS=""                       # semicolon-separated validated V3 pool records
 RUNNER_CPUS=""                        # per-runner CPU cap; empty = uncapped (CFS time-shares fairly)
 RUNNER_MEMORY="16g"                   # per-runner memory cap (kept: memory isn't time-shared like CPU)
 CACHE_ROOT="/mnt/cache/github-runner" # must be a dedicated SUBDIR under a pool/disk, never a bare mount root (see crf_safe_cache_root)
@@ -115,10 +117,14 @@ IMAGE_DRAIN_TIMEOUT="3600"           # max seconds to wait for a busy runner to 
 DASHBOARD_WIDGET_ENABLE="true"       # show the Main->Dashboard status tile (read only by RunnerFarmDashboard.page's Cond)
 # ----------------------------------------------------------------------------
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-pools.sh
+. "$SCRIPT_DIR/runner-pools.sh"
+
 # Allowlist of keys the settings page may set. load_cfg only ever assigns these.
 CFG_KEYS="CI_PROVIDER GH_SCOPE GH_OWNER GH_REPOS RUNNER_GROUP GITLAB_URL GITLAB_RUNNER_IMAGE GITLAB_PROJECTS GITLAB_SHUTDOWN_TIMEOUT \
 GITLAB_ALLOWED_IMAGES GITLAB_ALLOWED_SERVICES GITLAB_PULL_POLICY GITLAB_SHM_SIZE \
-RUNNER_COUNT RUNNER_LABELS \
+RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS \
 RUNNER_CPUS RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE IMAGE_SOURCE IMAGE EPHEMERAL \
 RUN_AS_ROOT REGISTRY_SERVER REGISTRY_USERNAME CACHE_MOUNTS SHARE_DOCKER_SOCK DIND \
 SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
@@ -165,6 +171,14 @@ load_cfg() {
 
 load_cfg
 [ "$CI_PROVIDER" = "gitlab" ] || CI_PROVIDER="github"
+
+validate_runner_mode() {
+  pool_config_validate "$RUNNER_MODE" "$RUNNER_POOLS" "$GH_SCOPE" "$CI_PROVIDER" || return 1
+  if pool_mode_enabled; then
+    [ "$AUTOSCALE" != true ] || { pool_error "Runner pools currently use each pool's fixed capacity; disable global autoscaling."; return 1; }
+    [ "$IMAGE_AUTOUPDATE" != true ] || { pool_error "Runner pools require explicit image updates per pool; disable global image auto-update."; return 1; }
+  fi
+}
 read_secret_file() {
   [ -f "$1" ] && cat "$1" 2>/dev/null || true
 }
@@ -203,6 +217,7 @@ reload_locked_snapshot() {
   load_cfg
   [ "$CI_PROVIDER" = "gitlab" ] || CI_PROVIDER="github"
   reload_secret_files || { err "could not take a consistent credential/CA snapshot"; return 1; }
+  if command -v pool_base_refresh >/dev/null 2>&1; then pool_base_refresh; fi
 }
 # PID files live on tmpfs (RUNDIR), not flash: they're pure per-boot runtime state,
 # so this both spares the USB stick and means a stale PID can't survive a reboot to
@@ -286,7 +301,7 @@ owned_container_snapshot() {
 
 managed_runner_snapshot() {
   local name="$1" index
-  echo "$name" | grep -qE "^${NAME_PREFIX}-[0-9]+$" \
+  echo "$name" | grep -qE '^ci-runner-([0-9]+|[a-z][a-z0-9-]{0,23}-[0-9]+)$' \
     || { err "unsafe runner slot name: $name"; return 1; }
   index="${name##*-}"
   owned_container_snapshot "$name" "$index" runner
@@ -323,8 +338,87 @@ managed_names() {
   listed="$(docker ps -a --filter "label=${MANAGED_LABEL}" --format '{{.Names}}')" \
     || { err "could not enumerate managed runner containers"; return 1; }
   printf '%s\n' "$listed" \
-    | awk -v prefix="${NAME_PREFIX}-" 'index($0,prefix)==1 && substr($0,length(prefix)+1) ~ /^[0-9]+$/ {print}' \
+    | awk '($0 ~ /^ci-runner-[0-9]+$/ || $0 ~ /^ci-runner-[a-z][a-z0-9-]{0,23}-[0-9]+$/) {print}' \
     | sort -V
+}
+
+runner_pool() {
+  local value
+  if ! pool_mode_enabled; then printf 'default\n'; return 0; fi
+  value="$(docker inspect -f '{{ index .Config.Labels "net.unraid.ci-runner-farm.pool" }}' "$1" 2>/dev/null)" || return 1
+  [ "$value" = '<no value>' ] && value=""
+  printf '%s\n' "${value:-default}"
+}
+
+BASE_NAME_PREFIX="$NAME_PREFIX"
+BASE_RUNNER_LABELS="$RUNNER_LABELS"
+BASE_RUNNER_CPUS="$RUNNER_CPUS"
+BASE_RUNNER_MEMORY="$RUNNER_MEMORY"
+BASE_IMAGE_SOURCE="$IMAGE_SOURCE"
+BASE_IMAGE="$IMAGE"
+BASE_GITLAB_RUNNER_TOKEN="$GITLAB_RUNNER_TOKEN"
+
+pool_base_refresh() {
+  BASE_NAME_PREFIX="ci-runner"
+  BASE_RUNNER_LABELS="$RUNNER_LABELS"
+  BASE_RUNNER_CPUS="$RUNNER_CPUS"
+  BASE_RUNNER_MEMORY="$RUNNER_MEMORY"
+  BASE_IMAGE_SOURCE="$IMAGE_SOURCE"
+  BASE_IMAGE="$IMAGE"
+  BASE_GITLAB_RUNNER_TOKEN="$GITLAB_RUNNER_TOKEN"
+}
+
+pool_activate() {
+  local pool="${1:-default}" image cpus memory
+  CRF_POOL_ID="$pool"
+  NAME_PREFIX="$BASE_NAME_PREFIX"
+  RUNNER_LABELS="$BASE_RUNNER_LABELS"
+  RUNNER_CPUS="$BASE_RUNNER_CPUS"
+  RUNNER_MEMORY="$BASE_RUNNER_MEMORY"
+  IMAGE_SOURCE="$BASE_IMAGE_SOURCE"
+  IMAGE="$BASE_IMAGE"
+  GITLAB_RUNNER_TOKEN="$BASE_GITLAB_RUNNER_TOKEN"
+  [ "$pool" = default ] && return 0
+  pool_mode_enabled || return 1
+  RUNNER_LABELS="$(pool_effective_labels "$pool")" || return 1
+  cpus="$(pool_cpus "$pool")" || return 1
+  memory="$(pool_memory "$pool")" || return 1
+  image="$(pool_image "$pool")" || return 1
+  [ "$cpus" = inherit ] || RUNNER_CPUS="$cpus"
+  [ "$memory" = inherit ] || RUNNER_MEMORY="$memory"
+  if [ "$image" = builtin ]; then
+    IMAGE_SOURCE=builtin
+    IMAGE=""
+  else
+    IMAGE_SOURCE=remote
+    IMAGE="$image"
+  fi
+  NAME_PREFIX="${BASE_NAME_PREFIX}-${pool}"
+  if [ "$CI_PROVIDER" = gitlab ]; then
+    local token_file="${CFGDIR}/gitlab-runner-token.${pool}"
+    [ -f "$token_file" ] || { err "GitLab pool $pool has no pool-specific runner token"; return 1; }
+    GITLAB_RUNNER_TOKEN="$(read_secret_file "$token_file")"
+    gitlab_token_ready \
+      || { err "GitLab pool $pool has an invalid runner token"; return 1; }
+  fi
+}
+
+expected_runner_confgen() {
+  local pool
+  pool="$(runner_pool "$1")" || return 1
+  ( pool_activate "$pool" && crf_confgen )
+}
+
+pool_tokens_ready() {
+  local rec pool
+  if ! pool_mode_enabled || [ "$CI_PROVIDER" != gitlab ]; then
+    provider_token_ready
+    return
+  fi
+  while IFS= read -r rec; do
+    pool="$(printf '%s' "$rec" | cut -d'|' -f2)"
+    ( pool_activate "$pool" && gitlab_token_ready ) || return 1
+  done < <(pool_records)
 }
 
 owned_managed_names() {
@@ -374,13 +468,12 @@ runner_confgen() { docker inspect -f '{{ index .Config.Labels "net.unraid.ci-run
 # visible to the drain instead of letting reconciliation advance through the fleet.
 count_stale_runners() {
   local cur c names snapshot id provider role index gen n=0
-  cur="$(crf_confgen)" || { err "could not calculate the current runner configuration"; return 1; }
-  [ -n "$cur" ] || { err "current runner configuration fingerprint is empty"; return 1; }
   names="$(managed_names)" || return 1
   for c in $names; do
     [ -n "$c" ] || continue
     snapshot="$(managed_runner_snapshot "$c")" || return 1
     IFS='|' read -r id provider role index gen <<< "$snapshot"
+    cur="$(expected_runner_confgen "$c")" || { n=$((n+1)); continue; }
     [ "$gen" = "$cur" ] || n=$((n+1))
   done
   echo "$n"
@@ -1495,15 +1588,39 @@ start_one() {
   provider_call start_one "$idx" "$name"
 }
 
+start_configured_capacity() {
+  local startn="$RUNNER_COUNT" i rec pool failed=0
+  if pool_mode_enabled; then
+    while IFS= read -r rec; do
+      pool="$(printf '%s' "$rec" | cut -d'|' -f2)"
+      pool_activate "$pool" || { failed=1; continue; }
+      startn="$(pool_fixed "$pool")" || { failed=1; continue; }
+      if [ "$IMAGE_SOURCE" = remote ] && provider_remote_image_host_pull_required; then
+        registry_login || { failed=1; continue; }
+        provider_prepare_remote_image "$(effective_image)" >/dev/null \
+          || { err "could not prepare image $(effective_image) for pool $pool"; failed=1; continue; }
+      fi
+      for i in $(seq 1 "$startn"); do start_one "$i" || failed=1; done
+    done < <(pool_records)
+  else
+    [ "$AUTOSCALE" = true ] && startn="$AUTOSCALE_MIN"
+    pool_activate default
+    for i in $(seq 1 "$startn"); do start_one "$i" || failed=1; done
+  fi
+  return "$failed"
+}
+
 # Recreate a stopped managed runner when its provider/config requires it. GitHub
 # needs a fresh short-lived registration token; a stale/provider-switched GitLab
 # manager must unregister its old persisted identity before replacement.
 recreate_stopped_runner() {
-  local c="$1" supplied_snapshot="${2:-}" snapshot id provider role idx gen
+  local c="$1" supplied_snapshot="${2:-}" snapshot id provider role idx gen pool
   snapshot="$supplied_snapshot"
   [ -n "$snapshot" ] || snapshot="$(managed_runner_snapshot "$c")" || return 1
   IFS='|' read -r id provider role idx gen <<< "$snapshot"
+  pool="$(runner_pool "$c")" || return 1
   remove_runner "$c" false "$id" "$provider" || return 1
+  pool_activate "$pool" || { err "runner $c belongs to unknown pool $pool"; return 1; }
   start_one "$idx"
 }
 
@@ -1621,12 +1738,12 @@ reconcile_stale_runners() {
   # token that was cleared/rotated while it waited.
   reload_locked_snapshot || return 1
   local cur c gen names snapshot id provider role index
-  cur="$(crf_confgen)" || return 1
   names="$(managed_names)" || return 1
   for c in $names; do
     [ -n "$c" ] || continue
     snapshot="$(managed_runner_snapshot "$c")" || return 1
     IFS='|' read -r id provider role index gen <<< "$snapshot"
+    cur="$(expected_runner_confgen "$c")" || return 1
     [ "$gen" = "$cur" ] && continue                  # already on the current config
     # Migrate idle runners; also migrate error-state ones (a wedged runner will never
     # reach idle on its own, so leaving it would strand it on the old config forever).
@@ -1719,6 +1836,11 @@ cmd_reconcile_drain() {
 # slow). Safe no-op when nothing is stale (the drain exits on the first count). Output
 # shows in the Apply progress frame — human text, not JSON.
 cmd_reconcile_config() {
+  validate_runner_mode || { err "cannot reconcile: $POOL_CONFIG_ERROR"; return 1; }
+  if pool_mode_enabled; then
+    echo "Named-pool configuration saved. Restart the fleet to apply exact pool membership, images, labels/tags, and resource limits; running jobs are not interrupted by this Apply action."
+    return 0
+  fi
   local managed
   managed="$(managed_names)" \
     || { err "cannot reconcile: could not enumerate the managed fleet"; return 1; }
@@ -1752,9 +1874,10 @@ reconcile_stop() {
 }
 
 cmd_start() {
+  validate_runner_mode || { err "$POOL_CONFIG_ERROR"; return 1; }
   local start_failed=0
-  provider_token_ready || { err "no valid $(provider_token_name) configured (set it in the web UI). Use 'validate' to test provisioning without one."; return 1; }
-  [ "$CI_PROVIDER" = "gitlab" ] && gitlab_validate_settings || { [ "$CI_PROVIDER" != "gitlab" ] || return 1; }
+  pool_tokens_ready || { err "one or more required $(provider_token_name) credentials are missing or invalid"; return 1; }
+  if [ "$CI_PROVIDER" = gitlab ] && ! pool_mode_enabled; then gitlab_validate_settings || return 1; fi
   rm -f "$SECURITY_CACHE"                       # force a fresh public-repo check on an explicit Start
   local secp; secp="$(public_repo_problem)"
   [ -n "$secp" ] && err "SECURITY: $secp"       # warn, do not block (operator's call)
@@ -1801,10 +1924,7 @@ cmd_start() {
   # across a Docker/array restart instead of collapsing straight to MIN.
   reap_dead_runners || start_failed=1
   # with autoscaling on, start the floor (MIN) and let the daemon grow to demand
-  local startn="$RUNNER_COUNT"
-  [ "$AUTOSCALE" = "true" ] && startn="$AUTOSCALE_MIN"
-  local i
-  for i in $(seq 1 "$startn"); do start_one "$i" || start_failed=1; done
+  start_configured_capacity || start_failed=1
   local final_count
   final_count="$(current_count)" || start_failed=1
   log "fleet up: ${final_count:-unknown} runner(s)"
@@ -2275,6 +2395,7 @@ cmd_credential_clear_registry_token() {
 
 cmd_scale() {
   local target="$1" failed=0
+  pool_mode_enabled && { err "manual scale is not available in named-pool mode; edit each pool's fixed capacity and restart the fleet"; return 1; }
   # Server-side validate + clamp. The form's max="20" is presentation-only, so a
   # crafted POST (n=99999) would otherwise drive an unbounded provisioning loop —
   # a container + a minted GitHub registration token per iteration (host / API
@@ -2351,7 +2472,9 @@ cmd_status() {
     local st; st="$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)"
     local cpus mem; cpus="$(docker inspect -f '{{.HostConfig.NanoCpus}}' "$c" 2>/dev/null)"
     mem="$(docker inspect -f '{{.HostConfig.Memory}}' "$c" 2>/dev/null)"
-    printf "%-22s %-10s %-8s %-10s %s\n" "$c" "$st" "$(runner_state "$c")" "$((cpus/1000000000))c/$((mem/1024/1024/1024))g" "$(effective_image)"
+    local image
+    image="$(docker inspect -f '{{.Config.Image}}' "$c" 2>/dev/null)"
+    printf "%-22s %-10s %-8s %-10s %s\n" "$c" "$st" "$(runner_state "$c")" "$((cpus/1000000000))c/$((mem/1024/1024/1024))g" "$image"
   done
 }
 
@@ -2606,14 +2729,18 @@ cmd_queued_json() {
 cmd_recycle() {
   # Replace one slot without purging its Docker/cache roots. The old provider
   # owns removal ordering; the selected provider owns replacement startup.
-  local name="$1" idx old_provider old_gen cur_gen image
+  local name="$1" idx old_provider old_gen cur_gen image pool
   local snapshot target_id target_role current_id current_name
   local was_stale=false
-  echo "$name" | grep -qE "^${NAME_PREFIX}-[0-9]+$" \
+  echo "$name" | grep -qE '^ci-runner-([0-9]+|[a-z][a-z0-9-]{0,23}-[0-9]+)$' \
     || { echo '{"ok":false,"error":"bad name"}'; return 1; }
   snapshot="$(managed_runner_snapshot "$name")" \
     || { echo '{"ok":false,"error":"runner is not an owned managed slot"}'; return 1; }
   IFS='|' read -r target_id old_provider target_role idx old_gen <<< "$snapshot"
+  pool="$(runner_pool "$name")" \
+    || { echo '{"ok":false,"error":"runner pool identity is unavailable"}'; return 1; }
+  pool_activate "$pool" \
+    || { echo '{"ok":false,"error":"runner belongs to an unavailable pool"}'; return 1; }
   cur_gen="$(crf_confgen)"
   if [ "$old_provider" != "$CI_PROVIDER" ] || [ "$old_gen" != "$cur_gen" ]; then was_stale=true; fi
 
@@ -2863,22 +2990,26 @@ cmd_status_json() {
   side_names="$(docker ps -a --filter 'label=net.unraid.ci-runner-farm.sidecar=true' --format '{{.Names}}' 2>/dev/null)"
   inspect_names="$names $side_names"
   # shellcheck disable=SC2086  # $names is intentionally word-split into one arg per runner
-  [ -n "$names" ] && inspraw="$(docker inspect -f '{{.Name}}|{{.State.Status}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{index .Config.Labels "net.unraid.ci-runner-farm.confgen"}}|{{index .Config.Labels "net.unraid.ci-runner-farm.provider"}}' $inspect_names 2>/dev/null)"
+  [ -n "$names" ] && inspraw="$(docker inspect -f '{{.Name}}|{{.State.Status}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{index .Config.Labels "net.unraid.ci-runner-farm.confgen"}}|{{index .Config.Labels "net.unraid.ci-runner-farm.provider"}}|{{index .Config.Labels "net.unraid.ci-runner-farm.pool"}}' $inspect_names 2>/dev/null)"
   local out="["; local first=1
   for c in $names; do
     [ -z "$c" ] && continue
-    local irow st cpus mem cgen row_provider stale=false
+    local irow st cpus mem cgen row_provider row_pool expected_gen stale=false
     # {{.Name}} carries a leading '/', so field 1 is "/name"; split the pipe-delimited
     # inspect row with one read builtin instead of three cut subshells per runner.
     irow="$(printf '%s\n' "$inspraw" | grep -m1 -E "^/?${c}\|")"
-    IFS='|' read -r _ st cpus mem cgen row_provider <<< "$irow"
+    IFS='|' read -r _ st cpus mem cgen row_provider row_pool <<< "$irow"
     [ "$row_provider" = gitlab ] || row_provider=github
+    [ "$row_pool" = '<no value>' ] && row_pool=""
+    row_pool="${row_pool:-default}"
     "${row_provider}_status_resources" "$c" "$inspraw"
     # Any managed runner whose baked-config fingerprint differs from the current
     # cfg predates a change. Include stopped fail-closed managers: hiding them
     # would make the UI claim migration is complete while unregister/retry work
     # is still outstanding.
-    [ "$cgen" != "$cur_gen" ] && { stale=true; stalec=$((stalec+1)); }
+    expected_gen="$(expected_runner_confgen "$c" 2>/dev/null || true)"
+    [ -n "$expected_gen" ] || expected_gen="$cur_gen"
+    [ "$cgen" != "$expected_gen" ] && { stale=true; stalec=$((stalec+1)); }
     # phase + cpu/mem usage + job context: all from the background cache line
     # New cache rows contain provider-neutral metadata followed by the legacy
     # GitHub fields; pre-provider cache rows are accepted for a seamless upgrade.
@@ -2920,7 +3051,7 @@ cmd_status_json() {
     case "$jrun" in *[!0-9]*) jrun="" ;; esac
     case "$job_id" in *[!0-9]*) job_id="" ;; esac
     [ $first -eq 0 ] && out+=","
-    out+="{\"name\":\"$(echo "$c"|json_escape)\",\"provider\":\"$row_provider\",\"state\":\"${st:-unknown}\",\"phase\":\"$phase\",\"job\":\"${job}\",\"job_started\":\"${jstarted}\",\"project\":\"${project}\",\"job_id\":\"${job_id}\",\"job_url\":\"${job_url}\",\"ref\":\"${ref}\",\"ref_url\":\"${ref_url}\",\"repo\":\"${jrepo}\",\"pr\":\"${jpr}\",\"branch\":\"${jbranch}\",\"run_id\":\"${jrun}\",\"cpus\":$(( ${cpus:-0}/1000000000 )),\"mem_gb\":$(( ${mem:-0}/1024/1024/1024 )),\"cpu_pct\":${cpu_pct:-0},\"mem_used_mib\":${mem_used_mib:-0},\"stale\":${stale}}"
+    out+="{\"name\":\"$(echo "$c"|json_escape)\",\"provider\":\"$row_provider\",\"pool\":\"$(printf '%s' "$row_pool"|json_escape)\",\"state\":\"${st:-unknown}\",\"phase\":\"$phase\",\"job\":\"${job}\",\"job_started\":\"${jstarted}\",\"project\":\"${project}\",\"job_id\":\"${job_id}\",\"job_url\":\"${job_url}\",\"ref\":\"${ref}\",\"ref_url\":\"${ref_url}\",\"repo\":\"${jrepo}\",\"pr\":\"${jpr}\",\"branch\":\"${jbranch}\",\"run_id\":\"${jrun}\",\"cpus\":$(( ${cpus:-0}/1000000000 )),\"mem_gb\":$(( ${mem:-0}/1024/1024/1024 )),\"cpu_pct\":${cpu_pct:-0},\"mem_used_mib\":${mem_used_mib:-0},\"stale\":${stale}}"
     first=0
   done
   out+="]"
@@ -2931,7 +3062,20 @@ cmd_status_json() {
   # public_repo_problem inline here: on a cold/expired cache that would run the
   # per-repo GitHub curls on the poll's own response path and stall it.
   local sec; sec="$(cat "$RUNDIR/sec.cache" 2>/dev/null | json_escape)"
-  echo "{\"provider\":\"$CI_PROVIDER\",\"count\":$(echo "$names" | grep -c . ),\"configured\":${RUNNER_COUNT},\"token\":$(provider_token_ready && echo true || echo false),\"autoscale\":\"${as} [${AUTOSCALE_MIN}-${AUTOSCALE_MAX}, buffer ${AUTOSCALE_MIN_IDLE}]\",\"image_autoupdate\":\"$(echo "$iu" | json_escape)\",\"warning\":\"${warn}\",\"security\":\"${sec}\",\"stale\":${stalec},\"runners\":${out}}"
+  local configured="$RUNNER_COUNT" pools='[]' rec pool pfirst=1 pcount labels pimage pjson='['
+  if pool_mode_enabled && pool_config_validate "$RUNNER_MODE" "$RUNNER_POOLS" "$GH_SCOPE" "$CI_PROVIDER"; then
+    configured=0
+    while IFS= read -r rec; do
+      pool="$(printf '%s' "$rec" | cut -d'|' -f2)"; pcount="$(pool_fixed "$pool")"
+      labels="$(pool_effective_labels "$pool")"; pimage="$(pool_image "$pool")"
+      configured=$((configured+pcount))
+      [ "$pfirst" -eq 0 ] && pjson+=','
+      pjson+="{\"id\":\"$(printf '%s' "$pool"|json_escape)\",\"labels\":\"$(printf '%s' "$labels"|json_escape)\",\"configured\":${pcount},\"image\":\"$(printf '%s' "$pimage"|json_escape)\"}"
+      pfirst=0
+    done < <(pool_records)
+    pools="${pjson}]"
+  fi
+  echo "{\"provider\":\"$CI_PROVIDER\",\"mode\":\"$RUNNER_MODE\",\"count\":$(echo "$names" | grep -c . ),\"configured\":${configured},\"token\":$(pool_tokens_ready 2>/dev/null && echo true || echo false),\"autoscale\":\"${as} [${AUTOSCALE_MIN}-${AUTOSCALE_MAX}, buffer ${AUTOSCALE_MIN_IDLE}]\",\"image_autoupdate\":\"$(echo "$iu" | json_escape)\",\"warning\":\"${warn}\",\"security\":\"${sec}\",\"stale\":${stalec},\"pools\":${pools},\"runners\":${out}}"
 }
 
 # Aggregate-only status for the Main -> Dashboard nchan widget: {count,up,busy,idle}.
@@ -2976,7 +3120,21 @@ cmd_logs() {
   return "$rc"
 }
 
-cmd_validate() { provider_call validate; }
+cmd_validate() {
+  validate_runner_mode || { err "$POOL_CONFIG_ERROR"; return 1; }
+  local rec pool failed=0
+  if pool_mode_enabled; then
+    while IFS= read -r rec; do
+      pool="$(printf '%s' "$rec" | cut -d'|' -f2)"
+      pool_activate "$pool" || { failed=1; continue; }
+      log "validating provider contract for pool $pool with image $(effective_image)"
+      provider_call validate || failed=1
+    done < <(pool_records)
+    return "$failed"
+  fi
+  pool_activate default
+  provider_call validate
+}
 
 # Clear the plugin's caches under CACHE_ROOT. Two independent safeguards: (1) the
 # root must pass crf_safe_cache_root — a dedicated subdir under a pool/disk, never a
