@@ -222,7 +222,9 @@ grep -q '^provider_remote_image_host_pull_required()' "$ENGINE" \
   || bad "common provisioning does not dispatch remote-image pull ownership"
 grep -q '^github_build_args()' "$GITHUB_ADAPTER" || bad "GitHub build adapter contract is missing"
 grep -qF -- '--add-host "host.docker.internal:host-gateway"' "$GITHUB_ADAPTER" \
-  || bad "GitHub runners do not expose a stable local farm-host address"
+  || bad "GitHub runners do not expose Docker's local farm-host gateway"
+grep -qF -- '--add-host "runner-farm.host:${host_service_ip}"' "$GITHUB_ADAPTER" \
+  || bad "GitHub runners do not expose a stable local farm service address"
 grep -q '^github_queued_refresh()' "$GITHUB_ADAPTER" || bad "GitHub queue adapter contract is missing"
 grep -q '^gitlab_write_config()' "$GITLAB_ADAPTER" || bad "GitLab TOML adapter contract is missing"
 grep -q '^gitlab_start_one()' "$GITLAB_ADAPTER" || bad "GitLab manager adapter contract is missing"

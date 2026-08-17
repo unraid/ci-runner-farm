@@ -11,9 +11,10 @@ organization scope. GitLab pools require a pool-specific `glrt-` runner token
 whose GitLab runner configuration owns the matching tags. Pool edits take
 effect on Fleet Restart, so Settings Apply does not interrupt active jobs.
 
-GitHub runner containers resolve `host.docker.internal` to their own Unraid
-farm host. A colocated service can use this stable local address without a
-machine-specific hostname. Strict network isolation still blocks host access.
+GitHub runner containers resolve `runner-farm.host` to the management address
+of the Unraid host that launched them. A colocated service can use this stable
+alias without a machine-specific hostname. `host.docker.internal` remains the
+Docker bridge gateway. Strict network isolation still blocks host access.
 
 For GitLab, create the runner and its tags/protection/scope in GitLab, then save
 the reusable `glrt-` runner authentication token in the plugin. A separate

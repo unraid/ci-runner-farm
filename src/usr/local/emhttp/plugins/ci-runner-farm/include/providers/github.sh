@@ -164,7 +164,9 @@ github_registry_credentials() {
 
 github_build_args() {
   local idx="$1"
-  local name="${2:-${NAME_PREFIX}-${idx}}" role="${CRF_CONTAINER_ROLE:-runner}"
+  local name="${2:-${NAME_PREFIX}-${idx}}" role="${CRF_CONTAINER_ROLE:-runner}" host_service_ip
+  host_service_ip="$(runner_host_service_ipv4)" \
+    || { err "could not resolve this farm host's local service address"; return 1; }
   ARGS_TMPDIR=""
   ARGS=(
     -d --restart=no
@@ -177,6 +179,7 @@ github_build_args() {
     --label "net.unraid.ci-runner-farm.pool=${CRF_POOL_ID:-default}"
     --label "net.unraid.ci-runner-farm.confgen=$(crf_confgen)"
     --add-host "host.docker.internal:host-gateway"
+    --add-host "runner-farm.host:${host_service_ip}"
     -e RUNNER_NAME="$(host)-${name}"
     -e LABELS="$RUNNER_LABELS"
     -e DISABLE_AUTO_UPDATE="true"
