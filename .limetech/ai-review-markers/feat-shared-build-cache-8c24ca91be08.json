@@ -1,25 +1,8 @@
 {
   "disposition": "PATCH",
-  "expected_structural_delta": "Four existing production modules plus defaults reference; approximately 120-180 production lines, two nonsecret generated representations, no new service/runtime owner/public operation. Three existing roots and three semantic hops. One focused test around150lines, one real-Docker test around100lines, documentation around100lines.",
-  "minimum_design": "Extend the current settings/parser and drain fingerprint. Render immutable nonsecret profile.env and buildkitd.toml snapshots, mount them read-only through both provider adapters, and document explicit workflow cache import/export and job-owned credentials.",
-  "outcome": "Opt-in existing-registry build-cache profiles with smaller local BuildKit GC budgets, preserving per-slot Docker ownership and active jobs.",
-  "reuse_decisions": [
-    {
-      "decision": "extend",
-      "name": "Existing settings, allowlisted parser and confgen/drain",
-      "rationale": "One configuration owner; preserve disabled-mode fingerprint and drain busy jobs before profile changes."
-    },
-    {
-      "decision": "extend",
-      "name": "GitHub and GitLab provider mount adapters",
-      "rationale": "Reuse their existing direct and nested DinD bind paths."
-    },
-    {
-      "decision": "not applicable",
-      "name": "Shared pull-through mirror",
-      "rationale": "Pull-only image cache cannot accept exported build caches; existing registry remains external and job-authenticated."
-    }
-  ],
+  "forecast_commit": "c214cf26f7868ce28f4f7db38bb9993264e3f764",
+  "reviewed_sha": "25758df09c724822f9e0da1d9011495f54a45e40",
   "schema": "limetech.ai-review-marker.v2",
-  "stage": "forecast"
+  "stage": "final",
+  "unresolved_proportionality_findings": []
 }
