@@ -80,8 +80,12 @@ for n in 1 2; do
     exit 1
   fi
 done
-[ -s "$tmp/volume-1" ] && [ -s "$tmp/volume-2" ]
-! cmp -s "$tmp/volume-1" "$tmp/volume-2"
+[ -s "$tmp/volume-1" ]
+[ -s "$tmp/volume-2" ]
+if cmp -s "$tmp/volume-1" "$tmp/volume-2"; then
+  echo 'BuildKit builders must use distinct local volumes.' >&2
+  exit 1
+fi
 # The RUN operation, not just base-image metadata, must come from registry cache.
 awk '/RUN echo registry-cache-proof/ {step=$1} $1 == step && $2 == "CACHED" {found=1} END {exit !found}' "$tmp/build-2.log"
 grep -q 'importing cache manifest from cache.test:5000/team/cache:project-target-platform-main' "$tmp/build-2.log"
