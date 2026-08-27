@@ -13,7 +13,8 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Never interrupt a run between creating the release and attaching its files.
+  cancel-in-progress: false
 
 jobs:
   release-please:
@@ -32,9 +33,8 @@ jobs:
         with:
           token: ${{ secrets.UNRAID_BOT_GITHUB_ADMIN_TOKEN || github.token }}
 
-  # On the open release PR, regenerate the self-contained .plg so its version
-  # entities and embedded payload match the version release-please just bumped,
-  # then commit it back onto the PR branch.
+  # Keep a preview of the plugin metadata on the open release PR. Publishing
+  # independently builds from the tag, so a merge cannot race this preparation.
   prepare-plugin-release-pr:
     needs: release-please
     if: ${{ github.repository == 'unraid/ci-runner-farm' && needs.release-please.outputs.pr != '' }}
@@ -81,19 +81,17 @@ jobs:
       tag: ${{ needs.release-please.outputs.tag_name }}
 
   # When the release PR merges and release-please cuts the tag + GitHub Release,
-  # attach the tagged .plg as the release asset that CA / Unraid installs from.
+  # attach the validated files that CA / Unraid installs from.
   publish-plugin-release:
     needs:
       - release-please
       - validate-plugin-release
     if: ${{ github.repository == 'unraid/ci-runner-farm' && needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
     steps:
-      - name: Checkout release tag
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
-
       - name: Upload plugin release artifact
         env:
           GH_TOKEN: ${{ secrets.UNRAID_BOT_GITHUB_ADMIN_TOKEN || github.token }}
@@ -101,15 +99,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Rebuild the package reproducibly from the tagged src; its MD5 matches
-          # the packageMD5 the committed .plg already advertises. Upload it under
-          # the version-pinned asset name the .plg's packageName entity expects.
-          chmod +x build-plg.sh
-          ./build-plg.sh --tgz-only
-          asset="$(sed -n 's/^<!ENTITY packageName[[:space:]]*"\([^"]*\)">$/\1/p' ci-runner-farm.plg)"
-          [[ -n "$asset" ]] || { echo "::error::packageName entity missing in .plg" >&2; exit 1; }
-          plg_md5="$(sed -n 's/^<!ENTITY packageMD5[[:space:]]*"\([0-9a-f]*\)">$/\1/p' ci-runner-farm.plg)"
-          tgz_md5="$(md5sum ci-runner-farm.tgz | cut -d' ' -f1)"
-          [[ "$plg_md5" == "$tgz_md5" ]] || { echo "::error::rebuilt package md5 ($tgz_md5) != committed .plg packageMD5 ($plg_md5)" >&2; exit 1; }
-          cp ci-runner-farm.tgz "$asset"
-          gh release upload "$RELEASE_TAG" ci-runner-farm.plg "$asset" --clobber
+          # Publish exactly the bytes accepted by validation, not another build
+          # or the stale descriptor that may still exist in the tagged tree.
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "release-$RELEASE_TAG" --dir release-artifacts
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            release-artifacts/*.tgz --clobber
+          # Make the descriptor available only after its package is uploaded.
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            release-artifacts/ci-runner-farm.plg --clobber
+
+          # Verify anonymous downloads, as used by Unraid and CA. An upload
+          # response alone does not prove the release files are retrievable.
+          downloaded="$(mktemp -d)"
+          trap 'rm -rf "$downloaded"' EXIT
+          for asset in release-artifacts/*; do
+            filename="${asset##*/}"
+            curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
+              --output "$downloaded/$filename" \
+              "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/$filename"
+            cmp "$asset" "$downloaded/$filename"
+          done

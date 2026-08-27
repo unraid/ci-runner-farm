@@ -47,6 +47,21 @@ jobs:
           fi
           internal_version="${tag#v}"
 
+          # The release PR can merge before its asynchronous metadata commit.
+          # Build from the checked-out tag and its authoritative manifest, not
+          # the potentially stale VERSION or .plg committed on the PR.
+          manifest_version="$(python3 -c 'import json; print(json.load(open(".release-please-manifest.json"))["."])')"
+          if [[ "$manifest_version" != "$internal_version" ]]; then
+            echo "Manifest version $manifest_version does not match tag $tag" >&2
+            exit 1
+          fi
+          printf '%s\n' "$internal_version" > VERSION
+          # Freeze the stamp to the tag's commit, so retries produce the same
+          # descriptor and package name regardless of the workflow/run number.
+          DATE="$(git show -s --format=%ct HEAD | python3 -c 'import datetime, sys; print(datetime.datetime.fromtimestamp(int(sys.stdin.read()), datetime.timezone.utc).strftime("%Y.%m.%d.%H%M"))')" \
+            BUILD_NUMBER=0 INTERNAL_VERSION="$internal_version" REPO="$GITHUB_REPOSITORY" \
+            bash ./build-plg.sh
+
           plg_entity() { sed -n "s/^<!ENTITY $1[[:space:]]*\"\([^\"]*\)\">$/\1/p" "$plg"; }
 
           plugin_version="$(plg_entity pluginVersion)"
@@ -80,23 +95,35 @@ jobs:
           python3 -c "import xml.etree.ElementTree as ET; ET.parse('$plg')"
 
           # Rebuild the package reproducibly from the tagged src. Its MD5 must
-          # match the packageMD5 the committed .plg advertises (proving publish
-          # will upload matching bytes), and its contents must match the source
-          # tree at this commit (proving the .plg fetches the tagged plugin code).
+          # match the packageMD5 the generated .plg advertises. Its contents
+          # must also match the source tree at this commit.
           tgz="ci-runner-farm.tgz"
-          chmod +x build-plg.sh
-          ./build-plg.sh --tgz-only
+          bash ./build-plg.sh --tgz-only
           plg_md5="$(sed -n 's/^<!ENTITY packageMD5[[:space:]]*"\([0-9a-f]*\)">$/\1/p' "$plg")"
           tgz_md5="$(md5sum "$tgz" | cut -d' ' -f1)"
           if [[ -z "$plg_md5" || "$plg_md5" != "$tgz_md5" ]]; then
             echo "packageMD5 in $plg ($plg_md5) does not match $tgz ($tgz_md5) at $tag" >&2
             exit 1
           fi
-          rm -rf /tmp/plgtree && mkdir -p /tmp/plgtree
-          tar -xzf "$tgz" -C /tmp/plgtree
-          if ! diff -r /tmp/plgtree src/usr/local/emhttp/plugins/ci-runner-farm; then
+          plgtree="$(mktemp -d)"
+          trap 'rm -rf "$plgtree"' EXIT
+          tar -xzf "$tgz" -C "$plgtree"
+          if ! diff -r "$plgtree" src/usr/local/emhttp/plugins/ci-runner-farm; then
             echo "PLG package ($tgz) does not match src/ at $tag" >&2
             exit 1
           fi
 
           echo "Validated $plg + $tgz for $tag (version $plg_version, package md5 $tgz_md5)"
+
+          asset="$(plg_entity packageName)"
+          mkdir -p release-artifacts
+          cp "$plg" release-artifacts/
+          cp "$tgz" "release-artifacts/$asset"
+
+      - name: Preserve validated release artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: release-${{ inputs.tag || github.ref_name }}
+          path: release-artifacts/
+          if-no-files-found: error
+          overwrite: true
