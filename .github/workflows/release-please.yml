@@ -108,3 +108,15 @@ jobs:
           # Make the descriptor available only after its package is uploaded.
           gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
             release-artifacts/ci-runner-farm.plg --clobber
+
+          # Verify anonymous downloads, as used by Unraid and CA. An upload
+          # response alone does not prove the release files are retrievable.
+          downloaded="$(mktemp -d)"
+          trap 'rm -rf "$downloaded"' EXIT
+          for asset in release-artifacts/*; do
+            filename="${asset##*/}"
+            curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
+              --output "$downloaded/$filename" \
+              "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/$filename"
+            cmp "$asset" "$downloaded/$filename"
+          done

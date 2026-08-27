@@ -102,5 +102,51 @@ with tempfile.TemporaryDirectory() as temporary:
     assert "Manifest version 1.10.0 does not match tag v2.0.0" in validate("v2.0.0", False)
     assert "Release tags must use SemVer" in validate("not-a-release", False)
 
+    # Run the actual publisher with only GitHub and HTTP replaced. The workflow
+    # still owns upload order, failure handling, and downloaded-byte comparison.
+    publication = (root / ".github/workflows/release-please.yml").read_text()
+    publication = publication.split("      - name: Upload plugin release artifact\n", 1)[1]
+    publication = publication.split("        run: |\n", 1)[1]
+    publish_script = "\n".join(line[10:] if line.startswith("          ") else line
+                               for line in publication.splitlines())
+    binaries = build / "bin"
+    binaries.mkdir()
+    gh = binaries / "gh"
+    gh.write_text('''#!/usr/bin/env bash
+set -eu
+printf '%s\\n' "$*" >> "$CALLS"
+if [[ "$*" == *"release upload"* && "$*" == *".tgz"* && "${FAIL_PACKAGE:-0}" == 1 ]]; then
+  exit 1
+fi
+''')
+    curl = binaries / "curl"
+    curl.write_text('''#!/usr/bin/env python3
+import os, pathlib, shutil, sys
+destination = pathlib.Path(sys.argv[sys.argv.index("--output") + 1])
+source = pathlib.Path("release-artifacts") / destination.name
+shutil.copyfile(source, destination)
+if os.environ.get("CORRUPT_DOWNLOAD") == "1":
+    destination.write_bytes(b"wrong release bytes")
+''')
+    gh.chmod(0o755)
+    curl.chmod(0o755)
+    calls = build / "calls"
+    publish_env = dict(env, PATH=f"{binaries}:{env['PATH']}", CALLS=str(calls),
+                       GITHUB_RUN_ID="123", GITHUB_SERVER_URL="https://github.com")
+
+    def publish(**overrides):
+        calls.write_text("")
+        return subprocess.run(["bash", "-c", publish_script], cwd=build,
+                              env=dict(publish_env, **overrides),
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+    assert publish().returncode == 0
+    uploads = [line for line in calls.read_text().splitlines() if line.startswith("release upload")]
+    assert len(uploads) == 2 and ".tgz" in uploads[0] and ".plg" in uploads[1], uploads
+    assert publish(FAIL_PACKAGE="1").returncode != 0
+    assert ".plg" not in calls.read_text(), "descriptor uploaded despite package upload failure"
+    assert publish(CORRUPT_DOWNLOAD="1").returncode != 0, "incorrect public download was accepted"
+
 print("release-guard: OK — stale metadata rebuilt, artifacts validated, retries stable, invalid tags rejected")
+print("release-guard: OK — package published first, failed uploads stop, public downloads compared")
 PY
