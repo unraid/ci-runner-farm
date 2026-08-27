@@ -97,9 +97,16 @@ for attempt in $(seq 1 30); do
   sleep 1
 done
 docker exec "$sidecar_id" docker info >/dev/null 2>&1
-docker exec "$sidecar_id" docker run --rm \
+if docker exec "$sidecar_id" docker run --rm \
   --mount "type=bind,src=$profile,dst=/etc/ci-runner-farm/build-cache,readonly" \
   busybox:1.37.0 sh -c '. /etc/ci-runner-farm/build-cache/profile.env &&
     test "$CRF_BUILD_CACHE_MODE" = registry &&
-    ! touch /etc/ci-runner-farm/build-cache/forbidden' > "$tmp/nested.log" 2>&1
+    ! touch /etc/ci-runner-farm/build-cache/forbidden' > "$tmp/nested.log" 2>&1; then
+  :
+else
+  result=$?
+  echo 'Nested read-only profile test failed:' >&2
+  tail -20 "$tmp/nested.log" >&2
+  exit "$result"
+fi
 echo 'build-cache-integration: independent cache reuse, effective GC budgets, and direct/nested read-only profiles: OK'
