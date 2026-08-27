@@ -106,10 +106,35 @@ normal owner. Remove workflow references to the profile before disabling the
 option. Classic fleets remove the mount as runners drain and are replaced.
 Named pools require the same scheduled Fleet Restart described above.
 
+## Keep caches across Stop and Restart
+
+**Stop** and **Restart** retain per-slot Docker data, GitLab job caches, and the
+shared image mirror cache. A later Start reuses the retained data for the same
+slot and cache root. This applies with the build cache profile on or off.
+The plugin still removes runner containers and performs provider credential
+cleanup. Plugin uninstall and credential removal also retain caches because
+they use Stop.
+
+Stop does not guarantee that active jobs finish. Schedule maintenance before
+using Stop or Restart. Autoscale-down and permanent slot retirement still delete
+that slot's Docker data and GitLab job cache. Registry exports are unaffected.
+
+To delete retained local caches, stop the fleet, then run the explicit command:
+
+```bash
+/usr/local/emhttp/plugins/ci-runner-farm/include/runner-farm.sh prune-cache
+```
+
+This command deletes plugin-owned cache directories under the configured cache
+root. It refuses to proceed while managed runners, sidecars, or job containers
+remain. Cache retention does not reduce existing disk use.
+
 ## Verification
 
 `bash tests/build-cache.sh` checks profile validation, snapshots, fingerprints,
 and both providers' mount contracts without external services.
+`bash tests/cache-retention.sh` checks Stop/Restart retention and explicit cache
+deletion for both providers using disposable on-disk fixtures.
 `bash tests/build-cache-integration.sh` uses disposable local Docker builders and
 a test registry to prove cross-builder cache reuse and effective GC settings.
 It does not contact a farm host or modify existing runners.
