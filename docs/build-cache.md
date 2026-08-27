@@ -140,6 +140,37 @@ deletion for both providers using disposable on-disk fixtures.
 a test registry to prove cross-builder cache reuse and effective GC settings.
 It does not contact a farm host or modify existing runners.
 
+### Verify an authenticated registry
+
+The **Lint** workflow has a manual **Also verify authenticated GHCR cache reuse**
+option. Run it only from a trusted, reviewed ref. Pull-request events cannot
+start this package-writing job. GitHub assigns its runner.
+
+The job uses its short-lived `GITHUB_TOKEN` with `packages: write`, not a farm
+credential. It exports synthetic Busybox layers to
+`ghcr.io/<owner>/<repository>-build-cache:proof-<run-id>-<attempt>`.
+Two fresh builders must have different local volumes, and the second must reuse
+the exported `RUN` layer. Authentication or export errors fail the test.
+The test never substitutes a local registry when the external registry fails.
+
+New GHCR packages are private by default. After the first run, verify that the
+package remains private and is linked to the workflow repository. Keep package
+access limited to authorized workflows. The job removes its temporary Docker
+credentials and local test resources. It leaves the small proof tag for
+inspection; the package owner controls retention.
+
+For another registry, authenticate through a temporary, job-owned Docker config.
+Set `CRF_CACHE_TEST_REPOSITORY` to its tagless repository and
+`CRF_CACHE_TEST_TAG` to a unique tag starting with `proof-`. Then run
+`bash tests/build-cache-integration.sh`. Both inputs are required together.
+Do not use the farm's host PAT, runner token, or image-pull credential.
+
+This check uses the plugin's generated profile in an isolated fixture. It does
+not prove that a deployed runner has adopted its profile or that a production
+workflow uses it. Verify the deployed read-only mount separately, then configure
+each authorized build workflow as described above. Enabling the farm option
+alone does not change existing build commands or reduce their old cache data.
+
 On macOS, use `bash tests/run-linux-checks.sh` with Docker running and Homebrew
 Coreutils installed (`brew install coreutils`). The wrapper runs the shell suite
 in Linux. Its real-Docker integration stage uses the installed GNU tools on the
