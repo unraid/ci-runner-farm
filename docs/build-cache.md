@@ -153,11 +153,16 @@ Two fresh builders must have different local volumes, and the second must reuse
 the exported `RUN` layer. Authentication or export errors fail the test.
 The test never substitutes a local registry when the external registry fails.
 
-New GHCR packages are private by default. After the first run, verify that the
-package remains private and is linked to the workflow repository. Keep package
-access limited to authorized workflows. The job removes its temporary Docker
-credentials and local test resources. It leaves the small proof tag for
-inspection; the package owner controls retention.
+Inspect the package's actual visibility, repository link, and workflow access
+after the run. Do not assume that it is private. This repository's initial
+synthetic proof produced a public package. Never use a public proof repository
+for private build caches. A private production cache needs its own authorized
+repository and access policy before the farm points to it.
+
+The job removes its temporary Docker credentials and local test resources. It
+leaves the small proof tag for inspection; the package owner controls retention.
+A successful proof against a public package establishes authenticated exports
+and cache reuse, but does not establish private-package read authorization.
 
 For another registry, authenticate through a temporary, job-owned Docker config.
 Set `CRF_CACHE_TEST_REPOSITORY` to its tagless repository and
