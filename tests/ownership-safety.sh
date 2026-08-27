@@ -22,6 +22,7 @@ run_recycle_tests() (
   : > "$mutation_log"
   SNAP_MODE=unlabeled
   REMOVED=0
+  RUN_FAILS=0
 
   docker() {
     local cmd="${1:-}" fmt="" target="" managed provider role index
@@ -70,6 +71,11 @@ run_recycle_tests() (
         ;;
       run)
         printf 'docker run %s\n' "$*" >> "$mutation_log"
+        if [ "$RUN_FAILS" -eq 1 ]; then
+          printf 'docker: Error response from daemon: manifest unknown.\n' >&2
+          printf 'auth: ghp_0123456789abcdefghijABCDEFGHIJ\n' >&2
+          return 125
+        fi
         ;;
       *) return 0 ;;
     esac
@@ -122,6 +128,23 @@ run_recycle_tests() (
   if grep -Eq '^docker (stop|rm).*ci-runner-1$' "$mutation_log"; then
     fail "recycle sent the mutable slot name to a destructive Docker command"
   fi
+
+  # The replacement is started only after the old runner is gone, so a failed
+  # 'docker run' must surface Docker's own reason instead of the generic message
+  # alone. Docker diagnostics are untrusted, so the detail is still redacted, and
+  # the JSON contract on stdout stays byte-identical for callers that parse it.
+  : > "$mutation_log"; REMOVED=0; RUN_FAILS=1
+  if cmd_recycle ci-runner-1 >"$tmp/recycle-runfail.out" 2>"$tmp/recycle-runfail.err"; then
+    RUN_FAILS=0; fail "recycle reported success after docker run failed"
+  fi
+  RUN_FAILS=0
+  grep -qF 'manifest unknown' "$tmp/recycle-runfail.err" \
+    || fail "recycle discarded the docker run error"
+  if grep -qF 'ghp_0123456789abcdefghijABCDEFGHIJ' "$tmp/recycle-runfail.err"; then
+    fail "recycle logged an unredacted token from docker diagnostics"
+  fi
+  grep -qxF '{"ok":false,"error":"removed but not recreated"}' "$tmp/recycle-runfail.out" \
+    || fail "recycle changed its JSON contract on a failed replacement"
 )
 
 run_github_validate_test() (

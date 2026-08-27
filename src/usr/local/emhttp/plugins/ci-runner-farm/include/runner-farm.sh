@@ -2879,7 +2879,16 @@ cmd_recycle() {
     if ! build_args "$idx"; then
       echo '{"ok":false,"error":"removed but a fresh GitHub registration token could not be minted"}'; return 1
     fi
-    if ! docker run "${ARGS[@]}" >/dev/null 2>&1; then
+    # Capture the real docker error (don't swallow it): an image-pull failure,
+    # a port collision, or a rejected resource limit was otherwise lost behind
+    # the generic message below, with the old runner already removed. Keep it in
+    # a variable rather than a temp file so a full RUNDIR cannot stop the
+    # replacement from being attempted at all. Docker diagnostics are untrusted,
+    # so the detail is redacted on the way to the log.
+    local rout
+    if ! rout="$(docker run "${ARGS[@]}" 2>&1 >/dev/null)"; then
+      err "recycle: docker run failed:"
+      printf '%s\n' "$rout" | redact_log_stream >&2
       clear_args_tmpdir
       echo '{"ok":false,"error":"removed but not recreated"}'; return 1
     fi
