@@ -2267,10 +2267,9 @@ cleanup_orphan_github_validations() {
 
 # Full teardown: daemons, runner containers, and the shared pull-through mirror.
 # Reached from the UI Stop button AND from plugin uninstall (the .plg remove step
-# calls 'stop'), so it must leave nothing running. The mirror's on-pool cache dir
-# ($CACHE_ROOT/registry-mirror) is intentionally left behind — like the config and
-# token — so a later Start rebuilds the container with its cache warm; only the
-# container is removed here, not the cached layers.
+# calls 'stop'), so it must leave nothing running. Retain on-pool runner and
+# mirror caches so a later Start can reuse them. Explicit prune-cache deletes
+# retained caches. Permanent slot retirement still deletes that slot's data.
 cmd_stop() {
   # Cancel every process that can create fleet resources before examining the
   # current Docker state. In particular, a sleeping boot worker must not wake
@@ -2289,7 +2288,7 @@ cmd_stop() {
     while IFS= read -r c; do
       [ -n "$c" ] || continue
       log "stopping $c (graceful deregister)"
-      remove_runner "$c" || stop_failed=1
+      remove_runner "$c" false || stop_failed=1
     done <<< "$names"
   fi
   # A provider removal that failed closed can intentionally leave a manager and
