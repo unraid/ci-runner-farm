@@ -33,3 +33,6 @@ jobs:
 
       - name: Lint generated GitLab Runner configuration
         run: bash tests/gitlab-runner-lint.sh
+
+      - name: Verify shared build cache with isolated builders
+        run: bash tests/build-cache-integration.sh
