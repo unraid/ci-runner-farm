@@ -62,3 +62,10 @@ FILTER_REGEX_EXCLUDE: (^LICENSE$|^CHANGELOG\.md$|\.git/|megalinter-reports/)
 # uses .json with comments rather than .jsonc), so allow comments/trailing
 # commas for all JSON rather than relying on file extension.
 JSON_JSONLINT_ARGUMENTS: "--comments --trailing-newline --trailing-commas"
+
+# The shipped README needs public URLs, but new docs do not exist on main
+# before a PR merges. Validate this repository's main-file links against the
+# candidate checkout inside MegaLinter. Missing local targets still fail.
+SPELL_LYCHEE_ARGUMENTS:
+  - --remap
+  - '^https://github\.com/unraid/ci-runner-farm/blob/main/ file:///github/workspace/'
