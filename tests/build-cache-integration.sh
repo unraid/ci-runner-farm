@@ -2,6 +2,18 @@
 # Real registry reuse across two isolated builders. Never prunes a Docker daemon.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+if [ "$(uname -s)" = Darwin ]; then
+  command -v brew >/dev/null 2>&1 || {
+    echo 'macOS cache integration requires Homebrew Coreutils (brew install coreutils).' >&2
+    exit 1
+  }
+  coreutils_bin="$(brew --prefix coreutils)/libexec/gnubin"
+  [ -x "$coreutils_bin/mv" ] || {
+    echo 'Install GNU tools for macOS cache integration: brew install coreutils' >&2
+    exit 1
+  }
+  export PATH="$coreutils_bin:$PATH"
+fi
 tmp="$(mktemp -d)"
 suffix="$(basename "$tmp" | tr '[:upper:].' '[:lower:]-')"
 network="crf-cache-$suffix"
