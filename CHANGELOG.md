@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.1](https://github.com/unraid/ci-runner-farm/compare/v1.10.0...v1.10.1) (2026-08-27)
+
+
+### Bug Fixes
+
+* **release:** publish validated plugin assets from the release tag ([#84](https://github.com/unraid/ci-runner-farm/issues/84)) ([65b10a6](https://github.com/unraid/ci-runner-farm/commit/65b10a652ce98424ca407157aad9e7d10dc1a3ab))
+
 ## [1.10.0](https://github.com/unraid/ci-runner-farm/compare/v1.9.1...v1.10.0) (2026-08-27)
 
 
