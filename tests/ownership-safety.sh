@@ -143,8 +143,10 @@ run_recycle_tests() (
   if grep -qF 'ghp_0123456789abcdefghijABCDEFGHIJ' "$tmp/recycle-runfail.err"; then
     fail "recycle logged an unredacted token from docker diagnostics"
   fi
-  grep -qxF '{"ok":false,"error":"removed but not recreated"}' "$tmp/recycle-runfail.out" \
-    || fail "recycle changed its JSON contract on a failed replacement"
+  # exec.php consumes the verdict as the FINAL line of stdout, after the progress
+  # logs, so assert that position rather than mere presence anywhere in the stream.
+  [ "$(tail -n 1 "$tmp/recycle-runfail.out")" = '{"ok":false,"error":"removed but not recreated"}' ] \
+    || fail "recycle changed its final-line JSON verdict on a failed replacement"
 )
 
 run_github_validate_test() (
