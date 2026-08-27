@@ -12,8 +12,9 @@ exports.
 2. Select **Existing registry (workflow opt-in)**.
 3. Enter a tagless repository, such as `registry.example.com/team/build-cache`.
 4. Set **Local cache budget per builder (GiB)**. The default is 20 GiB.
-5. Apply the settings. Busy jobs keep their current profile until they finish.
-6. Update the build workflows as described below.
+5. Apply the settings. In classic mode, wait for runners to finish their jobs and adopt the new profile.
+6. For named pools, schedule a **Fleet Restart** after active jobs finish. Apply alone does not replace those runners.
+7. Wait for the replacement runners before updating build workflows as described below.
 
 The configuration keys are `BUILD_CACHE_MODE` (`off` or `registry`),
 `BUILD_CACHE_REPOSITORY`, and `BUILD_CACHE_LOCAL_GIB` (1–1024).
@@ -101,8 +102,9 @@ trades disk use for cache downloads and depends on registry availability.
 
 Enabling this option does not prune old builders or immediately recover their
 disk space. Migrate workflows first, then retire unused builders through their
-normal owner. Disabling the option removes the profile from newly provisioned
-runners after drain; remove workflow references to the profile before disabling.
+normal owner. Remove workflow references to the profile before disabling the
+option. Classic fleets remove the mount as runners drain and are replaced.
+Named pools require the same scheduled Fleet Restart described above.
 
 ## Verification
 
@@ -111,3 +113,8 @@ and both providers' mount contracts without external services.
 `bash tests/build-cache-integration.sh` uses disposable local Docker builders and
 a test registry to prove cross-builder cache reuse and effective GC settings.
 It does not contact a farm host or modify existing runners.
+
+On macOS, use `bash tests/run-linux-checks.sh` with Docker running and Homebrew
+Coreutils installed (`brew install coreutils`). The wrapper runs the shell suite
+in Linux. Its real-Docker integration stage uses the installed GNU tools on the
+host because the production snapshot generator requires GNU `mv -T`.
