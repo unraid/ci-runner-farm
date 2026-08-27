@@ -112,12 +112,13 @@ Named pools require the same scheduled Fleet Restart described above.
 shared image mirror cache. A later Start reuses the retained data for the same
 slot and cache root. This applies with the build cache profile on or off.
 The plugin still removes runner containers and performs provider credential
-cleanup. Plugin uninstall and credential removal also retain caches because
-they use Stop.
+cleanup. Plugin uninstall and active GitLab runner-token removal also retain
+caches because they use Stop.
 
 Stop does not guarantee that active jobs finish. Schedule maintenance before
-using Stop or Restart. Autoscale-down and permanent slot retirement still delete
-that slot's Docker data and GitLab job cache. Registry exports are unaffected.
+using Stop or Restart. Manual scale-down, autoscale-down, and permanent slot
+retirement still delete that slot's Docker data and GitLab job cache. Registry
+exports are unaffected.
 
 To delete retained local caches, stop the fleet, then run the explicit command:
 
