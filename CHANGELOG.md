@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.10.0](https://github.com/unraid/ci-runner-farm/compare/v1.9.1...v1.10.0) (2026-08-27)
+
+
+### Features
+
+* add .editorconfig and VS Code editor settings ([#69](https://github.com/unraid/ci-runner-farm/issues/69)) ([a8d6aac](https://github.com/unraid/ci-runner-farm/commit/a8d6aac2cdf3f41c0540bced687bb97d0bdc3e36)), closes [#65](https://github.com/unraid/ci-runner-farm/issues/65)
+* add provider-neutral runner pools ([#74](https://github.com/unraid/ci-runner-farm/issues/74)) ([2fbc077](https://github.com/unraid/ci-runner-farm/commit/2fbc07781df3d0f537d9cf17603bb0088eb1656c))
+* **autoscale:** self-heal runners poisoned by dangling buildkit leases ([#73](https://github.com/unraid/ci-runner-farm/issues/73)) ([e0190e5](https://github.com/unraid/ci-runner-farm/commit/e0190e5a82c6ea3c476950386cc2015138fb5c52))
+
+
+### Bug Fixes
+
+* allow colocated QA VM transport ([#77](https://github.com/unraid/ci-runner-farm/issues/77)) ([a96940a](https://github.com/unraid/ci-runner-farm/commit/a96940a5dc85006019c4bef81418a697aacc7c85))
+* **github:** expose local farm host gateway ([#75](https://github.com/unraid/ci-runner-farm/issues/75)) ([b001402](https://github.com/unraid/ci-runner-farm/commit/b001402eee748753625ffb610484894c4d704fab))
+* **github:** route colocated services to local farm ([#76](https://github.com/unraid/ci-runner-farm/issues/76)) ([30eb3b5](https://github.com/unraid/ci-runner-farm/commit/30eb3b552d130398b3b0b91a43940b9f92e9bf1b))
+* surface docker run stderr when a recycle replacement fails ([#82](https://github.com/unraid/ci-runner-farm/issues/82)) ([8b5e01f](https://github.com/unraid/ci-runner-farm/commit/8b5e01fb31e404c8baef7188a6e3b89e186c304c))
+
 ## [1.9.1](https://github.com/unraid/ci-runner-farm/compare/v1.9.0...v1.9.1) (2026-08-12)
 
 
