@@ -1,0 +1,64 @@
+---
+# MegaLinter — https://megalinter.io/
+# Full image, not a language flavor: flavors trim their linter set to match a
+# detected language, and that also drops general-purpose scanners (DevSkim,
+# Dustilock, Kingfisher, ...) that aren't language-specific. This repo is
+# small enough that the full image's extra pull time isn't worth trading
+# those away.
+#
+# Everything is enabled except what's explicitly disabled below. Each entry
+# is removed by the tracking issue that enables and fixes that linter — see
+# DISABLE_LINTERS for the current baseline and why it's structured this way
+# rather than as an ENABLE_LINTERS allowlist.
+APPLY_FIXES: none
+SHOW_ELAPSED_TIME: true
+PARALLEL: true
+FILEIO_REPORTER: false
+# Most PRs here come from contributor forks, where GitHub always forces a
+# read-only GITHUB_TOKEN on pull_request-triggered workflows no matter what
+# the workflow's permissions block grants. This reporter would only ever
+# succeed on same-repo branches (e.g. release-please's), so it's off rather
+# than 403-ing on every contributor PR; the job summary and uploaded report
+# artifact already cover every PR type without needing write permissions.
+GITHUB_COMMENT_REPORTER: false
+
+# All linters run except this list. Baseline measured 2026-08-15 against
+# oxsecurity/megalinter:v10.0.0 (full image), VALIDATE_ALL_CODEBASE=true, on a
+# clean LF checkout (see docs/sessions/upstream-issues/00-megalinter-baseline-report.md
+# for the CRLF pitfall this avoids). Each follow-up issue opens by removing its
+# linter from this list, then fixing whatever it flags — smaller diffs than
+# growing an allowlist, and any linter MegaLinter adds later is on by default.
+DISABLE_LINTERS:
+  - ACTION_ZIZMOR
+  - BASH_SHELLCHECK
+  - BASH_SHFMT
+  - COPYPASTE_JSCPD
+  - DOCKERFILE_HADOLINT
+  # Not part of the PHP-flavor linter set the original baseline measured
+  # against; switching to the full image turned it on and it fell through
+  # that sweep. Repo-wide indentation debt (README.md, shell scripts, .plg,
+  # .page files, ...) — needs its own tracking issue rather than a
+  # sprawling reformat bundled into unrelated PRs.
+  - EDITORCONFIG_EDITORCONFIG_CHECKER
+  - JSON_PRETTIER
+  - MARKDOWN_MARKDOWNLINT
+  - MARKDOWN_MARKDOWN_TABLE_FORMATTER
+  - PHP_PHPCS
+  - PHP_PHPCSFIXER
+  - PHP_PSALM
+  - REPOSITORY_BETTERLEAKS
+  - REPOSITORY_CHECKOV
+  - REPOSITORY_DEVSKIM
+  - REPOSITORY_TRIVY
+  - SPELL_CSPELL
+  - YAML_PRETTIER
+
+# LICENSE is a verbatim upstream legal document (Apache-2.0) — exclude it from
+# every linter rather than tuning each one around it. CHANGELOG.md is
+# release-please-managed output, not hand-authored content.
+FILTER_REGEX_EXCLUDE: (^LICENSE$|^CHANGELOG\.md$|\.git/|megalinter-reports/)
+
+# .jsonc is used inconsistently across editors (e.g. VS Code config commonly
+# uses .json with comments rather than .jsonc), so allow comments/trailing
+# commas for all JSON rather than relying on file extension.
+JSON_JSONLINT_ARGUMENTS: "--comments --trailing-newline --trailing-commas"
