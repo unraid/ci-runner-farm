@@ -68,4 +68,4 @@ JSON_JSONLINT_ARGUMENTS: "--comments --trailing-newline --trailing-commas"
 # candidate checkout inside MegaLinter. Missing local targets still fail.
 SPELL_LYCHEE_ARGUMENTS:
   - --remap
-  - '^https://github\.com/unraid/ci-runner-farm/blob/main/ file:///github/workspace/'
+  - '^https[:]//github[.]com/unraid/ci-runner-farm/blob/main/ file:///github/workspace/'
