@@ -14,7 +14,9 @@ if [ "$(uname -s)" = Darwin ]; then
   }
   export PATH="$coreutils_bin:$PATH"
 fi
-tmp="$(mktemp -d)"
+# DinD mounts its own tmpfs over /tmp, hiding nested bind sources there. Keep
+# the fixture outside that overlay and preserve identical host/sidecar paths.
+tmp="$(mktemp -d /var/tmp/crf-build-cache.XXXXXX)"
 suffix="$(basename "$tmp" | tr '[:upper:].' '[:lower:]-')"
 network="crf-cache-$suffix"
 registry="crf-registry-$suffix"
@@ -97,6 +99,8 @@ for attempt in $(seq 1 30); do
   sleep 1
 done
 docker exec "$sidecar_id" docker info >/dev/null 2>&1
+docker exec "$sidecar_id" test -s "$profile/profile.env"
+docker exec "$sidecar_id" test -s "$profile/buildkitd.toml"
 if docker exec "$sidecar_id" docker run --rm \
   --mount "type=bind,src=$profile,dst=/etc/ci-runner-farm/build-cache,readonly" \
   busybox:1.37.0 sh -c '. /etc/ci-runner-farm/build-cache/profile.env &&
