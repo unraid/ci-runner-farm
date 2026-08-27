@@ -17,6 +17,7 @@ provider's credentials and runtime.
 | Concurrent runner slots | Each slot accepts one job at a time and can have CPU and memory limits, keeping CI from starving the rest of the host. |
 | GitHub and GitLab providers | Keep the existing GitHub Actions integration or select GitLab.com/self-managed GitLab. |
 | Warm shared caches | Reuse npm, yarn, pnpm, Playwright, Cargo, sccache, or custom cache directories across jobs. |
+| Optional registry build-cache profile | Supply explicit CI workflows with an existing registry cache location and a smaller per-builder GC budget. No new server or shared Docker data root. See the [setup guide](docs/build-cache.md). |
 | Slot-scoped Docker-in-Docker | Give each runner slot a private privileged Docker daemon without exposing Unraid's existing Docker socket by default; privileged DinD is still capable of host compromise. |
 | Bring your own job image | Pull a remote image or edit and build a provider-specific starter image in the plugin. |
 | Named runner pools | Route jobs to purpose-built pools with independent fixed capacity, labels/tags, CPU, memory, and images. |

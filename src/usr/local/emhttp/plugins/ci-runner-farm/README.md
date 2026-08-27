@@ -5,6 +5,12 @@ resource-capped slots, warm package/image caches, Docker-in-Docker, and optional
 autoscaling. One provider owns the farm at a time; GitHub remains the default so
 existing installations keep their behavior.
 
+The optional **Build cache profile** supplies an existing registry cache location
+and a per-builder garbage-collection budget (20 GiB by default). It is off by
+default and requires Docker-in-Docker plus explicit workflow integration.
+It creates no registry server, shares no writable Docker root, and passes no
+host credentials to jobs. See the [build-cache setup guide](https://github.com/unraid/ci-runner-farm/blob/main/docs/build-cache.md).
+
 Named pools work with both providers. Each pool can use its own fixed capacity,
 labels or tags, CPU, memory, and runner/job image. GitHub pools require
 organization scope. GitLab pools require a pool-specific `glrt-` runner token
