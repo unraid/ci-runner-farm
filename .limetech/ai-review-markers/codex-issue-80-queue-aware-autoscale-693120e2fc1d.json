@@ -1,0 +1,25 @@
+{
+  "disposition": "NOT_REQUIRED",
+  "expected_structural_delta": "No new production modules, roots, durable state owners, protocols, or public operations. Extend the existing autoscale owner and add one focused test file.",
+  "minimum_design": "Read the existing queued.cache in autoscale_tick through one parser that accepts current and legacy formats, rejects stale, mismatched, or invalid data, and uses the result only in growth target math.",
+  "outcome": "When autoscaling reads a provider-matching queue cache no older than 60 seconds, a backlog increases the next growth target without exceeding AUTOSCALE_MAX. Invalid cache data keeps the existing growth step and shrink behavior.",
+  "reuse_decisions": [
+    {
+      "decision": "reuse",
+      "name": "queued.cache format and refresh writers",
+      "rationale": "The provider adapters already write the cache and cmd_queued_json defines its current and legacy formats. The autoscaler should consume that existing contract."
+    },
+    {
+      "decision": "extend",
+      "name": "autoscale_tick",
+      "rationale": "The existing growth branch owns the target calculation, so queue depth belongs there without a second scaling controller."
+    },
+    {
+      "decision": "new_owner",
+      "name": "tests/autoscale-queue.sh",
+      "rationale": "A focused fixture is needed to prove fresh, stale, mismatched, missing, and maximum-clamped queue behavior."
+    }
+  ],
+  "schema": "limetech.ai-review-marker.v2",
+  "stage": "forecast"
+}
