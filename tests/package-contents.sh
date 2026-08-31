@@ -50,6 +50,7 @@ remove_block="$(awk '
 for required_remove_line in \
   'set -euo pipefail' \
   'if ! "$PLGDIR/include/runner-farm.sh" stop' \
+  'crf_bound_boot_log "$CFGDIR/boot.log"' \
   'cleanup engine is missing and Docker is unavailable' \
   'cleanup engine is missing and Docker ownership enumeration failed' \
   'cleanup engine is missing and GitLab executor ownership enumeration failed' \
@@ -72,8 +73,8 @@ success_line="$(printf '%s\n' "$remove_block" | grep -nF 'ci-runner-farm removed
 for required in \
   RunnerFarm.page RunnerFarmDashboard.page RunnerFarmFleet.page RunnerFarmImage.page RunnerFarmSettings.page \
   default.cfg default.Dockerfile default.github.Dockerfile default.gitlab.Dockerfile \
-  event/docker_started event/stopping_docker include/runner-farm.sh include/exec.php include/crf-core.php include/encoding.php \
-  include/providers/github.sh include/providers/gitlab.sh \
+  event/docker_started event/stopping_docker include/runner-farm.sh include/exec.php include/crf-core.php \
+  include/boot-log.sh include/encoding.php include/providers/github.sh include/providers/gitlab.sh \
   nchan/ci_runner_farm README.md
 do
   [ -f "$tmp/extracted/$required" ] || {

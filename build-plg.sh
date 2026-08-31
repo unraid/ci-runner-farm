@@ -467,6 +467,10 @@ fi
 # Bring the fleet + autoscaler up. Runs on manual install AND on every boot
 # (rc.local reinstalls plugins), detached so it waits for dockerd+array without
 # blocking. No-op until the selected provider's runner token is configured.
+if [ -r "\$PLGDIR/include/boot-log.sh" ]; then
+  . "\$PLGDIR/include/boot-log.sh" || true
+  crf_bound_boot_log "\$CFGDIR/boot.log" || true
+fi
 ( nohup "\$PLGDIR/include/runner-farm.sh" boot-autostart >>"\$CFGDIR/boot.log" 2>&1 & ) || true
 echo ""
 echo "+=============================================================+"
@@ -484,6 +488,10 @@ set -euo pipefail
 PLGDIR="/usr/local/emhttp/plugins/${NAME}"
 CFGDIR="/boot/config/plugins/${NAME}"
 ENGINE="\$PLGDIR/include/runner-farm.sh"
+if [ -r "\$PLGDIR/include/boot-log.sh" ]; then
+  . "\$PLGDIR/include/boot-log.sh" || true
+  crf_bound_boot_log "\$CFGDIR/boot.log" || true
+fi
 if [ -x "\$ENGINE" ]; then
   if ! "\$PLGDIR/include/runner-farm.sh" stop >>"\$CFGDIR/boot.log" 2>&1; then
     echo "ci-runner-farm NOT removed: one or more runners, jobs, or privileged sidecars could not be stopped safely." >&2
