@@ -35,6 +35,7 @@ bash tests/numeric-config.sh
 bash tests/safe-paths.sh
 bash tests/provider-contract.sh
 bash tests/exec-csrf.sh
+bash tests/secret-write.sh
 bash tests/utf8-safety.sh
 bash tests/log-redaction.sh
 bash tests/provider-mocks.sh
