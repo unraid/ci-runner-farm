@@ -163,10 +163,28 @@ assert "External dev artifacts and rollback packages are installer-owned and ret
 PY
 
 extract_dir="$(mktemp -d "${TMPDIR:-/tmp}/ci-runner-farm-dev-extract.XXXXXX")"
-trap 'rm -f -- "$log"; rm -rf -- "$extract_dir"' EXIT HUP INT TERM
+mode_fixture="$(mktemp -d "${TMPDIR:-/tmp}/ci-runner-farm-dev-modes.XXXXXX")"
+trap 'rm -f -- "$log"; rm -rf -- "$extract_dir" "$mode_fixture"' EXIT HUP INT TERM
 tar -xzf "$package" -C "$extract_dir"
 diff -r "src/usr/local/emhttp/plugins/ci-runner-farm" "$extract_dir" >/dev/null \
   || fail "package contents differ from the runtime source tree"
+
+# A checkout made with umask 0002 can contain group-writable files. The Linux
+# check environment uses umask 0022, so the renderer must preserve source modes
+# while it copies the tree or its reproducible archive hash changes.
+mkdir -p "$mode_fixture"
+tar -cf - build-plg.sh VERSION CHANGELOG.md src | tar -xf - -C "$mode_fixture"
+chmod -R g+w "$mode_fixture"
+(
+  cd "$mode_fixture"
+  umask 022
+  DATE=2026.08.04.1234 \
+    BUILD_NUMBER=0 \
+    INTERNAL_VERSION=1.8.0 \
+    bash ./build-plg.sh --dev >/dev/null
+)
+[ -f "$mode_fixture/tmp/dev-package/manifest.json" ] \
+  || fail "development build failed when source files were group-writable"
 
 while IFS= read -r entry; do
   case "$entry" in

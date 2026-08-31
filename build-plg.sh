@@ -116,10 +116,10 @@ build_dev_package() {
   # and the root ci-runner-farm.plg/ci-runner-farm.tgz completely isolated.
   render_dir="$dev_workdir/render"
   mkdir -p "$render_dir/$SRCDIR"
-  cp build-plg.sh "$render_dir/build-plg.sh"
-  [ ! -f VERSION ] || cp VERSION "$render_dir/VERSION"
-  [ ! -f CHANGELOG.md ] || cp CHANGELOG.md "$render_dir/CHANGELOG.md"
-  cp -R "$SRCDIR"/. "$render_dir/$SRCDIR/"
+  cp -p build-plg.sh "$render_dir/build-plg.sh"
+  [ ! -f VERSION ] || cp -p VERSION "$render_dir/VERSION"
+  [ ! -f CHANGELOG.md ] || cp -p CHANGELOG.md "$render_dir/CHANGELOG.md"
+  cp -pR "$SRCDIR"/. "$render_dir/$SRCDIR/"
   (
     cd "$render_dir"
     DATE="$dev_date" \
