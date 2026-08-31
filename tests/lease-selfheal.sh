@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build-poison self-heal: the GitHub scan must flag exactly the slots whose
-# failed jobs carry the dangling-lease signature, download each job log at most
+# failed jobs carry a supported corruption signature, download each job log at most
 # once, and the healer must repair only an idle, still-current flagged slot —
 # stop, clear ONLY buildkit/ from its DinD root, restart — bounded to one
 # attempt per slot per interval, never touching a busy slot.
@@ -62,9 +62,11 @@ docker() {
 }
 
 # One failed run (900001) whose jobs: 700001 failed on mockhost-ci-runner-2
-# (log carries the signature), 700002 failed on a GitHub-hosted runner, and
+# with the dangling-lease signature, 700002 failed on a GitHub-hosted runner,
 # 700003 SUCCEEDED on mockhost-ci-runner-3 with a step whose nested conclusion
-# is "failure" — the parser must keep the job-level conclusion, not a step's.
+# is "failure", and 700004 failed on mockhost-ci-runner-3 with a missing
+# BuildKit snapshot parent. The parser must keep the job-level conclusion, not
+# a step's.
 GH_API_LOG="$tmp/gh-api.log"; : > "$GH_API_LOG"
 gh_api() {
   printf '%s %s\n' "$1" "$2" >> "$GH_API_LOG"
@@ -91,7 +93,7 @@ EOF
     /repos/example/one/actions/runs/900001/jobs*)
       cat <<'EOF'
 {
-  "total_count": 3,
+  "total_count": 4,
   "jobs": [
     {
       "id": 700001,
@@ -129,6 +131,15 @@ EOF
       ],
       "runner_id": 13,
       "runner_name": "mockhost-ci-runner-3"
+    },
+    {
+      "id": 700004,
+      "run_id": 900001,
+      "status": "completed",
+      "conclusion": "failure",
+      "steps": [],
+      "runner_id": 13,
+      "runner_name": "mockhost-ci-runner-3"
     }
   ]
 }
@@ -138,7 +149,7 @@ EOF
   esac
 }
 
-# Job-log transport: only job 700001's log carries the real incident signature.
+# Job-log transport: jobs 700001 and 700004 carry supported poison signatures.
 CURL_LOG="$tmp/curl.log"; : > "$CURL_LOG"
 curl() {
   printf '%s\n' "$*" >> "$CURL_LOG"
@@ -147,6 +158,8 @@ curl() {
     */jobs/700001/logs*)
       printf '2026-08-16T20:57:43.6390511Z #13 ERROR: lease "idf11ya2iiot5bqwvr7qojagq": not found\n'
       printf '2026-08-16T20:57:43.6402537Z ERROR: failed to build: failed to solve: lease "idf11ya2iiot5bqwvr7qojagq": not found\n' ;;
+    */jobs/700004/logs*)
+      printf 'ERROR: failed to prepare sha256:25cd as abc: failed to stat parent: stat /var/lib/buildkit/runc-overlayfs/snapshots/snapshots/562/fs: no such file or directory\n' ;;
     *) printf 'ordinary failing job log without the signature\n' ;;
   esac
 }
@@ -156,15 +169,19 @@ github_build_poison_scan || fail "scan returned non-zero on the fixture"
 [ -f "$CRF_RUNDIR/poison-pending.ci-runner-2" ] || fail "signature job did not flag ci-runner-2"
 [ "$(cat "$CRF_RUNDIR/poison-pending.ci-runner-2")" = "$RID2" ] \
   || fail "poison flag does not carry the slot's immutable container ID"
-[ ! -e "$CRF_RUNDIR/poison-pending.ci-runner-3" ] \
-  || fail "a succeeded job (with a failed step) flagged ci-runner-3"
+[ -f "$CRF_RUNDIR/poison-pending.ci-runner-3" ] \
+  || fail "missing-snapshot job did not flag ci-runner-3"
+[ "$(cat "$CRF_RUNDIR/poison-pending.ci-runner-3")" = "$RID3" ] \
+  || fail "snapshot-corruption flag does not carry ci-runner-3's immutable container ID"
 grep -qx 700001 "$CRF_RUNDIR/poison-scan.seen" || fail "seen cache is missing the scanned job"
+grep -qx 700004 "$CRF_RUNDIR/poison-scan.seen" || fail "seen cache is missing the snapshot-corruption job"
 if grep -q 700003 "$CURL_LOG"; then fail "log of a succeeded job was downloaded"; fi
 if grep -qF "$ACCESS_TOKEN" "$CURL_LOG"; then fail "PAT leaked into the log-download curl argv"; fi
 logs_before="$(grep -c 'jobs/70000' "$CURL_LOG" || true)"
 POISON_SCAN_INTERVAL=0 github_build_poison_scan || fail "rescan returned non-zero"
 logs_after="$(grep -c 'jobs/70000' "$CURL_LOG" || true)"
 [ "$logs_before" = "$logs_after" ] || fail "a rescan re-downloaded an already-seen job log"
+rm -f "$CRF_RUNDIR/poison-pending.ci-runner-3"
 
 # ── Heal defers while the slot is busy ───────────────────────────────────────
 POISON_SCAN_INTERVAL=99999   # keep the embedded scan quiet during heal phases

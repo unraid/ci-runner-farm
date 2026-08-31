@@ -156,17 +156,20 @@ github_public_repo_problem() {
 
 # ── Build-poison detection ───────────────────────────────────────────────────
 # A crashed nested dockerd can leave a slot's persistent buildkit store with
-# dangling lease references; every later build on that slot then fails with
+# dangling lease references or missing snapshot parents; every later build on
+# that slot then fails with either
 #   ERROR: failed to solve: lease "...": not found
+# or
+#   failed to stat parent: stat /var/lib/buildkit/runc-overlayfs/snapshots/snapshots/<n>/fs: no such file or directory
 # while the runner stays healthy and keeps accepting jobs. Nothing host-side
 # ever sees that error: the nested daemon does not log solve failures and job
 # step output exists only in the uploaded GitHub job log. So detection reads
 # what the jobs themselves saw — recent failed workflow runs, their jobs that
 # ran on THIS host's slots, and each such job's log — looking for the lease
-# signature. Rate-bounded and cached so an idle fleet costs one runs listing
+# signatures. Rate-bounded and cached so an idle fleet costs one runs listing
 # per repo per POISON_SCAN_INTERVAL, and log downloads happen at most once per
 # failed job ever (the seen cache).
-GITHUB_POISON_SIGNATURE='failed to solve: lease "[^"]*": not found'
+GITHUB_POISON_SIGNATURE='failed to solve: lease "[^"]*": not found|failed to stat parent: stat /var/lib/buildkit/runc-overlayfs/snapshots/snapshots/[0-9]+/fs: no such file or directory'
 
 # IDs of recent failed workflow runs for one repo, newest first. The pretty
 # GitHub JSON puts every field on its own line; a run object's own "id" is the
@@ -204,7 +207,7 @@ github_failed_local_jobs() {
     }'
 }
 
-# Does one failed job's log carry the dangling-lease signature? The logs
+# Does one failed job's log carry a supported build-poison signature? The logs
 # endpoint redirects to short-lived blob storage; the PAT enters curl through
 # config stdin (never argv), like gh_api. Size/time caps keep a runaway log
 # from stalling the tick — a poisoned build dies in its first minute, so the
@@ -246,7 +249,7 @@ github_build_poison_scan() {
         # can discard the flag if the slot is replaced before repair runs.
         snapshot="$(managed_runner_snapshot "$slot" 2>/dev/null)" || continue
         IFS='|' read -r id provider role index gen <<< "$snapshot"
-        log "selfheal: job $jid on $slot failed with a dangling buildkit lease -> flagging for repair"
+        log "selfheal: job $jid on $slot failed with corrupt buildkit metadata -> flagging for repair"
         echo "$id" > "$RUNDIR/poison-pending.$slot"
       done
     done
