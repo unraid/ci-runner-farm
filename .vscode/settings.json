@@ -6,7 +6,15 @@
   "files.insertFinalNewline": true,
   "files.trimTrailingWhitespace": true,
   "files.trimFinalNewlines": true,
+  "files.associations": {
+    "LICENSE": "plaintext"
+  },
   "[markdown]": {
     "files.trimTrailingWhitespace": false
+  },
+  "[plaintext]": {
+    "files.insertFinalNewline": false,
+    "files.trimTrailingWhitespace": false,
+    "files.trimFinalNewlines": false
   }
 }

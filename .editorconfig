@@ -11,3 +11,12 @@ insert_final_newline = true
 # Markdown uses trailing double-space for hard line breaks.
 [*.md]
 trim_trailing_whitespace = false
+
+# LICENSE is a verbatim legal document. Do not let an editor normalize it.
+[LICENSE]
+indent_style = unset
+indent_size = unset
+end_of_line = unset
+charset = unset
+trim_trailing_whitespace = false
+insert_final_newline = false
