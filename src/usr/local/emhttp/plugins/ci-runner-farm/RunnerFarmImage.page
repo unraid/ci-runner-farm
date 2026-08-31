@@ -92,7 +92,7 @@ DFBLOCK;
 
 <div class="crfi-editor">
   <div class="crfi-editor-head">
-    <span class="crfi-path"><span class="crf-ball crfi-dot" id="crfi-dirty" title="Unsaved changes"></span><code id="crfi-df-path"><?=htmlspecialchars($crf_df, ENT_QUOTES)?></code></span>
+    <span class="crfi-path"><span class="crf-ball crfi-dot" id="crfi-dirty" title="Unsaved changes"></span><code id="crfi-df-path"><?=crf_html($crf_df)?></code></span>
     <span class="crfi-editor-tools">
       <span class="crfi-status"><span class="crf-ball" id="crfi-build-ball" style="display:none"></span><span id="crf-build-status" class="crf-muted"></span></span>
       <uui-button variant="ghost" size="xs" onclick="crfiResetDf()">Reset to shipped default</uui-button>
@@ -101,7 +101,7 @@ DFBLOCK;
     </span>
   </div>
   <div id="crfi-ace"></div>
-  <textarea id="crf-dockerfile" style="display:none"><?=htmlspecialchars($crf_dockerfile, ENT_QUOTES)?></textarea>
+  <textarea id="crf-dockerfile" style="display:none"><?=crf_html($crf_dockerfile)?></textarea>
 </div>
 
 <div class="crf-console">
@@ -138,7 +138,7 @@ DFBLOCK;
 </style>
 
 <script>
-let CRFI_EDITOR_PROVIDER=<?=json_encode($crf_provider)?>;
+let CRFI_EDITOR_PROVIDER=<?=crf_json($crf_provider)?>;
 function crfiRelTime(iso){
   const t=Date.parse(iso); if(isNaN(t)) return '';
   const m=Math.round((Date.now()-t)/60000);
@@ -235,7 +235,7 @@ function crfiResetDf(){
 // BROWSER-ONLY convenience of the image builder — there is no engine (runner-farm.sh
 // / CLI) equivalent, so they can't be composed headlessly, and the block library
 // must be kept in sync with both shipped provider Dockerfiles by hand.
-const CRFI_TC = <?=json_encode($crfi_tc)?>;
+const CRFI_TC = <?=crf_json($crfi_tc)?>;
 function crfiGet(){ return crfiAce ? crfiAce.getValue() : document.getElementById('crf-dockerfile').value; }
 function crfiSet(v){
   if(crfiAce){ crfiAce.setValue(v,-1); }  // ACE change handler updates the textarea + dirty
