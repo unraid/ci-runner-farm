@@ -13,4 +13,9 @@
 # itself as part of the normal shutdown.
 PLGDIR="/usr/local/emhttp/plugins/ci-runner-farm"
 CFGDIR="/boot/config/plugins/ci-runner-farm"
+if [ -r "$PLGDIR/include/boot-log.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$PLGDIR/include/boot-log.sh" || true
+  crf_bound_boot_log "$CFGDIR/boot.log" || true
+fi
 "$PLGDIR/include/runner-farm.sh" docker-stopping >>"$CFGDIR/boot.log" 2>&1 || true
