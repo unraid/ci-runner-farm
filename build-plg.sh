@@ -116,10 +116,10 @@ build_dev_package() {
   # and the root ci-runner-farm.plg/ci-runner-farm.tgz completely isolated.
   render_dir="$dev_workdir/render"
   mkdir -p "$render_dir/$SRCDIR"
-  cp build-plg.sh "$render_dir/build-plg.sh"
-  [ ! -f VERSION ] || cp VERSION "$render_dir/VERSION"
-  [ ! -f CHANGELOG.md ] || cp CHANGELOG.md "$render_dir/CHANGELOG.md"
-  cp -R "$SRCDIR"/. "$render_dir/$SRCDIR/"
+  cp -p build-plg.sh "$render_dir/build-plg.sh"
+  [ ! -f VERSION ] || cp -p VERSION "$render_dir/VERSION"
+  [ ! -f CHANGELOG.md ] || cp -p CHANGELOG.md "$render_dir/CHANGELOG.md"
+  cp -pR "$SRCDIR"/. "$render_dir/$SRCDIR/"
   (
     cd "$render_dir"
     DATE="$dev_date" \
@@ -345,6 +345,13 @@ PACKAGE_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${PACKA
 # Portable MD5 (md5sum on Linux/CI, md5 on macOS/BSD dev boxes).
 md5_of() { if command -v md5sum >/dev/null 2>&1; then md5sum "$1" | cut -d' ' -f1; else md5 -q "$1"; fi; }
 
+xml_escape() {
+  printf '%s' "$1" | sed \
+    -e 's/&/\&amp;/g' \
+    -e 's/</\&lt;/g' \
+    -e 's/>/\&gt;/g'
+}
+
 # Changelog body for the <CHANGES> block: pull the newest CHANGELOG.md section
 # if present, else a generic line. Kept plain so the plugin manager renders it.
 changes="- Containerized GitHub Actions runner farm for Unraid."
@@ -352,6 +359,7 @@ if [ -f CHANGELOG.md ]; then
   section="$(awk '/^## /{n++; if(n==2) exit} n==1 && !/^## /' CHANGELOG.md | sed '/^[[:space:]]*$/d')"
   [ -n "$section" ] && changes="$section"
 fi
+changes="$(xml_escape "$changes")"
 
 make_tgz
 PACKAGE_MD5="$(md5_of "$TGZ")"

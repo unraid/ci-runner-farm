@@ -1,0 +1,20 @@
+{
+  "disposition": "NOT_REQUIRED",
+  "expected_structural_delta": "No production modules, runtime roots, state owners, protocols, or public operations. Extend two existing editor configuration files and add one focused configuration test.",
+  "minimum_design": "Add path-specific exceptions to the existing EditorConfig and VS Code settings, then prove that both configuration layers target LICENSE without changing the file.",
+  "outcome": "When a supported editor saves LICENSE, the file keeps its verbatim whitespace and final-newline state.",
+  "reuse_decisions": [
+    {
+      "decision": "reuse",
+      "name": "global editor defaults",
+      "rationale": "The existing repository defaults remain the policy source. A LICENSE-specific override is the smallest boundary for the legal-file exception."
+    },
+    {
+      "decision": "extend",
+      "name": "tests/check.sh",
+      "rationale": "The repository contract suite already owns static configuration checks and can run the focused exception test."
+    }
+  ],
+  "schema": "limetech.ai-review-marker.v2",
+  "stage": "forecast"
+}
