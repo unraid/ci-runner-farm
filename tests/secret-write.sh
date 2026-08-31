@@ -35,8 +35,8 @@ if (write_secret("$dir/not-a-directory/token", 'should-fail')) exit(1);
 if (glob("$dir/.crf-secret-*") !== []) exit(1);
 PHP
 
-if rg -n '\&\&[[:space:]]*@chmod\(\$path, 0600\)' \
-    src/usr/local/emhttp/plugins/ci-runner-farm/include/exec.php >/dev/null; then
+if grep -Eq '\&\&[[:space:]]*@chmod\(\$path, 0600\)' \
+    src/usr/local/emhttp/plugins/ci-runner-farm/include/exec.php; then
   fail "write_secret still reports final chmod as part of save success"
 fi
 grep -qF 'if (!@rename($tmp, $path))' src/usr/local/emhttp/plugins/ci-runner-farm/include/exec.php \
