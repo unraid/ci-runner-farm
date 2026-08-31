@@ -76,6 +76,9 @@ DIND="true"                           # docker-in-docker: each runner gets its o
                                       # Fixes GitHub Actions services: networking + 'port already allocated' collisions.
 SHARED_IMAGE_CACHE="true"             # run a shared pull-through registry mirror so every DinD runner
                                       # reuses pulled images (postgres, etc.) instead of each pulling cold.
+BUILD_CACHE_MODE="off"                # off | registry; workflows explicitly consume the read-only profile
+BUILD_CACHE_REPOSITORY=""             # tagless existing registry repository; credentials stay in CI jobs
+BUILD_CACHE_LOCAL_GIB="20"            # per-builder GC budget, not a disk quota
 MIRROR_NAME="ci-runner-mirror"        # cache persists on the pool across restarts.
 MIRROR_PORT="5000"
 # ---- network isolation -----------------------------------------------------
@@ -133,7 +136,8 @@ GITLAB_ALLOWED_IMAGES GITLAB_ALLOWED_SERVICES GITLAB_PULL_POLICY GITLAB_SHM_SIZE
 RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS \
 RUNNER_CPUS RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE IMAGE_SOURCE IMAGE EPHEMERAL \
 RUN_AS_ROOT REGISTRY_SERVER REGISTRY_USERNAME CACHE_MOUNTS SHARE_DOCKER_SOCK DIND \
-SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
+SHARED_IMAGE_CACHE BUILD_CACHE_MODE BUILD_CACHE_REPOSITORY BUILD_CACHE_LOCAL_GIB \
+NETWORK_ISOLATION RUNNER_NETWORK MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
 AUTOSCALE_MAX AUTOSCALE_MIN_IDLE AUTOSCALE_STEP AUTOSCALE_INTERVAL \
 AUTOSCALE_IDLE_GRACE IMAGE_AUTOUPDATE IMAGE_AUTOUPDATE_INTERVAL IMAGE_DRAIN_TIMEOUT \
 DASHBOARD_WIDGET_ENABLE"
@@ -334,7 +338,7 @@ managed_runner_snapshot() {
 provider_token_ready() { provider_call token_ready; }
 provider_token_name()  { provider_call token_name; }
 builtin_image()        { provider_call builtin_image; }
-provider_validate_settings() { provider_call validate_settings; }
+provider_validate_settings() { validate_build_cache && provider_call validate_settings; }
 provider_public_problem() { provider_call public_repo_problem; }
 provider_registry_credentials() { provider_call registry_credentials; }
 provider_strict_endpoint() { provider_call strict_endpoint; }
@@ -483,7 +487,12 @@ busy_count() {
 # change and migrate them onto the new config as they go idle. IMPORTANT: whenever you
 # add a setting that build_args bakes into the container, add it here too.
 crf_confgen() {
-  provider_call confgen
+  local base
+  base="$(provider_call confgen)" || return 1
+  # Do not recycle existing installations merely because this option was added.
+  if [ "$BUILD_CACHE_MODE" = off ]; then printf '%s\n' "$base"; return; fi
+  validate_build_cache || return 1
+  { printf '%s\0' "$base"; build_cache_bytes; } | sha256sum | cut -c1-12
 }
 # The config fingerprint a managed runner was created with ('' for runners created before
 # this feature existed — they read as stale and migrate on the next reconcile).
@@ -1183,6 +1192,7 @@ host_docker_pull() {
 }
 
 ensure_dirs() {
+  validate_build_cache || return 1
   mkdir -p "$CACHE_ROOT/work"
   local m dir
   for m in $CACHE_MOUNTS; do
@@ -1200,6 +1210,77 @@ ensure_dirs() {
     [ "$RUN_AS_ROOT" != "true" ] && chown -R "$RUNNER_UID:$RUNNER_GID" "$dir" 2>/dev/null || true
   done
   write_dind_config
+}
+
+# Validate before arithmetic. CFG_NUMERIC_KEYS silently retains defaults for
+# malformed input; a bad build-cache budget must instead block provisioning.
+validate_build_cache() {
+  case "$BUILD_CACHE_MODE" in
+    off) return 0 ;;
+    registry) ;;
+    *) err "BUILD_CACHE_MODE must be off or registry"; return 1 ;;
+  esac
+  [ "$DIND" = true ] || { err "Registry build-cache profiles require Docker-in-Docker"; return 1; }
+  local authority port
+  authority="${BUILD_CACHE_REPOSITORY%%/*}"
+  # No URL, credentials, tag, digest, CSV options, or executable shell syntax.
+  if [ "${#BUILD_CACHE_REPOSITORY}" -gt 255 ] \
+    || ! printf '%s\n' "$BUILD_CACHE_REPOSITORY" | LC_ALL=C grep -qE '^[a-z0-9][a-z0-9.-]*(:[0-9]{1,5})?/[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$' \
+    || [[ "$BUILD_CACHE_REPOSITORY" == *$'\n'* ]]; then
+    err "BUILD_CACHE_REPOSITORY must be a tagless registry/repository path"; return 1
+  fi
+  case "$authority" in *.*|*:*|localhost) ;; *) err "BUILD_CACHE_REPOSITORY must include a registry hostname"; return 1 ;; esac
+  case "$authority" in *:*)
+    port="${authority##*:}"
+    [ "$((10#$port))" -ge 1 ] && [ "$((10#$port))" -le 65535 ] \
+      || { err "Build-cache registry port must be 1 through 65535"; return 1; } ;;
+  esac
+  if ! [[ "$BUILD_CACHE_LOCAL_GIB" =~ ^[1-9][0-9]{0,3}$ ]] \
+    || [ "$BUILD_CACHE_LOCAL_GIB" -gt 1024 ]; then
+    err "BUILD_CACHE_LOCAL_GIB must be a whole number from 1 through 1024"; return 1
+  fi
+}
+
+build_cache_env() {
+  printf '%s\n' 'CRF_BUILD_CACHE_SCHEMA=1' 'CRF_BUILD_CACHE_MODE=registry' \
+    "CRF_BUILD_CACHE_REPOSITORY=$BUILD_CACHE_REPOSITORY" \
+    'CRF_BUILDKIT_CONFIG=/etc/ci-runner-farm/build-cache/buildkitd.toml'
+}
+
+build_cache_toml() {
+  printf '%s\n' '[worker.oci]' '  gc = true' '  reservedSpace = "0B"' \
+    "  maxUsedSpace = \"${BUILD_CACHE_LOCAL_GIB}GiB\"" '  minFreeSpace = "0B"'
+}
+
+# Hash all rendered bytes, including schema. Renderer changes must also retire
+# old runner profiles, not merely changes to the operator's settings.
+build_cache_bytes() { build_cache_env; printf '\0'; build_cache_toml; }
+
+build_cache_profile() {
+  validate_build_cache || return 1
+  [ "$BUILD_CACHE_MODE" = registry ] || return 0
+  local root="$RUNDIR/build-cache-profiles" digest dir tmp
+  digest="$(build_cache_bytes | sha256sum | cut -d' ' -f1)" || return 1
+  dir="$root/$digest"
+  [ ! -L "$root" ] && [ ! -L "$dir" ] \
+    || { err "Refusing a symlink build-cache profile path"; return 1; }
+  mkdir -p "$root" && chmod 755 "$root" || return 1
+  tmp="$(mktemp -d "$root/.profile.XXXXXX")" || return 1
+  if ! { build_cache_env > "$tmp/profile.env" && build_cache_toml > "$tmp/buildkitd.toml" \
+      && chmod 644 "$tmp/profile.env" "$tmp/buildkitd.toml" && chmod 755 "$tmp"; }; then
+    rm -f -- "$tmp/profile.env" "$tmp/buildkitd.toml"; rmdir -- "$tmp"; return 1
+  fi
+  # GNU mv -T cannot nest staging files inside a concurrent snapshot. Existing
+  # paths are verified, never replaced or repaired while a job may use them.
+  if [ -e "$dir" ] || ! mv -T -- "$tmp" "$dir" 2>/dev/null; then
+    local valid=0
+    if [ ! -L "$dir" ] && [ ! -L "$dir/profile.env" ] && [ ! -L "$dir/buildkitd.toml" ] \
+      && [ -f "$dir/profile.env" ] && [ -f "$dir/buildkitd.toml" ] \
+      && cmp -s "$tmp/profile.env" "$dir/profile.env" && cmp -s "$tmp/buildkitd.toml" "$dir/buildkitd.toml"; then valid=1; fi
+    rm -f -- "$tmp/profile.env" "$tmp/buildkitd.toml"; rmdir -- "$tmp"
+    [ "$valid" = 1 ] || { err "Build-cache profile is incomplete or changed; refusing to reuse it"; return 1; }
+  fi
+  printf '%s\n' "$dir"
 }
 
 # Dedicated user-defined bridge for the fleet (created when NETWORK_ISOLATION is
@@ -1786,6 +1867,7 @@ start_stopped_managed() {
 # which would briefly drop egress protection for every strict runner.
 # (cmd_scale runs its own lighter inline subset and is intentionally not a caller.)
 provision_base() {
+  validate_build_cache || return 1
   check_cache_root || return 1
   ensure_dirs || return 1
   ensure_network || return 1
@@ -2185,10 +2267,9 @@ cleanup_orphan_github_validations() {
 
 # Full teardown: daemons, runner containers, and the shared pull-through mirror.
 # Reached from the UI Stop button AND from plugin uninstall (the .plg remove step
-# calls 'stop'), so it must leave nothing running. The mirror's on-pool cache dir
-# ($CACHE_ROOT/registry-mirror) is intentionally left behind — like the config and
-# token — so a later Start rebuilds the container with its cache warm; only the
-# container is removed here, not the cached layers.
+# calls 'stop'), so it must leave nothing running. Retain on-pool runner and
+# mirror caches so a later Start can reuse them. Explicit prune-cache deletes
+# retained caches. Permanent slot retirement still deletes that slot's data.
 cmd_stop() {
   # Cancel every process that can create fleet resources before examining the
   # current Docker state. In particular, a sleeping boot worker must not wake
@@ -2207,7 +2288,7 @@ cmd_stop() {
     while IFS= read -r c; do
       [ -n "$c" ] || continue
       log "stopping $c (graceful deregister)"
-      remove_runner "$c" || stop_failed=1
+      remove_runner "$c" false || stop_failed=1
     done <<< "$names"
   fi
   # A provider removal that failed closed can intentionally leave a manager and

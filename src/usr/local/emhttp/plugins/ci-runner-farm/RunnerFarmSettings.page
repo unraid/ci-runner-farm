@@ -35,6 +35,7 @@ $defaults = [
   'CACHE_ROOT'=>'/mnt/cache/github-runner', 'WORK_TMPFS_SIZE'=>'8g',
   'CACHE_MOUNTS'=>'pnpm-store:/home/runner/.local/share/pnpm/store npm:/home/runner/.npm yarn:/home/runner/.cache/yarn ms-playwright:/home/runner/.cache/ms-playwright',
   'DIND'=>'true', 'SHARE_DOCKER_SOCK'=>'false', 'SHARED_IMAGE_CACHE'=>'true', 'NETWORK_ISOLATION'=>'off',
+  'BUILD_CACHE_MODE'=>'off', 'BUILD_CACHE_REPOSITORY'=>'', 'BUILD_CACHE_LOCAL_GIB'=>'20',
   'IMAGE_AUTOUPDATE'=>'false', 'IMAGE_AUTOUPDATE_INTERVAL'=>'1800', 'IMAGE_DRAIN_TIMEOUT'=>'3600',
   'DASHBOARD_WIDGET_ENABLE'=>'true',
   'AUTOSCALE'=>'false', 'AUTOSCALE_MIN'=>'2', 'AUTOSCALE_MAX'=>'16', 'AUTOSCALE_MIN_IDLE'=>'2',
@@ -429,6 +430,34 @@ _(Shared image cache)_:
 > Runs a shared `registry:2` pull-through cache (Docker-in-Docker only) so images used across the fleet are pulled from Docker Hub once, not once per runner. Bound to the Docker bridge gateway, not the LAN — so it is not exposed off the host, though (being on the bridge gateway) it is reachable unauthenticated by any container on the default Docker bridge, not only this plugin's runners. It only caches public Docker Hub images. Turn off if you don't want the extra container. The host port defaults to 5000; if that clashes with another service, set `MIRROR_PORT` in `/boot/config/plugins/ci-runner-farm/ci-runner-farm.cfg` and Restart the fleet.
 :end
 
+### Build cache profile
+
+_(Shared build cache)_:
+: <select name="BUILD_CACHE_MODE" aria-label="Shared build cache" onchange="crfBuildCacheChange()">
+  <option value="off" <?=crf_sel($cfg,'BUILD_CACHE_MODE','off','off')?>>Off (existing behavior)</option>
+  <option value="registry" <?=crf_sel($cfg,'BUILD_CACHE_MODE','registry','off')?>>Existing registry (workflow opt-in)</option>
+  </select>
+
+:crf_build_cache_mode_plug:
+> Requires Docker-in-Docker and an existing writable registry. No registry server is created.
+:end
+
+_(Cache repository)_:
+: <input type="text" name="BUILD_CACHE_REPOSITORY" aria-label="Cache repository" maxlength="255" placeholder="registry.example.com/team/build-cache" value="<?=crf_g($cfg,'BUILD_CACHE_REPOSITORY','')?>">
+
+:crf_build_cache_repository_plug:
+> Enter a repository without a URL scheme, tag, digest, or credentials. Workflows must load `/etc/ci-runner-farm/build-cache/profile.env`, configure a `docker-container` builder with its BuildKit configuration, and explicitly import/export scoped cache references. Jobs supply their own registry credentials. See the [build-cache setup guide](https://github.com/unraid/ci-runner-farm/blob/main/docs/build-cache.md).
+:end
+
+_(Local cache budget per builder (GiB))_:
+: <input type="number" name="BUILD_CACHE_LOCAL_GIB" aria-label="Local cache budget per builder (GiB)" min="1" max="1024" step="1" value="<?=crf_g($cfg,'BUILD_CACHE_LOCAL_GIB','20')?>">
+
+:crf_build_cache_plug:
+> The budget controls BuildKit garbage collection, not total disk use or a hard quota. Other builders and active builds can exceed it. In classic mode, Apply updates runners after active jobs finish. Named pools require an explicit Fleet Restart. Wait for the new runners before using the profile in workflows. Existing caches are not pruned.
+:end
+
+### Network isolation
+
 _(Network isolation)_:
 : <select name="NETWORK_ISOLATION">
   <option value="off" <?=crf_sel($cfg,'NETWORK_ISOLATION','off','off')?>>off (default docker bridge)</option>
@@ -557,7 +586,7 @@ const CRF_DEFAULTS = <?=crf_json($defaults)?>;
 // nothing is written to flash until the user clicks Apply.
 function crfResetDefaults(){
   for (const k in CRF_DEFAULTS){ const el=document.getElementsByName(k)[0]; if(el) el.value=CRF_DEFAULTS[k]; }
-  crfProviderChange(); crfImgSrc();
+  crfProviderChange(); crfImgSrc(); crfBuildCacheChange();
   // programmatic .value changes fire no input event, so nudge the advisory
   // listeners (Min>Max, memory envelope) to re-evaluate against the reset values.
   ['AUTOSCALE_MIN','AUTOSCALE_MAX','RUNNER_MEMORY','RUNNER_COUNT','AUTOSCALE'].forEach(n=>{ const el=document.getElementsByName(n)[0]; if(el) el.dispatchEvent(new Event('input')); });
@@ -569,6 +598,13 @@ function crfTokState(ok){
   band.classList.toggle('crfs-tokband-missing',!ok);
   ball.className='crf-ball '+(ok?'crf-ball-idle':'crf-ball-error');
 }
+function crfBuildCacheChange(){
+  const enabled=document.getElementsByName('BUILD_CACHE_MODE')[0].value==='registry';
+  ['BUILD_CACHE_REPOSITORY','BUILD_CACHE_LOCAL_GIB'].forEach(name=>{
+    document.getElementsByName(name)[0].required=enabled;
+  });
+}
+crfBuildCacheChange();
 function crfCredentialOk(o,label){
   if(o&&o.ok===true)return true;
   crfToast(label+': '+((o&&o.error)||'operation failed')); return false;

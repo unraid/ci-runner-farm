@@ -10,6 +10,11 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      registry_cache_test:
+        description: 'Also verify authenticated GHCR cache reuse (synthetic data only)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -33,3 +38,35 @@ jobs:
 
       - name: Lint generated GitLab Runner configuration
         run: bash tests/gitlab-runner-lint.sh
+
+      - name: Verify shared build cache with isolated builders
+        run: bash tests/build-cache-integration.sh
+
+  registry-cache:
+    name: Authenticated registry cache proof
+    if: github.event_name == 'workflow_dispatch' && inputs.registry_cache_test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout trusted dispatch ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify cache export and import with job-owned credentials
+        shell: bash
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          export DOCKER_CONFIG
+          DOCKER_CONFIG="$(mktemp -d "$RUNNER_TEMP/crf-registry-auth.XXXXXX")"
+          trap 'rm -rf -- "$DOCKER_CONFIG"' EXIT
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          unset REGISTRY_TOKEN
+          export CRF_CACHE_TEST_REPOSITORY="ghcr.io/${GITHUB_REPOSITORY,,}-build-cache"
+          export CRF_CACHE_TEST_TAG="proof-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          bash tests/build-cache-integration.sh

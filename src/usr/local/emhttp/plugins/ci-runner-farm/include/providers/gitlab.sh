@@ -716,6 +716,8 @@ gitlab_registry_authority() {
 
 gitlab_write_config() {
   local idx="$1" name="$2" dir tmp url token job_image socket_source executor_host pull_policy slot_ca
+  local build_profile
+  build_profile="$(build_cache_profile)" || return 1
   dir="$(gitlab_slot_config_dir "$name")"; tmp="$dir/config.toml.tmp"
   slot_ca="$dir/certs/gitlab-ca.crt"
   url="$(gitlab_url)"; token="$GITLAB_RUNNER_TOKEN"; job_image="$(effective_image)"
@@ -734,6 +736,7 @@ gitlab_write_config() {
   local vols=() m hostdir dest i
   mkdir -p "$CACHE_ROOT/gitlab-cache/$name" || return 1
   vols+=( "$socket_source:/var/run/docker.sock" "$CACHE_ROOT/gitlab-cache/$name:/cache" )
+  [ -z "$build_profile" ] || vols+=( "$build_profile:/etc/ci-runner-farm/build-cache:ro" )
   # The helper image automatically installs a CA mounted at this documented
   # path. User-selected job images receive the file too, but must install or
   # explicitly use it themselves because their CA tooling is image-specific.
@@ -848,6 +851,8 @@ gitlab_build_args() { gitlab_build_manager_args "$@"; }
 
 gitlab_start_sidecar() {
   local idx="$1" name="$2" side sockdir sock data m hostdir registry_authority slot_ca
+  local build_profile
+  build_profile="$(build_cache_profile)" || return 1
   side="$(gitlab_sidecar_name "$name")"
   if [ "$DIND" != "true" ]; then
     if docker inspect "$side" >/dev/null 2>&1; then
@@ -903,6 +908,7 @@ gitlab_start_sidecar() {
     # shared cache directories—never the whole CACHE_ROOT or sibling slots.
     -v "$CACHE_ROOT/gitlab-cache/$name:$CACHE_ROOT/gitlab-cache/$name"
   )
+  [ -z "$build_profile" ] || sargs+=( -v "$build_profile:$build_profile:ro" )
   if [ -f "$slot_ca" ]; then
     # The nested daemon resolves config.toml bind sources in its own mount
     # namespace, so mirror the host CA at the identical absolute path. Also
@@ -1126,6 +1132,9 @@ gitlab_unregister_manager() {
 # confgen, restart the same manager and system ID without remote unregister.
 gitlab_start_stopped() {
   local c="$1" idx="$2" manager_id="${3:-}" current_id job side side_id i image dir
+  # Runtime profiles disappear on reboot. Recreate the unchanged snapshot before
+  # Docker can create an empty bind directory while restarting the old sidecar.
+  build_cache_profile >/dev/null || return 1
   printf '%s' "$manager_id" | grep -qE '^[0-9a-f]{64}$' \
     || { err "refusing to restart GitLab manager $c without a valid immutable container ID"; return 1; }
   dir="$(gitlab_slot_config_dir "$c")"

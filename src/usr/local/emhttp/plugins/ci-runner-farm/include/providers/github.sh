@@ -265,6 +265,8 @@ github_registry_credentials() {
 
 github_build_args() {
   local idx="$1"
+  local build_profile
+  build_profile="$(build_cache_profile)" || return 1
   local name="${2:-${NAME_PREFIX}-${idx}}" role="${CRF_CONTAINER_ROLE:-runner}" host_service_ip
   host_service_ip="$(runner_host_service_ipv4)" \
     || { err "could not resolve this farm host's local service address"; return 1; }
@@ -297,6 +299,7 @@ github_build_args() {
     hostdir="$(crf_safe_mount_subdir "${m%%:*}")" || { err "skipping unsafe cache mount '${m%%:*}'"; continue; }
     ARGS+=( -v "$hostdir:${m#*:}" )
   done
+  [ -z "$build_profile" ] || ARGS+=( -v "$build_profile:/etc/ci-runner-farm/build-cache:ro" )
   [ -n "$RUNNER_CPUS" ]   && ARGS+=( --cpus="$RUNNER_CPUS" )
   [ -n "$RUNNER_MEMORY" ] && ARGS+=( --memory="$RUNNER_MEMORY" )
   [ "$NETWORK_ISOLATION" != "off" ] && ARGS+=( --network "$RUNNER_NETWORK" )
