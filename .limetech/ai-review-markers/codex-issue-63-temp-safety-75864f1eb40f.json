@@ -1,0 +1,25 @@
+{
+  "disposition": "NOT_REQUIRED",
+  "expected_structural_delta": "No new production modules, roots, state owners, protocols, or public operations. Extend two existing shell owners and add one focused test file.",
+  "minimum_design": "Replace the predictable rollover temporary name with checked mktemp under RUNDIR, check GitHub validation temporary-directory creation, and terminate Docker options before the image argument while retaining existing cleanup.",
+  "outcome": "When rollover or GitHub validation needs temporary state, it uses a checked runtime-scoped temporary path. When a remote image reaches host docker pull, the image value cannot become a Docker option.",
+  "reuse_decisions": [
+    {
+      "decision": "extend",
+      "name": "RUNDIR temporary-state boundary",
+      "rationale": "The existing engine already owns rollover and validation temporary state. Runtime-scoped mktemp keeps cleanup and ownership at that boundary."
+    },
+    {
+      "decision": "extend",
+      "name": "Docker host-pull wrapper",
+      "rationale": "The existing host_docker_pull function is the single host-side pull owner, so its argv contract is the narrow option-boundary fix."
+    },
+    {
+      "decision": "new_owner",
+      "name": "tests/temp-safety.sh",
+      "rationale": "A focused fixture is needed to force mktemp failure and inspect the image argument boundary."
+    }
+  ],
+  "schema": "limetech.ai-review-marker.v2",
+  "stage": "forecast"
+}
