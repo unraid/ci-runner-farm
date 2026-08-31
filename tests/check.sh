@@ -46,6 +46,7 @@ bash tests/deploy-uninstall-safety.sh
 bash tests/install-dev-safety.sh
 bash tests/release-guard.sh
 bash tests/package-contents.sh
+bash tests/xml-escape.sh
 bash tests/dev-package.sh
 
 echo "All repository checks passed."
