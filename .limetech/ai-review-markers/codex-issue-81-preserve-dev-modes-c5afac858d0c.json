@@ -1,0 +1,20 @@
+{
+  "disposition": "NOT_REQUIRED",
+  "expected_structural_delta": "No new production modules, roots, state owners, protocols, or public operations. Extend one existing build path and one existing test file with mode-preservation proof.",
+  "minimum_design": "Keep the existing disposable development renderer and preserve modes on every source copy. Prove the mode counterexample with a group-writable fixture under a restrictive umask.",
+  "outcome": "When the development package renderer copies a checkout with mode bits that differ from its umask, the generated package preserves the source mode bits and keeps its content hash stable.",
+  "reuse_decisions": [
+    {
+      "decision": "extend",
+      "name": "development package renderer",
+      "rationale": "The existing disposable render copy owns development packaging. Preserving copy metadata at this boundary reaches the failure without a second renderer."
+    },
+    {
+      "decision": "extend",
+      "name": "tests/dev-package.sh",
+      "rationale": "The existing package determinism test already exercises --dev output and can add the mode-bit counterexample."
+    }
+  ],
+  "schema": "limetech.ai-review-marker.v2",
+  "stage": "forecast"
+}
