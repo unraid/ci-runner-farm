@@ -461,7 +461,8 @@ github_validate() {
     [ "$a" = "$eimg" ] && injected+=( --entrypoint /bin/sh "$eimg" -c "sleep 30" ) || injected+=( "$a" )
   done
   log "validate: launching inert container to verify mounts/limits..."
-  local errf; errf="$(mktemp /tmp/crf-validate.XXXXXX)"
+  local errf; errf="$(mktemp "$RUNDIR/crf-validate.XXXXXX" 2>/dev/null)" \
+    || { err "validate: could not create a temp file for docker run output"; return 1; }
   if ! docker run "${injected[@]}" >/dev/null 2>"$errf"; then
     # docker run can leave a Created container on some failures. Remove it only
     # when the complete labels resolve to an immutable ID owned by this attempt.

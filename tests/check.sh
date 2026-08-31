@@ -39,6 +39,7 @@ bash tests/log-redaction.sh
 bash tests/provider-mocks.sh
 bash tests/lease-selfheal.sh
 bash tests/ownership-safety.sh
+bash tests/temp-safety.sh
 bash tests/resource-ownership.sh
 bash tests/gitlab-policy.sh
 bash tests/firewall-transition.sh

@@ -906,8 +906,8 @@ drain_and_recreate() {
 # up while each drains. Re-reads managed_names each loop (recreated names persist).
 imageupdate_rollover() {
   local retry_only="${1:-false}" c names failed=0 pending_tmp final_count
-  pending_tmp="${IMAGEUPDATE_PENDING}.tmp.$$"
-  : > "$pending_tmp" || { err "image-update: cannot persist rollover retry state"; return 1; }
+  pending_tmp="$(mktemp "${IMAGEUPDATE_PENDING}.XXXXXX" 2>/dev/null)" \
+    || { err "image-update: cannot create rollover retry state"; return 1; }
   if [ "$retry_only" = true ]; then
     names="$([ -f "$IMAGEUPDATE_PENDING" ] && cat "$IMAGEUPDATE_PENDING")"
   else
@@ -1179,7 +1179,7 @@ registry_login() {
 host_docker_pull() {
   mkdir -p "$HOST_DOCKER_CONFIG" || return 1
   chmod 700 "$HOST_DOCKER_CONFIG" 2>/dev/null || true
-  docker --config "$HOST_DOCKER_CONFIG" pull "$1"
+  docker --config "$HOST_DOCKER_CONFIG" pull -- "$1"
 }
 
 ensure_dirs() {
