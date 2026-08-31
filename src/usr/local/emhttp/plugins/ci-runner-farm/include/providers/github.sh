@@ -265,7 +265,8 @@ github_registry_credentials() {
 
 github_build_args() {
   local idx="$1"
-  local name="${2:-${NAME_PREFIX}-${idx}}" role="${CRF_CONTAINER_ROLE:-runner}" host_service_ip
+  local name="${2:-${NAME_PREFIX}-${idx}}" role="${CRF_CONTAINER_ROLE:-runner}" host_service_ip image
+  image="$(effective_image)" || return 1
   host_service_ip="$(runner_host_service_ipv4)" \
     || { err "could not resolve this farm host's local service address"; return 1; }
   ARGS_TMPDIR=""
@@ -345,7 +346,7 @@ github_build_args() {
     ARGS+=( --env-file "$envf" )
     ARGS_TMPDIR="$envdir"
   fi
-  ARGS+=( "$(effective_image)" )
+  ARGS+=( "$image" )
 }
 
 github_start_one() {
@@ -456,7 +457,7 @@ github_validate() {
   # role without changing the ordinary runner contract.
   local NO_REGISTER=1 CRF_CONTAINER_ROLE=validate
   github_build_args 99 "$name" || return 1
-  local injected=() a eimg; eimg="$(effective_image)"
+  local injected=() a eimg; eimg="$(effective_image)" || return 1
   for a in "${ARGS[@]}"; do
     [ "$a" = "$eimg" ] && injected+=( --entrypoint /bin/sh "$eimg" -c "sleep 30" ) || injected+=( "$a" )
   done

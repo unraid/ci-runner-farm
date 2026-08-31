@@ -1,0 +1,25 @@
+{
+  "disposition": "NOT_REQUIRED",
+  "expected_structural_delta": "No new production modules, roots, state owners, protocols, or public operations. Extend the existing engine/provider boundary and add one focused test file.",
+  "minimum_design": "Validate the remote value at the existing effective-image and provider-argument boundary. Return failure before Docker receives invalid input, and prove valid, malformed, command-text, and built-in cases.",
+  "outcome": "When IMAGE_SOURCE is remote, the configured image value passes a Docker-reference shape check before provider Docker arguments or host pulls use it. Built-in image behavior remains unchanged.",
+  "reuse_decisions": [
+    {
+      "decision": "extend",
+      "name": "effective_image and provider Docker argument owners",
+      "rationale": "These existing owners determine and consume the remote image. Validation at this shared boundary protects downstream Docker calls without a second policy path."
+    },
+    {
+      "decision": "not-applicable",
+      "name": "GitLab image-policy validators",
+      "rationale": "The existing GitLab helpers validate manager versions and allowed-image policy, not the provider-neutral Docker reference shape needed by GitHub."
+    },
+    {
+      "decision": "new_owner",
+      "name": "tests/image-validation.sh",
+      "rationale": "A focused fixture is needed to prove the accepted reference shape and the pre-Docker failure boundary."
+    }
+  ],
+  "schema": "limetech.ai-review-marker.v2",
+  "stage": "forecast"
+}

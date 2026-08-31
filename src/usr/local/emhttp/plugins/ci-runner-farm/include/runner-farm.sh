@@ -1682,8 +1682,19 @@ firewall_apply() {
 
 # Resolve the provider's executable/default-job image: the locally built tag or
 # a remote ref. GitLab's manager image is deliberately separate.
+image_ref_is_safe() {
+  printf '%s' "$1" | grep -qE '^[A-Za-z0-9][A-Za-z0-9_./:@-]*$'
+}
+
 effective_image() {
-  if [ "$IMAGE_SOURCE" = "remote" ] && [ -n "$IMAGE" ]; then echo "$IMAGE"; else builtin_image; fi
+  local image="$IMAGE"
+  if [ "$IMAGE_SOURCE" = "remote" ] && [ -n "$image" ]; then
+    image_ref_is_safe "$image" \
+      || { err "IMAGE is not a safe Docker image reference"; return 1; }
+    printf '%s\n' "$image"
+  else
+    builtin_image
+  fi
 }
 
 # Verify a recycle replacement without pulling a GitLab DinD job image through
