@@ -1,0 +1,30 @@
+{
+  "disposition": "PATCH",
+  "expected_structural_delta": "Architecture required because the guarantee spans two runtime event hooks and generated install/remove actions. Predicted delta: one production helper module, one shared helper hop, four call sites, one test file, no new durable state owner, protocol, or public operation.",
+  "minimum_design": "Use one shared shell helper at every existing boot.log append point. Rotate an oversized log with a same-directory temporary file and atomic rename, and keep the existing append path fail-open.",
+  "outcome": "When any supported lifecycle path appends to the persistent boot log, the log stays bounded on flash while retaining recent diagnostics. A rotation failure does not block the lifecycle action.",
+  "reuse_decisions": [
+    {
+      "decision": "extend",
+      "name": "existing lifecycle log writers",
+      "rationale": "The runtime event hooks and generated install/remove actions already own every supported boot.log append path. They need one shared call before append."
+    },
+    {
+      "decision": "reuse",
+      "name": "shell temporary-file and rename primitives",
+      "rationale": "The base tree already uses shell tools for local temporary state. A same-directory checked temporary file and mv preserve the existing flash path and atomicity boundary."
+    },
+    {
+      "decision": "new_owner",
+      "name": "new boot-log helper",
+      "rationale": "The bounded-log invariant spans runtime hooks and generated package actions, so one helper gives the invariant one owner and avoids duplicated rotation logic."
+    },
+    {
+      "decision": "extend",
+      "name": "tests/package-contents.sh",
+      "rationale": "The existing package test already checks generated install/remove content and can prove helper inclusion and call placement."
+    }
+  ],
+  "schema": "limetech.ai-review-marker.v2",
+  "stage": "forecast"
+}
