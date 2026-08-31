@@ -697,17 +697,42 @@ heal_poisoned_runners() {
   return "$failed"
 }
 
+# Read a provider-matching queue cache only while it is inside the same 60-second
+# freshness window used by cmd_queued_json. Unknown data must not suppress the
+# normal idle-headroom growth decision.
+autoscale_queue_depth() {
+  local now cache_provider ts count age
+  [ -f "$RUNDIR/queued.cache" ] || { printf '%s\n' -1; return 0; }
+  now="$(date +%s)"
+  read -r cache_provider ts count < "$RUNDIR/queued.cache"
+  case "$cache_provider" in
+    github|gitlab) ;;
+    *) count="$ts"; ts="$cache_provider"; cache_provider=github ;;
+  esac
+  [ "$cache_provider" = "$CI_PROVIDER" ] || { printf '%s\n' -1; return 0; }
+  case "$ts" in ''|*[!0-9]*) printf '%s\n' -1; return 0 ;; esac
+  case "$count" in ''|*[!0-9]*) printf '%s\n' -1; return 0 ;; esac
+  age=$(( now - ts ))
+  [ "$age" -ge 0 ] && [ "$age" -le 60 ] || { printf '%s\n' -1; return 0; }
+  printf '%s\n' "$count"
+}
+
 # one autoscaling evaluation: keep AUTOSCALE_MIN_IDLE warm runners, within [MIN,MAX]
 autoscale_tick() {
   [ "$AUTOSCALE" = "true" ] || return 0
   reap_dead_runners || return 1  # drop dead containers first so idle accounting is real
-  local cur=0 busy=0 idle=0 statef over target
+  local cur=0 busy=0 idle=0 statef over target queue_target qdepth
   # GitHub retains its original cur-busy semantics; GitLab counts only explicit
   # idle managers so disconnected/starting slots are not phantom headroom.
   provider_call autoscale_counts \
     || { err "autoscale: could not enumerate and inspect the managed fleet"; return 1; }
   case "$cur:$busy:$idle" in
     *[!0-9:]*) err "autoscale: provider returned invalid fleet counts"; return 1 ;;
+  esac
+  qdepth="$(autoscale_queue_depth)"
+  case "$qdepth" in
+    -1|[0-9]|[1-9][0-9]*) ;;
+    *) qdepth=-1 ;;
   esac
   statef="${RUNDIR}/autoscale.state"; over=0
   [ -f "$statef" ] && over=$(cat "$statef" 2>/dev/null || echo 0)
@@ -730,7 +755,12 @@ autoscale_tick() {
 
   if [ "$idle" -lt "$AUTOSCALE_MIN_IDLE" ] && [ "$cur" -lt "$AUTOSCALE_MAX" ]; then
     target=$(( cur + AUTOSCALE_STEP )); [ "$target" -gt "$AUTOSCALE_MAX" ] && target=$AUTOSCALE_MAX
-    log "autoscale: idle=$idle/$cur < buffer $AUTOSCALE_MIN_IDLE -> grow to $target"
+    if [ "$qdepth" -gt 0 ]; then
+      queue_target=$(( cur + qdepth ))
+      [ "$queue_target" -gt "$target" ] && target="$queue_target"
+      [ "$target" -gt "$AUTOSCALE_MAX" ] && target=$AUTOSCALE_MAX
+    fi
+    log "autoscale: idle=$idle/$cur queued=$qdepth < buffer $AUTOSCALE_MIN_IDLE -> grow to $target"
     cmd_scale "$target" >/dev/null; echo 0 > "$statef"
   elif [ "$idle" -gt $(( AUTOSCALE_MIN_IDLE + AUTOSCALE_STEP )) ] && [ "$cur" -gt "$floor" ]; then
     over=$(( over + 1 )); echo "$over" > "$statef"
