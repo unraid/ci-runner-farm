@@ -119,12 +119,20 @@ function write_secret($path, $value) {
   if (!is_dir($dir) && !@mkdir($dir, 0755, true)) return false;
   $tmp = @tempnam($dir, '.crf-secret-');
   if ($tmp === false) return false;
-  $ok = @chmod($tmp, 0600)
-    && file_put_contents($tmp, $value, LOCK_EX) !== false
-    && @rename($tmp, $path)
-    && @chmod($path, 0600);
-  if (!$ok) @unlink($tmp);
-  return $ok;
+  if (!@chmod($tmp, 0600)) { @unlink($tmp); return false; }
+  if (file_put_contents($tmp, $value, LOCK_EX) === false) {
+    @unlink($tmp);
+    return false;
+  }
+  if (!@rename($tmp, $path)) {
+    @unlink($tmp);
+    return false;
+  }
+  // The atomic rename proves the new secret was saved. Tightening the final
+  // inode's mode is still best-effort because a filesystem can reject chmod
+  // after a successful rename without undoing the write.
+  @chmod($path, 0600);
+  return true;
 }
 
 // Validate only the local, injection-safe shape of a GitLab runner
