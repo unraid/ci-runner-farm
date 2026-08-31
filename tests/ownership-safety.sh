@@ -223,6 +223,25 @@ run_github_validate_test() (
   if grep -Eq 'docker rm -f ci-runner-validate($| )' "$docker_log"; then
     fail "GitHub validation attempted to remove the old fixed name"
   fi
+
+  # Directory preparation and registry authentication are validation gates, not
+  # best-effort setup. Force the later path to be reachable so an implementation
+  # that discards either failure cannot pass this regression test.
+  github_build_args() { ARGS=( validation-image ); }
+  ensure_dirs() { return 1; }
+  : > "$docker_log"
+  if github_validate >"$tmp/github-validate-ensure-fail.out" 2>&1; then
+    fail "GitHub validation succeeded after directory setup failed"
+  fi
+  [ ! -s "$docker_log" ] || fail "GitHub validation reached Docker after directory setup failed"
+
+  ensure_dirs() { return 0; }
+  registry_login() { return 1; }
+  : > "$docker_log"
+  if github_validate >"$tmp/github-validate-login-fail.out" 2>&1; then
+    fail "GitHub validation succeeded after registry login failed"
+  fi
+  [ ! -s "$docker_log" ] || fail "GitHub validation reached Docker after registry login failed"
 )
 
 run_log_ownership_tests() (

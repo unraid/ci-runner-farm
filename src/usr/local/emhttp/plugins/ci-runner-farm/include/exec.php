@@ -3,6 +3,7 @@
    Guards every action with the Unraid CSRF token, then shells out to
    runner-farm.sh. Token writes go to a chmod-600 file, never ci-runner-farm.cfg. */
 header('Content-Type: application/json');
+require_once __DIR__ . '/encoding.php';
 
 // Every UI call already uses POST. Reject GET (and every other method) before
 // reading a CSRF value so a token can never be placed in a URL, browser history,
@@ -11,7 +12,7 @@ $method = $_SERVER['REQUEST_METHOD'] ?? '';
 if (!is_string($method) || $method !== 'POST') {
   http_response_code(405);
   header('Allow: POST');
-  echo json_encode(['ok' => false, 'error' => 'method not allowed']);
+  echo crf_json(['ok' => false, 'error' => 'method not allowed']);
   exit;
 }
 
@@ -37,7 +38,7 @@ if (!$platformCsrfValidated) {
   $given = $_POST['csrf_token'] ?? ($_SERVER['HTTP_X_CSRF_TOKEN'] ?? '');
   if ($csrf === '' || !is_string($given) || !hash_equals($csrf, $given)) {
     http_response_code(403);
-    echo json_encode(['ok' => false, 'error' => 'csrf']);
+    echo crf_json(['ok' => false, 'error' => 'csrf']);
     exit;
   }
   unset($_POST['csrf_token'], $_SERVER['HTTP_X_CSRF_TOKEN']);
@@ -245,7 +246,7 @@ function credential_response($action, $ok, $error = null, $reconcile = null, $ex
     $body['reconcile_started'] = $reconcile['requested'] && $reconcile['ok'];
     if ($reconcile['requested'] && !$reconcile['ok']) $body['reconcile_error'] = $reconcile['log'] ?: 'could not start reconcile';
   }
-  echo json_encode($body);
+  echo crf_json($body);
 }
 
 function dockerfile_paths($cfgdir, $plugin, $provider) {
@@ -262,13 +263,13 @@ switch ($action) {
     // reject and the UI show "lost connection" instead of a misleading "No managed
     // runners" card.
     if      ($out !== '') { echo $out; }
-    elseif  ($rc === 0)   { echo json_encode(['count'=>0,'runners'=>[]]); }
-    else                  { http_response_code(500); echo json_encode(['ok'=>false,'error'=>'backend unavailable']); }
+    elseif  ($rc === 0)   { echo crf_json(['count'=>0,'runners'=>[]]); }
+    else                  { http_response_code(500); echo crf_json(['ok'=>false,'error'=>'backend unavailable']); }
     break;
 
   case 'start': case 'stop': case 'restart': case 'validate':
     [$out, $rc] = run(escapeshellarg($SCRIPT) . ' ' . escapeshellarg($action));
-    echo json_encode(['ok' => $rc === 0, 'action' => $action, 'log' => $out]);
+    echo crf_json(['ok' => $rc === 0, 'action' => $action, 'log' => $out]);
     break;
 
   case 'scale':
@@ -276,29 +277,29 @@ switch ($action) {
     // hard-caps; this is defense-in-depth against a crafted POST (n=99999).
     $raw = $_POST['n'] ?? '';
     if (!is_string($raw) || !preg_match('/\A[0-9]{1,20}\z/D', $raw)) {
-      echo json_encode(['ok'=>false,'error'=>'bad scale target']); break;
+      echo crf_json(['ok'=>false,'error'=>'bad scale target']); break;
     }
     // Avoid integer-overflow behavior for a very large but syntactically valid
     // decimal: anything above two digits necessarily clamps to the hard limit.
     $digits = ltrim($raw, '0');
     $n = strlen($digits) > 2 ? 64 : min(64, (int)$raw);
     [$out, $rc] = run(escapeshellarg($SCRIPT) . ' scale ' . escapeshellarg((string)$n));
-    echo json_encode(['ok' => $rc === 0, 'action' => "scale $n", 'log' => $out]);
+    echo crf_json(['ok' => $rc === 0, 'action' => "scale $n", 'log' => $out]);
     break;
 
   case 'set-token':
     $raw = $_POST['token'] ?? '';
     $tok = is_string($raw) ? trim($raw) : '';
-    if ($tok === '') { echo json_encode(['ok'=>false,'error'=>'empty']); break; }
+    if ($tok === '') { echo crf_json(['ok'=>false,'error'=>'empty']); break; }
     // Shape-check the PAT: every GitHub token form (ghp_/gho_/ghs_/ghr_/github_pat_
     // + classic 40-char hex) is [A-Za-z0-9_] only. Rejecting anything else keeps a
     // stray quote/newline/backslash out of the curl `--config` header the engine
     // builds from this value (where it could break or inject curl directives).
     if (!preg_match('/^[A-Za-z0-9_]{20,255}$/', $tok)) {
-      echo json_encode(['ok'=>false,'error'=>'that does not look like a GitHub token (expected letters, digits, and underscores only)']); break;
+      echo crf_json(['ok'=>false,'error'=>'that does not look like a GitHub token (expected letters, digits, and underscores only)']); break;
     }
     $ok = write_secret("$CFGDIR/token", $tok);
-    echo json_encode(['ok' => $ok, 'action' => 'set-token', 'error' => $ok ? null : 'write failed']);
+    echo crf_json(['ok' => $ok, 'action' => 'set-token', 'error' => $ok ? null : 'write failed']);
     break;
 
   case 'clear-token':
@@ -321,7 +322,7 @@ switch ($action) {
     // instead of only this farm slot's manager, so they are intentionally refused.
     $validation = gitlab_runner_token_validation($raw, $tok);
     if (is_array($validation)) {
-      echo json_encode(['ok'=>false, 'error_code'=>$validation['code'], 'error'=>$validation['error']]); break;
+      echo crf_json(['ok'=>false, 'error_code'=>$validation['code'], 'error'=>$validation['error']]); break;
     }
     $ok = write_secret("$CFGDIR/gitlab-runner-token", $tok);
     $reconcile = $ok ? reconcile_active_gitlab($CFGDIR, $SCRIPT) : null;
@@ -332,37 +333,37 @@ switch ($action) {
     $pool = $_POST['pool'] ?? '';
     if (!is_string($pool) || !preg_match('/^[a-z](?:[a-z0-9-]{0,22}[a-z0-9])?$/D', $pool)
         || in_array($pool, ['default', 'invalid'], true)) {
-      echo json_encode(['ok'=>false,'error'=>'invalid pool id']); break;
+      echo crf_json(['ok'=>false,'error'=>'invalid pool id']); break;
     }
     $raw = $_POST['token'] ?? '';
     $tok = '';
     $validation = gitlab_runner_token_validation($raw, $tok);
     if (is_array($validation)) {
-      echo json_encode(['ok'=>false, 'error_code'=>$validation['code'], 'error'=>$validation['error']]); break;
+      echo crf_json(['ok'=>false, 'error_code'=>$validation['code'], 'error'=>$validation['error']]); break;
     }
     $ok = write_secret("$CFGDIR/gitlab-runner-token.$pool", $tok);
-    echo json_encode(['ok'=>$ok,'action'=>'set-gitlab-pool-token','pool'=>$pool,'error'=>$ok ? null : 'write failed']);
+    echo crf_json(['ok'=>$ok,'action'=>'set-gitlab-pool-token','pool'=>$pool,'error'=>$ok ? null : 'write failed']);
     break;
 
   case 'clear-gitlab-pool-token':
     $pool = $_POST['pool'] ?? '';
     if (!is_string($pool) || !preg_match('/^[a-z](?:[a-z0-9-]{0,22}[a-z0-9])?$/D', $pool)
         || in_array($pool, ['default', 'invalid'], true)) {
-      echo json_encode(['ok'=>false,'error'=>'invalid pool id']); break;
+      echo crf_json(['ok'=>false,'error'=>'invalid pool id']); break;
     }
     [$active, $activeRc] = run_json('docker ps -a --filter ' . escapeshellarg('label=net.unraid.ci-runner-farm.pool=' . $pool) . " --format '{{.Names}}'");
-    if ($activeRc !== 0) { echo json_encode(['ok'=>false,'error'=>'could not verify pool usage']); break; }
-    if (trim($active) !== '') { echo json_encode(['ok'=>false,'error'=>'stop the fleet before clearing a pool token']); break; }
+    if ($activeRc !== 0) { echo crf_json(['ok'=>false,'error'=>'could not verify pool usage']); break; }
+    if (trim($active) !== '') { echo crf_json(['ok'=>false,'error'=>'stop the fleet before clearing a pool token']); break; }
     $path = "$CFGDIR/gitlab-runner-token.$pool";
     $ok = !file_exists($path) || @unlink($path);
-    echo json_encode(['ok'=>$ok,'action'=>'clear-gitlab-pool-token','pool'=>$pool,'error'=>$ok ? null : 'remove failed']);
+    echo crf_json(['ok'=>$ok,'action'=>'clear-gitlab-pool-token','pool'=>$pool,'error'=>$ok ? null : 'remove failed']);
     break;
 
   case 'clear-gitlab-runner-token':
     $active = active_provider($CFGDIR) === 'gitlab';
     $confirmStop = $_POST['confirm_stop'] ?? '';
     if ($active && (!is_string($confirmStop) || $confirmStop !== '1')) {
-      echo json_encode([
+      echo crf_json([
         'ok'=>false,
         'action'=>'clear-gitlab-runner-token',
         'confirmation_required'=>true,
@@ -393,10 +394,10 @@ switch ($action) {
     // engine's curl-config path while rejecting whitespace, controls, quotes,
     // backslashes, and newlines that could terminate or inject a directive.
     if (!preg_match('/^[A-Za-z0-9_.@:+\/=~-]{8,512}$/D', $tok)) {
-      echo json_encode(['ok'=>false,'error'=>'expected an 8-512 character GitLab API token using only token-safe characters']); break;
+      echo crf_json(['ok'=>false,'error'=>'expected an 8-512 character GitLab API token using only token-safe characters']); break;
     }
     $ok = write_secret("$CFGDIR/gitlab-api-token", $tok);
-    echo json_encode(['ok'=>$ok,'action'=>'set-gitlab-api-token','error'=>$ok ? null : 'write failed']);
+    echo crf_json(['ok'=>$ok,'action'=>'set-gitlab-api-token','error'=>$ok ? null : 'write failed']);
     break;
 
   case 'clear-gitlab-api-token':
@@ -406,7 +407,7 @@ switch ($action) {
 
   case 'set-gitlab-ca':
     $pem = normalize_pem_ca($_POST['ca'] ?? '');
-    if ($pem === false) { echo json_encode(['ok'=>false,'error'=>'expected one or more PEM CERTIFICATE blocks (private keys are not accepted)']); break; }
+    if ($pem === false) { echo crf_json(['ok'=>false,'error'=>'expected one or more PEM CERTIFICATE blocks (private keys are not accepted)']); break; }
     $ok = write_secret("$CFGDIR/gitlab-ca.crt", $pem);
     $reconcile = $ok ? reconcile_active_gitlab($CFGDIR, $SCRIPT) : null;
     credential_response('set-gitlab-ca', $ok, 'write failed', $reconcile);
@@ -420,16 +421,16 @@ switch ($action) {
 
   case 'set-registry-token':
     $raw = $_POST['token'] ?? '';
-    if (!is_string($raw)) { echo json_encode(['ok'=>false,'error'=>'invalid registry token']); break; }
+    if (!is_string($raw)) { echo crf_json(['ok'=>false,'error'=>'invalid registry token']); break; }
     // Registry passwords are opaque: leading/trailing spaces may be meaningful,
     // so never trim or normalize them. Keep flash writes bounded and reject ASCII
     // controls (including NUL, tabs, CR/LF, and DEL) that cannot safely be treated
     // as a single stored credential or redacted line-for-line in diagnostics.
     if (strlen($raw) > 8192 || preg_match('/[\x00-\x1F\x7F]/', $raw)) {
-      echo json_encode(['ok'=>false,'error'=>'invalid or oversized registry token']); break;
+      echo crf_json(['ok'=>false,'error'=>'invalid or oversized registry token']); break;
     }
     $tok = $raw;
-    if ($tok === '') { echo json_encode(['ok'=>false,'error'=>'empty']); break; }
+    if ($tok === '') { echo crf_json(['ok'=>false,'error'=>'empty']); break; }
     $ok = write_secret("$CFGDIR/registry-token", $tok);
     $reconcile = $ok ? reconcile_active_gitlab($CFGDIR, $SCRIPT) : null;
     credential_response('set-registry-token', $ok, 'write failed', $reconcile);
@@ -456,43 +457,43 @@ switch ($action) {
     $df = $saved;
     if (!is_file($df) && $provider === 'github' && is_file("$CFGDIR/Dockerfile")) $df = "$CFGDIR/Dockerfile";
     if (!is_file($df)) $df = $default;
-    echo json_encode(['ok'=>true,'provider'=>$provider,'path'=>$df,'saved'=>is_file($saved) || ($provider === 'github' && is_file("$CFGDIR/Dockerfile")),'dockerfile'=>is_file($df) ? file_get_contents($df) : '']);
+    echo crf_json(['ok'=>true,'provider'=>$provider,'path'=>$df,'saved'=>is_file($saved) || ($provider === 'github' && is_file("$CFGDIR/Dockerfile")),'dockerfile'=>is_file($df) ? file_get_contents($df) : '']);
     break;
 
   case 'save-dockerfile':
     $content = $_POST['dockerfile'] ?? '';
-    if (!is_string($content) || trim($content) === '') { echo json_encode(['ok'=>false,'error'=>'empty']); break; }
-    if (strlen($content) > 2097152 || strpos($content, "\0") !== false) { echo json_encode(['ok'=>false,'error'=>'invalid or oversized Dockerfile']); break; }
+    if (!is_string($content) || trim($content) === '') { echo crf_json(['ok'=>false,'error'=>'empty']); break; }
+    if (strlen($content) > 2097152 || strpos($content, "\0") !== false) { echo crf_json(['ok'=>false,'error'=>'invalid or oversized Dockerfile']); break; }
     $provider = active_provider($CFGDIR);
     $expected = $_POST['provider'] ?? $provider;
     if (!is_string($expected) || !in_array($expected, ['github','gitlab'], true) || $expected !== $provider) {
-      echo json_encode(['ok'=>false,'error'=>'active provider changed; reload the provider Dockerfile before saving','provider'=>$provider]); break;
+      echo crf_json(['ok'=>false,'error'=>'active provider changed; reload the provider Dockerfile before saving','provider'=>$provider]); break;
     }
     [$df, $default] = dockerfile_paths($CFGDIR, $PLUGIN, $provider);
     @mkdir($CFGDIR, 0755, true);
     $ok = file_put_contents($df, $content, LOCK_EX) !== false;
-    echo json_encode(['ok'=>$ok,'action'=>'save-dockerfile','provider'=>$provider,'path'=>$df,'error'=>$ok ? null : 'write failed']);
+    echo crf_json(['ok'=>$ok,'action'=>'save-dockerfile','provider'=>$provider,'path'=>$df,'error'=>$ok ? null : 'write failed']);
     break;
 
   case 'build-image':
     // The engine owns the flock/launch state machine (build-async verb); thin shim.
     [$out, $rc] = run_json(escapeshellarg($SCRIPT) . ' build-async');
-    echo $out !== '' ? $out : json_encode(['ok'=>false,'error'=>'build launch failed']);
+    echo $out !== '' ? $out : crf_json(['ok'=>false,'error'=>'build launch failed']);
     break;
 
   case 'queued-json':
     [$out, $rc] = run_json(escapeshellarg($SCRIPT) . ' queued-json');
-    echo $out !== '' ? $out : json_encode(['queued' => -1]);
+    echo $out !== '' ? $out : crf_json(['queued' => -1]);
     break;
 
   case 'stats-json':
     [$out, $rc] = run_json(escapeshellarg($SCRIPT) . ' stats-json');
-    echo $out !== '' ? $out : json_encode(['total' => -1]);
+    echo $out !== '' ? $out : crf_json(['total' => -1]);
     break;
 
   case 'cache-usage':
     [$out, $rc] = run_json(escapeshellarg($SCRIPT) . ' cache-usage-json');
-    echo $out !== '' ? $out : json_encode(['total' => -1]);
+    echo $out !== '' ? $out : crf_json(['total' => -1]);
     break;
 
   case 'cache-clear':
@@ -501,34 +502,34 @@ switch ($action) {
     // pass it through so a specific reason (unsafe root / could not remove N dirs)
     // reaches the UI, else fall back to the exit-code envelope.
     $j = last_json($out);
-    echo $j !== '' ? $j : json_encode(['ok' => $rc === 0, 'action' => 'cache-clear']);
+    echo $j !== '' ? $j : crf_json(['ok' => $rc === 0, 'action' => 'cache-clear']);
     break;
 
   case 'recycle':
     $n = $_POST['name'] ?? '';
-    if (!is_string($n) || !preg_match('/^ci-runner-(?:[0-9]+|[a-z][a-z0-9-]{0,23}-[0-9]+)$/', $n)) { echo json_encode(['ok'=>false,'error'=>'bad name']); break; }
+    if (!is_string($n) || !preg_match('/^ci-runner-(?:[0-9]+|[a-z][a-z0-9-]{0,23}-[0-9]+)$/', $n)) { echo crf_json(['ok'=>false,'error'=>'bad name']); break; }
     [$out, $rc] = run_json(escapeshellarg($SCRIPT) . ' recycle ' . escapeshellarg($n));
     // cmd_recycle emits progress logs then its {ok,error?} verdict as the final
     // stdout line; pass it through so the specific reason (removed-not-recreated,
     // preflight-aborted, no-token …) reaches the UI, else fall back to exit code.
     $j = last_json($out);
-    echo $j !== '' ? $j : json_encode(['ok' => $rc === 0, 'action' => 'recycle']);
+    echo $j !== '' ? $j : crf_json(['ok' => $rc === 0, 'action' => 'recycle']);
     break;
 
   case 'force-forget-gitlab':
     $n = $_POST['name'] ?? '';
     $confirm = $_POST['confirm'] ?? '';
     if (!is_string($n) || !preg_match('/^ci-runner-(?:[0-9]+|[a-z][a-z0-9-]{0,23}-[0-9]+)$/', $n)) {
-      echo json_encode(['ok'=>false,'error'=>'bad name']); break;
+      echo crf_json(['ok'=>false,'error'=>'bad name']); break;
     }
     // This is the escape hatch for a permanently unreachable GitLab instance
     // or revoked manager token. It interrupts the slot and deliberately leaves
     // any remote manager record behind, so require an explicit second request.
     if (!is_string($confirm) || !hash_equals('FORGET_LOCAL_GITLAB_MANAGER', $confirm)) {
-      echo json_encode(['ok'=>false,'confirmation_required'=>true,'error'=>'explicit local-forget confirmation required']); break;
+      echo crf_json(['ok'=>false,'confirmation_required'=>true,'error'=>'explicit local-forget confirmation required']); break;
     }
     [$out, $rc] = run(escapeshellarg($SCRIPT) . ' force-forget-gitlab ' . escapeshellarg($n));
-    echo json_encode([
+    echo crf_json([
       'ok'=>$rc === 0,
       'action'=>'force-forget-gitlab',
       'name'=>$n,
@@ -540,35 +541,35 @@ switch ($action) {
 
   case 'runner-log':
     $n = $_POST['name'] ?? '';
-    if (!is_string($n) || !preg_match('/^ci-runner-(?:[0-9]+|[a-z][a-z0-9-]{0,23}-[0-9]+)$/', $n)) { echo json_encode(['ok'=>false,'error'=>'bad name']); break; }
+    if (!is_string($n) || !preg_match('/^ci-runner-(?:[0-9]+|[a-z][a-z0-9-]{0,23}-[0-9]+)$/', $n)) { echo crf_json(['ok'=>false,'error'=>'bad name']); break; }
     [$out, $rc] = run(escapeshellarg($SCRIPT) . ' logs-tail ' . escapeshellarg($n) . ' 150');
-    echo json_encode(['ok' => $rc === 0, 'log' => $out, 'error' => $rc === 0 ? null : 'runner is not an owned managed slot']);
+    echo crf_json(['ok' => $rc === 0, 'log' => $out, 'error' => $rc === 0 ? null : 'runner is not an owned managed slot']);
     break;
 
   case 'image-info':
     [$out, $rc] = run_json(escapeshellarg($SCRIPT) . ' image-info-json');
-    echo $out !== '' ? $out : json_encode(['exists' => false]);
+    echo $out !== '' ? $out : crf_json(['exists' => false]);
     break;
 
   case 'get-default-dockerfile':
     $provider = active_provider($CFGDIR);
     [$saved, $df] = dockerfile_paths($CFGDIR, $PLUGIN, $provider);
-    echo json_encode(['ok'=>true,'provider'=>$provider,'path'=>$df,'dockerfile'=>is_file($df) ? file_get_contents($df) : '']);
+    echo crf_json(['ok'=>true,'provider'=>$provider,'path'=>$df,'dockerfile'=>is_file($df) ? file_get_contents($df) : '']);
     break;
 
   case 'farm-log':
     // engine owns the source selection + filtering (farm-log verb); thin shim.
     [$out, $rc] = run_json(escapeshellarg($SCRIPT) . ' farm-log');
-    echo $out !== '' ? $out : json_encode(['ok'=>true,'log'=>'']);
+    echo $out !== '' ? $out : crf_json(['ok'=>true,'log'=>'']);
     break;
 
   case 'build-log':
     // engine owns the liveness/rc/log parsing (build-status verb); thin shim.
     [$out, $rc] = run_json(escapeshellarg($SCRIPT) . ' build-status');
-    echo $out !== '' ? $out : json_encode(['ok'=>true,'running'=>false,'rc'=>null,'log'=>'']);
+    echo $out !== '' ? $out : crf_json(['ok'=>true,'running'=>false,'rc'=>null,'log'=>'']);
     break;
 
   default:
     http_response_code(400);
-    echo json_encode(['ok' => false, 'error' => 'unknown action']);
+    echo crf_json(['ok' => false, 'error' => 'unknown action']);
 }

@@ -36,10 +36,12 @@ bash tests/safe-paths.sh
 bash tests/provider-contract.sh
 bash tests/exec-csrf.sh
 bash tests/secret-write.sh
+bash tests/utf8-safety.sh
 bash tests/log-redaction.sh
 bash tests/provider-mocks.sh
 bash tests/lease-selfheal.sh
 bash tests/ownership-safety.sh
+bash tests/temp-safety.sh
 bash tests/resource-ownership.sh
 bash tests/gitlab-policy.sh
 bash tests/firewall-transition.sh
@@ -47,6 +49,7 @@ bash tests/deploy-uninstall-safety.sh
 bash tests/install-dev-safety.sh
 bash tests/release-guard.sh
 bash tests/package-contents.sh
+bash tests/xml-escape.sh
 bash tests/dev-package.sh
 
 echo "All repository checks passed."
