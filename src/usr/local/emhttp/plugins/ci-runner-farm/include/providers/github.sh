@@ -445,8 +445,8 @@ github_usage_context() {
 
 github_validate() {
   check_cache_root || return 1
-  ensure_dirs
-  registry_login
+  ensure_dirs || return 1
+  registry_login || return 1
   local suffix name snapshot validation_id="" root
   suffix="$(od -An -N6 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
   printf '%s' "$suffix" | grep -qE '^[0-9a-f]{12}$' \
