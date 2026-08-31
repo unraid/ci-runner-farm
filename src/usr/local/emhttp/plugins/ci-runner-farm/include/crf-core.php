@@ -6,6 +6,7 @@
    relied on by document order (renaming crfPost or reordering the tab ordinals used
    to silently break the other tabs). Emitted once per document via include_once.
    Runs in the tab's scope, so $var (the CSRF token) is available. */
+require_once __DIR__ . '/encoding.php';
 $crf_var = @parse_ini_file('/var/local/emhttp/var.ini');
 $crf_csrf = is_array($crf_var) && is_string($crf_var['csrf_token'] ?? null)
   ? $crf_var['csrf_token'] : '';
@@ -44,7 +45,7 @@ foreach (glob('/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components/st
   @media (prefers-reduced-motion:reduce){.crf-ball-busy,.crf-ball-starting{animation:none}}
 </style>
 <script>
-const CRF_CSRF_FALLBACK = <?=json_encode($crf_csrf, JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT)?>;
+const CRF_CSRF_FALLBACK = <?=crf_json($crf_csrf, JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT)?>;
 const CRF_URL  = "/plugins/ci-runner-farm/include/exec.php";
 const CRF_UUI_BASE = "<?=$crf_uui_base?>";
 const CRF_UTIL_CSS = "<?=$crf_util_css?>";
