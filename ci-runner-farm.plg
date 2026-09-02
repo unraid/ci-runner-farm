@@ -2,13 +2,13 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name          "ci-runner-farm">
 <!ENTITY author        "Lime Technology">
-<!ENTITY version       "2026.08.27.1835.61-1.10.1">
-<!ENTITY pluginVersion "1.10.1">
-<!ENTITY releaseTag    "v1.10.1">
+<!ENTITY version       "2026.09.02.1623.73-1.10.2">
+<!ENTITY pluginVersion "1.10.2">
+<!ENTITY releaseTag    "v1.10.2">
 <!ENTITY pluginURL     "https://github.com/unraid/ci-runner-farm/releases/latest/download/ci-runner-farm.plg">
-<!ENTITY packageName   "ci-runner-farm-2026.08.27.1835.61-1.10.1.tgz">
-<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/v1.10.1/ci-runner-farm-2026.08.27.1835.61-1.10.1.tgz">
-<!ENTITY packageMD5    "53005ddb7c887dbde152eb90dc609d45">
+<!ENTITY packageName   "ci-runner-farm-2026.09.02.1623.73-1.10.2.tgz">
+<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/v1.10.2/ci-runner-farm-2026.09.02.1623.73-1.10.2.tgz">
+<!ENTITY packageMD5    "6a5452842a8c8bb381d5873b02bed435">
 <!ENTITY plgdir        "/usr/local/emhttp/plugins/&name;">
 <!ENTITY cfgdir        "/boot/config/plugins/&name;">
 ]>
@@ -23,7 +23,17 @@
 <CHANGES>
 ### &version;
 ### Bug Fixes
-* **release:** publish validated plugin assets from the release tag ([#84](https://github.com/unraid/ci-runner-farm/issues/84)) ([65b10a6](https://github.com/unraid/ci-runner-farm/commit/65b10a652ce98424ca407157aad9e7d10dc1a3ab))
+* **autoscale:** use fresh queue depth for growth ([#88](https://github.com/unraid/ci-runner-farm/issues/88)) ([cd57608](https://github.com/unraid/ci-runner-farm/commit/cd576085f052e1473c7fd9c0825f85235e0641cf)), closes [#80](https://github.com/unraid/ci-runner-farm/issues/80)
+* **build:** preserve modes in dev package render ([#87](https://github.com/unraid/ci-runner-farm/issues/87)) ([06184ed](https://github.com/unraid/ci-runner-farm/commit/06184ed9e97361b91ae471e5c0fa8094027caea5))
+* **build:** XML-escape changelog text ([#94](https://github.com/unraid/ci-runner-farm/issues/94)) ([768ef89](https://github.com/unraid/ci-runner-farm/commit/768ef89b422b426979aa2c9a00cc40c8eefe29d1))
+* **editors:** exclude LICENSE from formatting rules ([#89](https://github.com/unraid/ci-runner-farm/issues/89)) ([4f82bb1](https://github.com/unraid/ci-runner-farm/commit/4f82bb1d8b3829b101cb29987c23e333c1670669)), closes [#72](https://github.com/unraid/ci-runner-farm/issues/72)
+* **github:** fail validation on setup errors ([#93](https://github.com/unraid/ci-runner-farm/issues/93)) ([7bc43ac](https://github.com/unraid/ci-runner-farm/commit/7bc43ac1fa5380d837aac768bf465115dbc04543))
+* **image:** validate remote Docker image references ([#91](https://github.com/unraid/ci-runner-farm/issues/91)) ([c037d84](https://github.com/unraid/ci-runner-farm/commit/c037d84cec70e5f684d18eded547f770c46805e9)), closes [#64](https://github.com/unraid/ci-runner-farm/issues/64)
+* **logging:** bound persistent boot log size ([#90](https://github.com/unraid/ci-runner-farm/issues/90)) ([bf42747](https://github.com/unraid/ci-runner-farm/commit/bf42747f722a8c472bdd2c5d75c4853024c06aab)), closes [#62](https://github.com/unraid/ci-runner-farm/issues/62)
+* **secrets:** report successful atomic credential writes ([#96](https://github.com/unraid/ci-runner-farm/issues/96)) ([25b9e45](https://github.com/unraid/ci-runner-farm/commit/25b9e45c8626558f9946f837a49fed7414c7f5f0))
+* **selfheal:** detect missing BuildKit snapshots ([#86](https://github.com/unraid/ci-runner-farm/issues/86)) ([6622ad9](https://github.com/unraid/ci-runner-farm/commit/6622ad93299a434685195fb8f5f4c9c8ed5dbe71))
+* **shell:** harden temporary paths and Docker pull args ([#92](https://github.com/unraid/ci-runner-farm/issues/92)) ([454b651](https://github.com/unraid/ci-runner-farm/commit/454b651ecb116fd64ee4b514588bdf6272770105))
+* **web:** handle invalid UTF-8 at output boundaries ([#95](https://github.com/unraid/ci-runner-farm/issues/95)) ([827903e](https://github.com/unraid/ci-runner-farm/commit/827903e240f8bc2583a96c0b9d13755d0f27b031))
 </CHANGES>
 
 <!-- plugin package: Unraid downloads it to flash and verifies the MD5 -->
@@ -40,11 +50,11 @@ PLGDIR="/usr/local/emhttp/plugins/ci-runner-farm"
 CFGDIR="/boot/config/plugins/ci-runner-farm"
 mkdir -p "$CFGDIR" "$PLGDIR"
 # Sweep any older package versions off flash, keeping this build's package.
-find "$CFGDIR" -maxdepth 1 -name 'ci-runner-farm-*.tgz' ! -name 'ci-runner-farm-2026.08.27.1835.61-1.10.1.tgz' -delete 2>/dev/null || true
+find "$CFGDIR" -maxdepth 1 -name 'ci-runner-farm-*.tgz' ! -name 'ci-runner-farm-2026.09.02.1623.73-1.10.2.tgz' -delete 2>/dev/null || true
 # Extract ONLY into the plugin dir; --no-same-owner forces root ownership;
 # --no-overwrite-dir leaves existing dir metadata alone. System dirs untouched.
 # The .tgz is kept on flash so the on-boot reinstall works without a download.
-tar -xzf "$CFGDIR/ci-runner-farm-2026.08.27.1835.61-1.10.1.tgz" --no-same-owner --no-overwrite-dir -C "$PLGDIR"
+tar -xzf "$CFGDIR/ci-runner-farm-2026.09.02.1623.73-1.10.2.tgz" --no-same-owner --no-overwrite-dir -C "$PLGDIR"
 chown -R root:root "$PLGDIR"
 find "$PLGDIR" -type d -exec chmod 0755 {} +
 find "$PLGDIR" -type f -exec chmod 0644 {} +
@@ -101,10 +111,14 @@ fi
 # Bring the fleet + autoscaler up. Runs on manual install AND on every boot
 # (rc.local reinstalls plugins), detached so it waits for dockerd+array without
 # blocking. No-op until the selected provider's runner token is configured.
+if [ -r "$PLGDIR/include/boot-log.sh" ]; then
+  . "$PLGDIR/include/boot-log.sh" || true
+  crf_bound_boot_log "$CFGDIR/boot.log" || true
+fi
 ( nohup "$PLGDIR/include/runner-farm.sh" boot-autostart >>"$CFGDIR/boot.log" 2>&1 & ) || true
 echo ""
 echo "+=============================================================+"
-echo "| ci-runner-farm 2026.08.27.1835.61-1.10.1 installed.                         "
+echo "| ci-runner-farm 2026.09.02.1623.73-1.10.2 installed.                         "
 echo "| Settings > Utilities > CI Runner Farm                        "
 echo "| Select GitHub or GitLab, save its token, then Start.         "
 echo "+=============================================================+"
@@ -118,6 +132,10 @@ set -euo pipefail
 PLGDIR="/usr/local/emhttp/plugins/ci-runner-farm"
 CFGDIR="/boot/config/plugins/ci-runner-farm"
 ENGINE="$PLGDIR/include/runner-farm.sh"
+if [ -r "$PLGDIR/include/boot-log.sh" ]; then
+  . "$PLGDIR/include/boot-log.sh" || true
+  crf_bound_boot_log "$CFGDIR/boot.log" || true
+fi
 if [ -x "$ENGINE" ]; then
   if ! "$PLGDIR/include/runner-farm.sh" stop >>"$CFGDIR/boot.log" 2>&1; then
     echo "ci-runner-farm NOT removed: one or more runners, jobs, or privileged sidecars could not be stopped safely." >&2
