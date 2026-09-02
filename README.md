@@ -397,9 +397,9 @@ ordinary steady state still has one active provider.
 Alongside reaping dead or deregistered slots, the autoscale tick also
 self-heals build-poisoned GitHub DinD slots. If a slot's nested Docker daemon
 crashes mid-build, its persistent buildkit store can be left with dangling
-lease metadata: every later build on that slot fails with
-`failed to solve: lease "...": not found` while the runner itself stays
-healthy and keeps accepting jobs. The farm detects this from the failed job
+lease metadata or missing snapshot parents: every later build on that slot
+fails while the runner itself stays healthy and keeps accepting jobs. The farm
+detects the supported BuildKit corruption signatures from the failed job
 logs on GitHub (the only place the error is visible), then — only while the
 slot is idle, and at most once per slot per hour — stops the container,
 clears just the `buildkit/` subdirectory of its Docker root (warm image and

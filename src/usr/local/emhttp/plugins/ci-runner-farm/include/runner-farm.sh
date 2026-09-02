@@ -624,12 +624,12 @@ reap_dead_runners() {
 }
 
 # A runner whose nested dockerd crashed mid-build can be left with dangling
-# buildkit lease metadata in its persistent DinD root: every later build on that
-# slot fails with `failed to solve: lease "...": not found` while the container
-# stays running, healthy, and registered — so it keeps taking (and failing)
+# buildkit lease metadata or missing snapshot parents in its persistent DinD
+# root: every later build on that slot fails while the container stays running,
+# healthy, and registered — so it keeps taking (and failing)
 # jobs, invisible to reap_dead_runners, which only sees dead containers and
 # lost registrations. The provider scan classifies a slot as build-poisoned by
-# that exact signature (GitHub reads recent failed-job logs, the only place the
+# supported signatures (GitHub reads recent failed-job logs, the only place the
 # error is visible — the nested daemon does not log solve failures) and drops a
 # poison-pending flag; this pass repairs flagged IDLE slots by stopping the
 # container, clearing ONLY the buildkit/ subdir of its DinD root (the warm
@@ -676,7 +676,7 @@ heal_poisoned_runners() {
     # Stamp the ATTEMPT before acting: whatever fails below, this slot cannot
     # be stop/start-cycled more than once per bound interval.
     echo "$now" > "$healf"
-    log "selfheal: $c is build-poisoned (dangling buildkit lease) -> stop, clear buildkit metadata, restart"
+    log "selfheal: $c is build-poisoned (corrupt buildkit metadata) -> stop, clear buildkit metadata, restart"
     provider_stop_owned_runner "$c" "$id" "$provider" \
       || { err "selfheal: could not stop $c for its buildkit reset"; failed=1; continue; }
     if rm -rf "$root/docker/$c/buildkit" 2>/dev/null; then
