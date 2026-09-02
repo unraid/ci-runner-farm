@@ -42,6 +42,7 @@ github_runner_state() {
 # becomes stale. Keep a short host-side inventory cache so autoscale can detect
 # that mismatch without placing the long-lived PAT in the runner container.
 GITHUB_LIVENESS_CACHE="${RUNDIR}/github-runners.cache"
+GITHUB_LIVENESS_TTL=300 # seconds between GitHub liveness refreshes
 GITHUB_OFFLINE_CONFIRMATIONS=2
 
 github_parse_runner_statuses() {
@@ -71,7 +72,8 @@ github_runner_liveness_refresh() {
     read -r cached_at cached_key < "$GITHUB_LIVENESS_CACHE"
     case "$cached_at" in ''|*[!0-9]*) ;; *)
       age=$((now - cached_at))
-      [ "$age" -ge 0 ] && [ "$age" -le 60 ] && [ "$cached_key" = "$expected_key" ] && return 0
+      [ "$age" -ge 0 ] && [ "$age" -le "$GITHUB_LIVENESS_TTL" ] \
+        && [ "$cached_key" = "$expected_key" ] && return 0
       ;;
     esac
   fi

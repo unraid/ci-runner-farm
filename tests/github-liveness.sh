@@ -38,6 +38,15 @@ github_runner_liveness_refresh || { echo 'github-liveness: refresh failed' >&2; 
 [ "$(github_runner_liveness_status ci-runner-2)" = online ] || { echo 'github-liveness: online status was not read' >&2; exit 1; }
 [ "$(wc -l < "$api_log" | tr -d ' ')" = 1 ] || { echo 'github-liveness: fresh cache was not reused' >&2; exit 1; }
 
+cache_key="$(printf '%s\0' "$GH_SCOPE" "$GH_OWNER" "$GH_REPOS" | sha256sum | cut -c1-12)"
+now="$(date +%s)"
+printf '%s %s\n' "$((now - GITHUB_LIVENESS_TTL + 1))" "$cache_key" > "$GITHUB_LIVENESS_CACHE"
+github_runner_liveness_refresh || { echo 'github-liveness: cache expired too early' >&2; exit 1; }
+[ "$(wc -l < "$api_log" | tr -d ' ')" = 1 ] || { echo 'github-liveness: cache did not remain valid for five minutes' >&2; exit 1; }
+printf '%s %s\n' "$((now - GITHUB_LIVENESS_TTL - 1))" "$cache_key" > "$GITHUB_LIVENESS_CACHE"
+github_runner_liveness_refresh || { echo 'github-liveness: expired cache was not refreshed' >&2; exit 1; }
+[ "$(wc -l < "$api_log" | tr -d ' ')" = 2 ] || { echo 'github-liveness: expired cache refresh was not requested' >&2; exit 1; }
+
 if github_offline_runner_confirmed ci-runner-1; then
   echo 'github-liveness: recycled an offline runner after one reading' >&2
   exit 1
