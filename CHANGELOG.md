@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.10.2](https://github.com/unraid/ci-runner-farm/compare/v1.10.1...v1.10.2) (2026-09-02)
+
+
+### Bug Fixes
+
+* **autoscale:** use fresh queue depth for growth ([#88](https://github.com/unraid/ci-runner-farm/issues/88)) ([cd57608](https://github.com/unraid/ci-runner-farm/commit/cd576085f052e1473c7fd9c0825f85235e0641cf)), closes [#80](https://github.com/unraid/ci-runner-farm/issues/80)
+* **build:** preserve modes in dev package render ([#87](https://github.com/unraid/ci-runner-farm/issues/87)) ([06184ed](https://github.com/unraid/ci-runner-farm/commit/06184ed9e97361b91ae471e5c0fa8094027caea5))
+* **build:** XML-escape changelog text ([#94](https://github.com/unraid/ci-runner-farm/issues/94)) ([768ef89](https://github.com/unraid/ci-runner-farm/commit/768ef89b422b426979aa2c9a00cc40c8eefe29d1))
+* **editors:** exclude LICENSE from formatting rules ([#89](https://github.com/unraid/ci-runner-farm/issues/89)) ([4f82bb1](https://github.com/unraid/ci-runner-farm/commit/4f82bb1d8b3829b101cb29987c23e333c1670669)), closes [#72](https://github.com/unraid/ci-runner-farm/issues/72)
+* **github:** fail validation on setup errors ([#93](https://github.com/unraid/ci-runner-farm/issues/93)) ([7bc43ac](https://github.com/unraid/ci-runner-farm/commit/7bc43ac1fa5380d837aac768bf465115dbc04543))
+* **image:** validate remote Docker image references ([#91](https://github.com/unraid/ci-runner-farm/issues/91)) ([c037d84](https://github.com/unraid/ci-runner-farm/commit/c037d84cec70e5f684d18eded547f770c46805e9)), closes [#64](https://github.com/unraid/ci-runner-farm/issues/64)
+* **logging:** bound persistent boot log size ([#90](https://github.com/unraid/ci-runner-farm/issues/90)) ([bf42747](https://github.com/unraid/ci-runner-farm/commit/bf42747f722a8c472bdd2c5d75c4853024c06aab)), closes [#62](https://github.com/unraid/ci-runner-farm/issues/62)
+* **secrets:** report successful atomic credential writes ([#96](https://github.com/unraid/ci-runner-farm/issues/96)) ([25b9e45](https://github.com/unraid/ci-runner-farm/commit/25b9e45c8626558f9946f837a49fed7414c7f5f0))
+* **selfheal:** detect missing BuildKit snapshots ([#86](https://github.com/unraid/ci-runner-farm/issues/86)) ([6622ad9](https://github.com/unraid/ci-runner-farm/commit/6622ad93299a434685195fb8f5f4c9c8ed5dbe71))
+* **shell:** harden temporary paths and Docker pull args ([#92](https://github.com/unraid/ci-runner-farm/issues/92)) ([454b651](https://github.com/unraid/ci-runner-farm/commit/454b651ecb116fd64ee4b514588bdf6272770105))
+* **web:** handle invalid UTF-8 at output boundaries ([#95](https://github.com/unraid/ci-runner-farm/issues/95)) ([827903e](https://github.com/unraid/ci-runner-farm/commit/827903e240f8bc2583a96c0b9d13755d0f27b031))
+
 ## [1.10.1](https://github.com/unraid/ci-runner-farm/compare/v1.10.0...v1.10.1) (2026-08-27)
 
 
