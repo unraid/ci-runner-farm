@@ -36,6 +36,7 @@ github_runner_liveness_refresh || { echo 'github-liveness: refresh failed' >&2; 
 [ "$(wc -l < "$api_log" | tr -d ' ')" = 1 ] || { echo 'github-liveness: expected one inventory request' >&2; exit 1; }
 [ "$(github_runner_liveness_status ci-runner-1)" = offline ] || { echo 'github-liveness: offline status was not read' >&2; exit 1; }
 [ "$(github_runner_liveness_status ci-runner-2)" = online ] || { echo 'github-liveness: online status was not read' >&2; exit 1; }
+github_runner_liveness_refresh || { echo 'github-liveness: cached refresh failed' >&2; exit 1; }
 [ "$(wc -l < "$api_log" | tr -d ' ')" = 1 ] || { echo 'github-liveness: fresh cache was not reused' >&2; exit 1; }
 
 cache_key="$(printf '%s\0' "$GH_SCOPE" "$GH_OWNER" "$GH_REPOS" | sha256sum | cut -c1-12)"
@@ -51,7 +52,15 @@ if github_offline_runner_confirmed ci-runner-1; then
   echo 'github-liveness: recycled an offline runner after one reading' >&2
   exit 1
 fi
-github_offline_runner_confirmed ci-runner-1 || { echo 'github-liveness: did not confirm two offline readings' >&2; exit 1; }
+if github_offline_runner_confirmed ci-runner-1; then
+  echo 'github-liveness: counted the same inventory generation twice' >&2
+  exit 1
+fi
+sleep 1
+now="$(date +%s)"
+printf '%s %s\n' "$((now - GITHUB_LIVENESS_TTL - 1))" "$cache_key" > "$GITHUB_LIVENESS_CACHE"
+github_runner_liveness_refresh || { echo 'github-liveness: second inventory refresh failed' >&2; exit 1; }
+github_offline_runner_confirmed ci-runner-1 || { echo 'github-liveness: did not confirm two fresh offline readings' >&2; exit 1; }
 
 runner_busy() { return 0; }
 rm -f "$RUNDIR/github-offline.ci-runner-1"
@@ -78,6 +87,9 @@ removed=0
 remove_runner() { removed=$((removed + 1)); }
 reap_dead_runners || { echo 'github-liveness: reaper failed' >&2; exit 1; }
 [ "$removed" = 0 ] || { echo 'github-liveness: reaper acted after one offline reading' >&2; exit 1; }
+sleep 1
+now="$(date +%s)"
+printf '%s %s\n' "$((now - GITHUB_LIVENESS_TTL - 1))" "$cache_key" > "$GITHUB_LIVENESS_CACHE"
 reap_dead_runners || { echo 'github-liveness: reaper failed on confirmation' >&2; exit 1; }
 [ "$removed" = 1 ] || { echo 'github-liveness: reaper did not replace confirmed offline runner' >&2; exit 1; }
 

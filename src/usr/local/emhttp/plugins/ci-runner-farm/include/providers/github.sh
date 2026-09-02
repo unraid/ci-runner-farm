@@ -107,8 +107,12 @@ github_runner_liveness_status() {
   awk -F'|' -v want="$wanted" '$1 == want { print $2; exit }' "$GITHUB_LIVENESS_CACHE" 2>/dev/null
 }
 
+github_runner_liveness_cache_timestamp() {
+  awk 'NR == 1 { print $1; exit }' "$GITHUB_LIVENESS_CACHE" 2>/dev/null
+}
+
 github_offline_runner_confirmed() {
-  local c="$1" status marker count=0
+  local c="$1" status marker count=0 marker_at="" cache_at
   status="$(github_runner_liveness_status "$c")"
   marker="$RUNDIR/github-offline.${c}"
   case "$status" in
@@ -121,10 +125,14 @@ github_offline_runner_confirmed() {
         rm -f "$marker"
         return 1
       fi
-      [ -f "$marker" ] && read -r count < "$marker"
+      cache_at="$(github_runner_liveness_cache_timestamp)"
+      [ -n "$cache_at" ] || return 1
+      [ -f "$marker" ] && read -r count marker_at < "$marker"
       case "$count" in ''|*[!0-9]*) count=0 ;; esac
-      count=$((count + 1))
-      printf '%s\n' "$count" > "$marker"
+      if [ "$marker_at" != "$cache_at" ]; then
+        count=$((count + 1))
+        printf '%s %s\n' "$count" "$cache_at" > "$marker"
+      fi
       if [ "$count" -ge "$GITHUB_OFFLINE_CONFIRMATIONS" ]; then
         return 0
       fi
