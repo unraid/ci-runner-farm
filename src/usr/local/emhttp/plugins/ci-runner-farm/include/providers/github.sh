@@ -38,6 +38,113 @@ github_runner_state() {
   esac
 }
 
+# Docker can report a healthy listener after its GitHub control-plane session
+# becomes stale. Keep a short host-side inventory cache so autoscale can detect
+# that mismatch without placing the long-lived PAT in the runner container.
+GITHUB_LIVENESS_CACHE="${RUNDIR}/github-runners.cache"
+GITHUB_LIVENESS_TTL=300 # seconds between GitHub liveness refreshes
+GITHUB_OFFLINE_CONFIRMATIONS=2
+
+github_parse_runner_statuses() {
+  tr ',' '\n' | awk '
+    /"name"[[:space:]]*:/ {
+      s=$0
+      sub(/^[^:]*:[[:space:]]*"/, "", s)
+      sub(/".*/, "", s)
+      runner_name=s
+    }
+    /"status"[[:space:]]*:/ {
+      s=$0
+      sub(/^[^:]*:[[:space:]]*"/, "", s)
+      sub(/".*/, "", s)
+      if (runner_name != "") {
+        print runner_name "|" s
+        runner_name=""
+      }
+    }'
+}
+
+github_runner_liveness_refresh() {
+  local now expected_key cached_at cached_key age tmp body valid=0 repo url
+  now="$(date +%s)"
+  expected_key="$(printf '%s\0' "$GH_SCOPE" "$GH_OWNER" "$GH_REPOS" | sha256sum | cut -c1-12)"
+  if [ -f "$GITHUB_LIVENESS_CACHE" ]; then
+    read -r cached_at cached_key < "$GITHUB_LIVENESS_CACHE"
+    case "$cached_at" in ''|*[!0-9]*) ;; *)
+      age=$((now - cached_at))
+      [ "$age" -ge 0 ] && [ "$age" -le "$GITHUB_LIVENESS_TTL" ] \
+        && [ "$cached_key" = "$expected_key" ] && return 0
+      ;;
+    esac
+  fi
+  tmp="$(mktemp "$RUNDIR/github-liveness.XXXXXX" 2>/dev/null)" || return 1
+  if [ "$GH_SCOPE" = org ]; then
+    url="/orgs/${GH_OWNER}/actions/runners?per_page=100"
+    body="$(gh_api GET "$url")" || { rm -f "$tmp"; return 1; }
+    case "$body" in *'"runners"'*) valid=1 ;; esac
+    printf '%s' "$body" | github_parse_runner_statuses >> "$tmp"
+  else
+    for repo in $GH_REPOS; do
+      [ -n "$repo" ] || continue
+      url="/repos/${repo}/actions/runners?per_page=100"
+      body="$(gh_api GET "$url")" || { rm -f "$tmp"; return 1; }
+      case "$body" in *'"runners"'*) valid=1 ;; esac
+      printf '%s' "$body" | github_parse_runner_statuses >> "$tmp"
+    done
+  fi
+  [ "$valid" = 1 ] || { rm -f "$tmp"; return 1; }
+  {
+    printf '%s %s\n' "$now" "$expected_key"
+    cat "$tmp"
+  } > "${tmp}.cache" || { rm -f "$tmp" "${tmp}.cache"; return 1; }
+  mv "${tmp}.cache" "$GITHUB_LIVENESS_CACHE" || { rm -f "$tmp" "${tmp}.cache"; return 1; }
+  rm -f "$tmp"
+}
+
+github_runner_liveness_status() {
+  local c="$1" wanted
+  wanted="$(host)-${c}"
+  awk -F'|' -v want="$wanted" '$1 == want { print $2; exit }' "$GITHUB_LIVENESS_CACHE" 2>/dev/null
+}
+
+github_runner_liveness_cache_timestamp() {
+  awk 'NR == 1 { print $1; exit }' "$GITHUB_LIVENESS_CACHE" 2>/dev/null
+}
+
+github_offline_runner_confirmed() {
+  local c="$1" status marker count=0 marker_at="" cache_at
+  status="$(github_runner_liveness_status "$c")"
+  marker="$RUNDIR/github-offline.${c}"
+  case "$status" in
+    online)
+      rm -f "$marker"
+      return 1
+      ;;
+    offline)
+      if runner_busy "$c"; then
+        rm -f "$marker"
+        return 1
+      fi
+      cache_at="$(github_runner_liveness_cache_timestamp)"
+      [ -n "$cache_at" ] || return 1
+      [ -f "$marker" ] && read -r count marker_at < "$marker"
+      case "$count" in ''|*[!0-9]*) count=0 ;; esac
+      if [ "$marker_at" != "$cache_at" ]; then
+        count=$((count + 1))
+        printf '%s %s\n' "$count" "$cache_at" > "$marker"
+      fi
+      if [ "$count" -ge "$GITHUB_OFFLINE_CONFIRMATIONS" ]; then
+        return 0
+      fi
+      log "autoscale: GitHub reports $c offline (confirmation $count/$GITHUB_OFFLINE_CONFIRMATIONS); retaining it"
+      ;;
+    *)
+      rm -f "$marker"
+      ;;
+  esac
+  return 1
+}
+
 github_scale_down_eligible() { ! runner_busy "$1"; }
 github_autoscale_counts() {
   cur="$(current_count)" || return 1
