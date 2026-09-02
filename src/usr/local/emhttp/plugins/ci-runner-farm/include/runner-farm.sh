@@ -553,9 +553,13 @@ scale_down_idle() {
 # empty => treated as fine, so this is a safe no-op until the new image ships).
 # Caches/DinD roots persist as bind mounts across the recycle.
 reap_dead_runners() {
-  local c st health provider sock side phase job_container failf failcount
+  local c st health provider sock side phase job_container failf failcount github_liveness_ready=true
   local names sidecars snapshot id role index gen failed=0
   names="$(managed_names)" || return 1
+  if [ "$CI_PROVIDER" = github ] && [ -n "$names" ]; then
+    github_runner_liveness_refresh \
+      || { log "autoscale: GitHub runner liveness is unavailable; retaining running runners"; github_liveness_ready=false; }
+  fi
   for c in $names; do
     [ -n "$c" ] || continue
     snapshot="$(managed_runner_snapshot "$c")" || { failed=1; continue; }
@@ -605,6 +609,11 @@ reap_dead_runners() {
         fi
       fi
     fi
+    if [ "$provider" = "github" ] && [ "$st" = "running" ] && [ "$github_liveness_ready" = true ] \
+       && github_offline_runner_confirmed "$c"; then
+      log "autoscale: reaping $c because GitHub reports its runner offline"
+      st=dead
+    fi
     case "$st" in
       exited|dead)
         log "autoscale: reaping dead runner $c (state=$st)" ;;
@@ -614,6 +623,7 @@ reap_dead_runners() {
       *) continue ;;
     esac
     if remove_runner "$c" true "$id" "$provider"; then
+      rm -f "$RUNDIR/github-offline.$c" 2>/dev/null || true
       rm -f "$RUNDIR/gitlab-sidecar-fail.$c" 2>/dev/null || true
     else
       log "autoscale: failed to remove dead runner $c; will retry"

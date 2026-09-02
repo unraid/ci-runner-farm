@@ -34,6 +34,7 @@ bash tests/boot-log.sh
 bash tests/editorconfig.sh
 bash tests/runner-pools.sh
 bash tests/autoscale-queue.sh
+bash tests/github-liveness.sh
 bash tests/pool-runtime.sh
 bash tests/numeric-config.sh
 bash tests/safe-paths.sh
