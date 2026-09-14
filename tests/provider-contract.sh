@@ -200,6 +200,16 @@ cmp -s "$RUNTIME/default.Dockerfile" "$RUNTIME/default.github.Dockerfile" || \
   bad "default.github.Dockerfile must remain byte-identical to legacy default.Dockerfile"
 grep -qF 'Docker did not become ready' "$RUNTIME/default.github.Dockerfile" || \
   bad "GitHub runner image does not fail closed when nested Docker stays unavailable"
+for file in "$RUNTIME/default.Dockerfile" "$RUNTIME/default.github.Dockerfile"; do
+  grep -qF 'ENTRYPOINT ["/usr/local/bin/unraid-runner-entrypoint.sh"]' "$file" \
+    || bad "GitHub runner image does not bootstrap cgroups before registration: $file"
+  grep -qF 'unraid-cgroup-bootstrap.sh' "$file" \
+    || bad "GitHub runner image is missing its cgroup bootstrap: $file"
+done
+grep -qF -- '--cgroupns=private' "$GITHUB_ADAPTER" \
+  || bad "GitHub DinD provider does not request a private cgroup namespace"
+grep -qF -- '--cgroupns=private' "$GITLAB_ADAPTER" \
+  || bad "GitLab DinD provider does not request a private cgroup namespace"
 if grep -Eiq '^[[:space:]]*FROM[[:space:]]+gitlab/gitlab-runner' "$RUNTIME/default.gitlab.Dockerfile"; then
   bad "default.gitlab.Dockerfile must be a job image, not the runner manager"
 fi

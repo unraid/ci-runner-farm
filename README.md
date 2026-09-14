@@ -43,6 +43,12 @@ it does not modify or fork GitLab Runner itself. Each slot contains:
   created from the configured default job image or the job's `.gitlab-ci.yml`
   `image:` override.
 
+DinD slots use an explicit private cgroup v2 namespace. The shipped GitHub
+runner image prepares that namespace before its base entrypoint starts dockerd,
+so nested Podman can create private cgroups without losing the `pids`
+controller. The provider keeps the configured process limits; it does not use
+host cgroups or disable cgroup enforcement.
+
 The reusable GitLab `glrt-` token identifies the runner configuration. Each
 manager retains its own system ID, so recycling a slot does not create a new
 shared runner configuration in GitLab.

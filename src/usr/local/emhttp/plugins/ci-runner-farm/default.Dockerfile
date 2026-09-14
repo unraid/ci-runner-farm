@@ -10,6 +10,42 @@ FROM myoung34/github-runner:latest
 USER root
 ENV DEBIAN_FRONTEND=noninteractive
 
+# DinD needs a private cgroup-v2 domain before the base entrypoint starts
+# dockerd. Keep registration/token handling in /entrypoint.sh and add only this
+# pre-entrypoint bootstrap.
+RUN printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -Eeuo pipefail' \
+  'root=/sys/fs/cgroup' \
+  'child="$root/unraid-init"' \
+  'fail() { printf "[unraid-cgroup] %s\\n" "$*" >&2; exit 1; }' \
+  '[ "$(id -u)" -eq 0 ] || fail "the cgroup bootstrap must run as root"' \
+  '[ -r "$root/cgroup.controllers" ] || fail "cgroup v2 is not mounted at /sys/fs/cgroup"' \
+  'path="$(cut -d: -f3 /proc/self/cgroup)"' \
+  '[ "$path" = / ] || fail "DinD requires a private cgroup namespace (current path: ${path:-unknown})"' \
+  '[ "$(cat "$root/cgroup.type")" = domain ] || fail "cgroup v2 root is not a domain"' \
+  'mkdir -p "$child"' \
+  'mapfile -t pids < "$root/cgroup.procs"' \
+  'for pid in "${pids[@]}"; do case "$pid" in ""|*[!0-9]*) continue;; esac; printf "%s\\n" "$pid" > "$child/cgroup.procs" 2>/dev/null || true; done' \
+  'mapfile -t remaining < "$root/cgroup.procs"' \
+  '(( ${#remaining[@]} == 0 )) || fail "could not move every namespace process below the cgroup domain root"' \
+  'read -r -a controllers < "$root/cgroup.controllers"' \
+  '(( ${#controllers[@]} > 0 )) || fail "the cgroup v2 root exposes no controllers"' \
+  'printf "+%s " "${controllers[@]}" > "$root/cgroup.subtree_control"' \
+  '[ "$(cat "$root/cgroup.type")" = domain ] || fail "cgroup v2 root became non-domain during bootstrap"' \
+  'grep -qw pids "$root/cgroup.subtree_control" || fail "the cgroup v2 pids controller was not delegated"' \
+  > /usr/local/bin/unraid-cgroup-bootstrap.sh \
+ && chmod +x /usr/local/bin/unraid-cgroup-bootstrap.sh
+RUN printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -Eeuo pipefail' \
+  'if [ "${START_DOCKER_SERVICE:-false}" = true ]; then /usr/local/bin/unraid-cgroup-bootstrap.sh; fi' \
+  'exec /entrypoint.sh "$@"' \
+  > /usr/local/bin/unraid-runner-entrypoint.sh \
+ && chmod +x /usr/local/bin/unraid-runner-entrypoint.sh \
+ && test -x /entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/unraid-runner-entrypoint.sh"]
+
 # --- Add your packages / tools here ---
 # RUN apt-get update && apt-get install -y --no-install-recommends <your-packages> \
 #  && rm -rf /var/lib/apt/lists/*
