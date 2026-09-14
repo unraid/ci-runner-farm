@@ -16,9 +16,12 @@ github_docker_stopping_timeout() { echo 0; }
 github_docker_stopping() { return 0; }
 
 github_confgen() {
-  # Byte-for-byte the pre-provider fingerprint input/order. Existing GitHub
-  # containers must not become stale merely because provider support was added.
-  printf '%s\0' "$GH_SCOPE" "$GH_OWNER" "$GH_REPOS" "$RUNNER_GROUP" "$RUNNER_LABELS" \
+  # Include the DinD runtime contract in the fingerprint. Changing Docker's
+  # cgroup namespace for existing slots must drain and recreate them; otherwise
+  # an old container can remain online with the broken hierarchy.
+  local runtime_salt=''
+  [ "$DIND" = true ] && runtime_salt='github-dind-cgroupns-v1'
+  printf '%s\0' "$runtime_salt" "$GH_SCOPE" "$GH_OWNER" "$GH_REPOS" "$RUNNER_GROUP" "$RUNNER_LABELS" \
     "$EPHEMERAL" "$RUNNER_CPUS" "$RUNNER_MEMORY" "$WORK_TMPFS_SIZE" "$CACHE_MOUNTS" \
     "$DIND" "$SHARE_DOCKER_SOCK" "$RUN_AS_ROOT" "$IMAGE_SOURCE" "$IMAGE" \
     "$REGISTRY_SERVER" "$REGISTRY_USERNAME" "$SHARED_IMAGE_CACHE" "$MIRROR_PORT" \
@@ -305,7 +308,10 @@ github_build_args() {
   [ -n "$RUNNER_MEMORY" ] && ARGS+=( --memory="$RUNNER_MEMORY" )
   [ "$NETWORK_ISOLATION" != "off" ] && ARGS+=( --network "$RUNNER_NETWORK" )
   if [ "$DIND" = "true" ]; then
-    ARGS+=( --privileged -e START_DOCKER_SERVICE=true )
+    # The runner image bootstraps cgroup v2 before the base entrypoint starts
+    # dockerd. Make the namespace boundary explicit so that bootstrap can never
+    # write the host hierarchy, even if the engine default changes.
+    ARGS+=( --privileged --cgroupns=private -e START_DOCKER_SERVICE=true )
     mkdir -p "$CACHE_ROOT/docker/$name" "$CACHE_ROOT/dind-logs/$name"
     ARGS+=( -v "$CACHE_ROOT/docker/$name:/var/lib/docker" )
     ARGS+=( -v "$CACHE_ROOT/dind-daemon.json:/etc/docker/daemon.json:ro" )

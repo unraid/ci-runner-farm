@@ -69,7 +69,7 @@ gitlab_confgen() {
   # hash, incorrectly stamping a replacement as current.
   # Keep a runtime-schema salt in the fingerprint so security-sensitive argv
   # changes also retire sidecars created by an older plugin build.
-  printf '%s\0' gitlab-dind-unix-only-v2 "$GITLAB_URL" "$GITLAB_RUNNER_IMAGE" "$GITLAB_DIND_IMAGE" \
+  printf '%s\0' gitlab-dind-cgroupns-v1 "$GITLAB_URL" "$GITLAB_RUNNER_IMAGE" "$GITLAB_DIND_IMAGE" \
     "$GITLAB_RUNNER_TOKEN" "$GITLAB_CA_FINGERPRINT" "$REGISTRY_TOKEN" \
     "$RUNNER_CPUS" "$RUNNER_MEMORY" "$CACHE_MOUNTS" "$GITLAB_SHUTDOWN_TIMEOUT" \
     "$GITLAB_ALLOWED_IMAGES" "$GITLAB_ALLOWED_SERVICES" "$GITLAB_PULL_POLICY" "$GITLAB_SHM_SIZE" \
@@ -887,7 +887,7 @@ gitlab_start_sidecar() {
   rm -f "$sock" 2>/dev/null || true
   log "starting private GitLab Docker daemon $side"
   local sargs=(
-    -d --restart=unless-stopped --name "$side" --hostname "$side" --privileged --pids-limit=4096
+    -d --restart=unless-stopped --name "$side" --hostname "$side" --privileged --cgroupns=private --pids-limit=4096
     --label "net.unraid.ci-runner-farm.sidecar=true"
     --label "net.unraid.ci-runner-farm.provider=gitlab"
     --label "net.unraid.ci-runner-farm.role=dind"

@@ -35,7 +35,7 @@ WORK_TMPFS_SIZE='2g'; DIND=true; SHARE_DOCKER_SOCK=false
 SHARED_IMAGE_CACHE=true; NETWORK_ISOLATION=off; EPHEMERAL=false; RUN_AS_ROOT=false
 host() { printf 'mockhost\n'; }
 runner_host_service_ipv4() { printf '192.0.2.10\n'; }
-legacy_confgen="$(printf '%s\0' "$GH_SCOPE" "$GH_OWNER" "$GH_REPOS" "$RUNNER_GROUP" "$RUNNER_LABELS" \
+legacy_confgen="$(printf '%s\0' github-dind-cgroupns-v1 "$GH_SCOPE" "$GH_OWNER" "$GH_REPOS" "$RUNNER_GROUP" "$RUNNER_LABELS" \
   "$EPHEMERAL" "$RUNNER_CPUS" "$RUNNER_MEMORY" "$WORK_TMPFS_SIZE" "$CACHE_MOUNTS" \
   "$DIND" "$SHARE_DOCKER_SOCK" "$RUN_AS_ROOT" "$IMAGE_SOURCE" "$IMAGE" \
   "$REGISTRY_SERVER" "$REGISTRY_USERNAME" "$SHARED_IMAGE_CACHE" "$MIRROR_PORT" \
@@ -88,6 +88,7 @@ grep -qx 'RUNNER_TOKEN=short-registration-token' "$gh_envfile" \
 [ "$ARGS_TMPDIR" = "${gh_envfile%/*}" ] || fail "GitHub adapter did not publish its token dir for engine cleanup"
 if printf '%s\n' "$github_args" | grep -qF "$ACCESS_TOKEN"; then fail "GitHub PAT leaked into runner argv"; fi
 printf '%s\n' "$github_args" | grep -qx -- '--privileged' || fail "GitHub DinD privilege flag missing"
+printf '%s\n' "$github_args" | grep -qx -- '--cgroupns=private' || fail "GitHub DinD cgroup namespace flag missing"
 printf '%s\n' "$github_args" | grep -qx 'START_DOCKER_SERVICE=true' || fail "GitHub DinD environment missing"
 printf '%s\n' "$github_args" | grep -qx '/_work:rw,exec,size=2g' || fail "GitHub workspace tmpfs changed"
 
@@ -542,6 +543,8 @@ docker() {
 gitlab_start_sidecar 1 ci-runner-1 || fail "custom-CA GitLab DinD sidecar generation failed"
 grep -qx -- '--restart=unless-stopped' "$SIDECAR_ARGS" \
   || fail "GitLab DinD sidecar does not survive Docker daemon restarts"
+grep -qx -- '--cgroupns=private' "$SIDECAR_ARGS" \
+  || fail "GitLab DinD sidecar does not use a private cgroup namespace"
 expected_dind_suffix="$(printf '%s\n' "$GITLAB_DIND_IMAGE" dockerd --host=unix:///runner-services/docker.sock)"
 [ "$(tail -n 3 "$SIDECAR_ARGS")" = "$expected_dind_suffix" ] \
   || fail "GitLab DinD sidecar does not retain the stock entrypoint with exactly one private Unix listener"
