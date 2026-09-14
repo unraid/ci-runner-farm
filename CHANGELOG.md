@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.3](https://github.com/unraid/ci-runner-farm/compare/v1.10.2...v1.10.3) (2026-09-14)
+
+
+### Bug Fixes
+
+* **farm:** isolate DinD cgroup namespaces ([#117](https://github.com/unraid/ci-runner-farm/issues/117)) ([e6d2d5e](https://github.com/unraid/ci-runner-farm/commit/e6d2d5e57079945198d776db4c4dfbe94172ccdb))
+
 ## [1.10.2](https://github.com/unraid/ci-runner-farm/compare/v1.10.1...v1.10.2) (2026-09-02)
 
 
