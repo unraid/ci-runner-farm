@@ -2,13 +2,13 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name          "ci-runner-farm">
 <!ENTITY author        "Lime Technology">
-<!ENTITY version       "2026.09.14.1540.76-1.10.3">
-<!ENTITY pluginVersion "1.10.3">
-<!ENTITY releaseTag    "v1.10.3">
+<!ENTITY version       "2026.09.15.1841.78-1.10.4">
+<!ENTITY pluginVersion "1.10.4">
+<!ENTITY releaseTag    "v1.10.4">
 <!ENTITY pluginURL     "https://github.com/unraid/ci-runner-farm/releases/latest/download/ci-runner-farm.plg">
-<!ENTITY packageName   "ci-runner-farm-2026.09.14.1540.76-1.10.3.tgz">
-<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/v1.10.3/ci-runner-farm-2026.09.14.1540.76-1.10.3.tgz">
-<!ENTITY packageMD5    "71ff3e0daccbf9b3a66d189a304135b4">
+<!ENTITY packageName   "ci-runner-farm-2026.09.15.1841.78-1.10.4.tgz">
+<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/v1.10.4/ci-runner-farm-2026.09.15.1841.78-1.10.4.tgz">
+<!ENTITY packageMD5    "601aa28058ea6eba9a5d0dcdc7c439ab">
 <!ENTITY plgdir        "/usr/local/emhttp/plugins/&name;">
 <!ENTITY cfgdir        "/boot/config/plugins/&name;">
 ]>
@@ -23,7 +23,7 @@
 <CHANGES>
 ### &version;
 ### Bug Fixes
-* **farm:** isolate DinD cgroup namespaces ([#117](https://github.com/unraid/ci-runner-farm/issues/117)) ([e6d2d5e](https://github.com/unraid/ci-runner-farm/commit/e6d2d5e57079945198d776db4c4dfbe94172ccdb))
+* **image-update:** roll when runners are on a superseded image ([#119](https://github.com/unraid/ci-runner-farm/issues/119)) ([535a0b3](https://github.com/unraid/ci-runner-farm/commit/535a0b31dbda21c3941f5ef20ee1b3e64c671a51))
 </CHANGES>
 
 <!-- plugin package: Unraid downloads it to flash and verifies the MD5 -->
@@ -40,11 +40,11 @@ PLGDIR="/usr/local/emhttp/plugins/ci-runner-farm"
 CFGDIR="/boot/config/plugins/ci-runner-farm"
 mkdir -p "$CFGDIR" "$PLGDIR"
 # Sweep any older package versions off flash, keeping this build's package.
-find "$CFGDIR" -maxdepth 1 -name 'ci-runner-farm-*.tgz' ! -name 'ci-runner-farm-2026.09.14.1540.76-1.10.3.tgz' -delete 2>/dev/null || true
+find "$CFGDIR" -maxdepth 1 -name 'ci-runner-farm-*.tgz' ! -name 'ci-runner-farm-2026.09.15.1841.78-1.10.4.tgz' -delete 2>/dev/null || true
 # Extract ONLY into the plugin dir; --no-same-owner forces root ownership;
 # --no-overwrite-dir leaves existing dir metadata alone. System dirs untouched.
 # The .tgz is kept on flash so the on-boot reinstall works without a download.
-tar -xzf "$CFGDIR/ci-runner-farm-2026.09.14.1540.76-1.10.3.tgz" --no-same-owner --no-overwrite-dir -C "$PLGDIR"
+tar -xzf "$CFGDIR/ci-runner-farm-2026.09.15.1841.78-1.10.4.tgz" --no-same-owner --no-overwrite-dir -C "$PLGDIR"
 chown -R root:root "$PLGDIR"
 find "$PLGDIR" -type d -exec chmod 0755 {} +
 find "$PLGDIR" -type f -exec chmod 0644 {} +
@@ -108,7 +108,7 @@ fi
 ( nohup "$PLGDIR/include/runner-farm.sh" boot-autostart >>"$CFGDIR/boot.log" 2>&1 & ) || true
 echo ""
 echo "+=============================================================+"
-echo "| ci-runner-farm 2026.09.14.1540.76-1.10.3 installed.                         "
+echo "| ci-runner-farm 2026.09.15.1841.78-1.10.4 installed.                         "
 echo "| Settings > Utilities > CI Runner Farm                        "
 echo "| Select GitHub or GitLab, save its token, then Start.         "
 echo "+=============================================================+"
