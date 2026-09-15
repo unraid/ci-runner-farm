@@ -434,6 +434,43 @@ expected_runner_confgen() {
   ( pool_activate "$pool" && crf_confgen )
 }
 
+# The image a runner SHOULD be on, resolved to a local image ID through that
+# runner's OWN pool — named-pool mode can give each pool a different image, so a
+# single global effective_image() would report false drift for every pool but one.
+expected_runner_image_id() {
+  local pool
+  pool="$(runner_pool "$1")" || return 1
+  ( pool_activate "$pool" && image_id "$(effective_image)" )
+}
+
+# Returns 0 iff some managed runner is running an image other than the one its
+# pool's configuration now resolves to.
+#
+# imageupdate_pull can only answer "did MY pull move this ref", and that signal
+# is lost for good the moment anything else pulls first — an operator priming
+# the image by hand, the shared mirror, a separate farm action. The ref string
+# is unchanged in that case, so the confgen fingerprint (which hashes $IMAGE as
+# text) does not catch it either, and the fleet stays on the superseded image
+# indefinitely. What the runners are ACTUALLY running is true regardless of who
+# pulled, so compare that instead.
+#
+# Fail closed: a runner whose expected or running image cannot be resolved is
+# skipped rather than counted as drifted, so one inspect blip cannot trigger a
+# fleet-wide roll.
+runner_image_drift() {
+  local names c want have
+  names="$(managed_names)" || return 1
+  for c in $names; do
+    [ -n "$c" ] || continue
+    want="$(expected_runner_image_id "$c")" || continue
+    [ -n "$want" ] || continue
+    have="$(docker inspect -f '{{.Image}}' "$c" 2>/dev/null)" || continue
+    [ -n "$have" ] || continue
+    [ "$have" = "$want" ] || return 0
+  done
+  return 1
+}
+
 pool_tokens_ready() {
   local rec pool
   if ! pool_mode_enabled || [ "$CI_PROVIDER" != gitlab ]; then
@@ -995,6 +1032,8 @@ imageupdate_rollover() {
 # One update evaluation. A digest change starts a full roll; any slot that could
 # not drain or replace is persisted by name and retried on later ticks even though
 # the local image tag has already advanced and a subsequent pull is unchanged.
+# A fleet already running a superseded image rolls too, even when this tick's own
+# pull was a no-op because the new image was already in the local store.
 imageupdate_tick() {
   [ "$IMAGE_AUTOUPDATE" = "true" ] || return 0
   if imageupdate_pull; then
@@ -1003,6 +1042,9 @@ imageupdate_tick() {
   elif [ -s "$IMAGEUPDATE_PENDING" ]; then
     log "image-update: retrying the slots left on an older provider image"
     imageupdate_rollover true
+  elif runner_image_drift; then
+    log "image-update: runners are on a superseded image -> draining + recreating fleet"
+    imageupdate_rollover false
   fi
 }
 
