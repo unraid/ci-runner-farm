@@ -17,7 +17,7 @@ fail() { printf 'GITLAB POLICY FAIL: %s\n' "$*" >&2; exit 1; }
 
 CI_PROVIDER=gitlab
 GITLAB_URL='https://gitlab.example.test'
-GITLAB_RUNNER_TOKEN='glrt-policytest000000000000000'
+GITLAB_RUNNER_TOKEN='glrt-policytest000000000000000' # kingfisher:ignore synthetic token, not a credential
 GITLAB_RUNNER_IMAGE='gitlab/gitlab-runner:alpine'
 CACHE_ROOT="$tmp/cache"
 CACHE_MOUNTS=''

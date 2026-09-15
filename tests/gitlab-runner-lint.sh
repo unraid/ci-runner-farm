@@ -19,7 +19,7 @@ CI_PROVIDER=gitlab
 GITLAB_URL=https://gitlab.example.test
 # Synthetic GitLab 18 routable-token shape: URL-safe payload plus the two
 # version/length/CRC separators that originally exposed a stale local parser.
-GITLAB_RUNNER_TOKEN=glrt-AAECAwQFBgcICQoLDA0OD286MQpwOjIKdTozCnQ6Mw8.01.170z6aiyq
+GITLAB_RUNNER_TOKEN=glrt-AAECAwQFBgcICQoLDA0OD286MQpwOjIKdTozCnQ6Mw8.01.170z6aiyq # kingfisher:ignore synthetic token, not a credential
 GITLAB_RUNNER_IMAGE="$(sed -n 's/^GITLAB_RUNNER_IMAGE="\([^"]*\)".*/\1/p' src/usr/local/emhttp/plugins/ci-runner-farm/default.cfg | head -1)"
 [ -n "$GITLAB_RUNNER_IMAGE" ] \
   || { echo "gitlab-runner-lint: could not read GITLAB_RUNNER_IMAGE from default.cfg" >&2; exit 1; }

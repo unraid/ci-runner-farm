@@ -170,7 +170,7 @@ CI_PROVIDER=gitlab
 # encoded-length, and CRC fields separated by two literal dots. Keep one fully
 # synthetic but structurally realistic value throughout config/probe/retirement
 # coverage so every credential parser proves that the complete token survives.
-ROUTABLE_GITLAB_RUNNER_TOKEN='glrt-AAECAwQFBgcICQoLDA0OD286MQpwOjIKdTozCnQ6Mw8.01.170z6aiyq'
+ROUTABLE_GITLAB_RUNNER_TOKEN='glrt-AAECAwQFBgcICQoLDA0OD286MQpwOjIKdTozCnQ6Mw8.01.170z6aiyq' # kingfisher:ignore synthetic token, not a credential
 ROUTABLE_GITLAB_RUNNER_PAYLOAD="${ROUTABLE_GITLAB_RUNNER_TOKEN#glrt-}"
 GITLAB_RUNNER_TOKEN="$ROUTABLE_GITLAB_RUNNER_TOKEN"
 provider_token_ready || fail "routable exact-prefix glrt- token rejected"
@@ -735,7 +735,7 @@ printf '%s' "$security_warning" | grep -qF 'job, helper, and service containers'
 printf '%s' "$security_warning" | grep -qF 'not a security boundary against the Unraid host' \
   || fail "GitLab DinD warning implies privileged DinD is a host boundary"
 gitlab_gen_before="$(crf_confgen)"
-GITLAB_RUNNER_TOKEN='glrt-memory-snapshot-changed-1234567890'
+GITLAB_RUNNER_TOKEN='glrt-memory-snapshot-changed-1234567890' # kingfisher:ignore synthetic token, not a credential
 [ "$(crf_confgen)" != "$gitlab_gen_before" ] || fail "GitLab confgen ignores the in-memory runner token"
 GITLAB_RUNNER_TOKEN="$ROUTABLE_GITLAB_RUNNER_TOKEN"
 gitlab_gen_before="$(crf_confgen)"; REGISTRY_TOKEN='registry-memory-snapshot-changed'
@@ -926,7 +926,7 @@ CFGDIR="$tmp/orphan-cfg"
 orphan_dir="$CFGDIR/gitlab-runners/ci-runner-7"
 mkdir -p "$orphan_dir/docker" "$orphan_dir/certs"
 printf '%s\n' '[[runners]]' '  name = "host-ci-runner-7"' \
-  '  token = "glrt-orphan-manager-token-123456"' > "$orphan_dir/config.toml"
+  '  token = "glrt-orphan-manager-token-123456"' > "$orphan_dir/config.toml" # kingfisher:ignore synthetic token, not a credential
 printf '%s\n' s_c2d22f638c25 > "$orphan_dir/.runner_system_id"
 printf '%s\n' registry-auth > "$orphan_dir/docker/config.json"
 printf '%s\n' saved-ca > "$orphan_dir/certs/gitlab-ca.crt"
@@ -972,7 +972,7 @@ if grep -qF 'github_pat_clear_transaction_secret' "$tmp/clear-github.json"; then
 fi
 
 CI_PROVIDER=gitlab
-GITLAB_RUNNER_TOKEN='glrt-clear-transaction-secret-1234567890'
+GITLAB_RUNNER_TOKEN='glrt-clear-transaction-secret-1234567890' # kingfisher:ignore synthetic token, not a credential
 printf '%s' "$GITLAB_RUNNER_TOKEN" > "$GITLAB_RUNNER_TOKEN_FILE"
 printf '%s' token-bearing-toml > "$CRF_CFGDIR/gitlab-runners/ci-runner-1/config.toml"
 printf '%s' interrupted-toml > "$CRF_CFGDIR/gitlab-runners/ci-runner-1/config.toml.tmp"
@@ -1011,7 +1011,7 @@ grep -q '"slot_configs_removed":true' "$tmp/clear-gitlab-confirmed.json" \
 grep -qx s_c2d22f638c25 "$CRF_CFGDIR/gitlab-runners/ci-runner-1/.runner_system_id" \
   || fail "GitLab clear removed or changed the persistent manager system ID"
 [ -z "$GITLAB_RUNNER_TOKEN" ] || fail "GitLab clear retained the in-memory runner token"
-if grep -qF 'glrt-clear-transaction-secret' "$tmp/clear-gitlab-confirmed.json"; then
+if grep -qF 'glrt-clear-transaction-secret' "$tmp/clear-gitlab-confirmed.json"; then # kingfisher:ignore synthetic token, not a credential
   fail "GitLab runner token leaked into clear response"
 fi
 
@@ -1394,8 +1394,7 @@ mv "$CRF_CFGDIR/gitlab-runners/ci-runner-1/config.toml.swap" "$CRF_CFGDIR/gitlab
 cp "$CRF_CFGDIR/gitlab-runners/ci-runner-1/config.toml" \
   "$CRF_CFGDIR/gitlab-runners/ci-runner-1/config.toml.one"
 printf '%s\n' '[[runners]]' '  name = "unexpected-second-manager"' \
-  '  token = "glrt-zyxwvutsrqponmlkjihgfedcba123456"' \
-  >> "$CRF_CFGDIR/gitlab-runners/ci-runner-1/config.toml"
+  '  token = "glrt-zyxwvutsrqponmlkjihgfedcba123456"' >> "$CRF_CFGDIR/gitlab-runners/ci-runner-1/config.toml" # kingfisher:ignore synthetic token, not a credential
 : > "$LIFECYCLE_LOG"
 if gitlab_unregister_manager ci-runner-1; then fail "multi-entry config reached unregister"; fi
 if grep -q unregister "$LIFECYCLE_LOG"; then fail "multi-entry config invoked GitLab unregister command"; fi
