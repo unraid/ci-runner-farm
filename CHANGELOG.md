@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.4](https://github.com/unraid/ci-runner-farm/compare/v1.10.3...v1.10.4) (2026-09-15)
+
+
+### Bug Fixes
+
+* **image-update:** roll when runners are on a superseded image ([#119](https://github.com/unraid/ci-runner-farm/issues/119)) ([535a0b3](https://github.com/unraid/ci-runner-farm/commit/535a0b31dbda21c3941f5ef20ee1b3e64c671a51))
+
 ## [1.10.3](https://github.com/unraid/ci-runner-farm/compare/v1.10.2...v1.10.3) (2026-09-14)
 
 
