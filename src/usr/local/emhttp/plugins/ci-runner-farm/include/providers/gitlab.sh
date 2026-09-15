@@ -1710,7 +1710,7 @@ gitlab_validate() {
   # helper to tmpfs. Validate must never write its dummy token/system ID to the
   # persistent flash configuration tree, even if the process is interrupted.
   local CFGDIR="$validation_cfgroot"
-  local GITLAB_RUNNER_TOKEN="glrt-validationtoken000000000000"
+  local GITLAB_RUNNER_TOKEN="glrt-validationtoken000000000000" # kingfisher:ignore synthetic token, not a credential
   gitlab_write_config "$idx" "$name" \
     || { err "validate: could not render GitLab config.toml"; rm -rf -- "$validation_cfgroot"; return 1; }
   gitlab_write_docker_auth "$name" \

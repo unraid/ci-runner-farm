@@ -19,7 +19,7 @@ redact_access='loaded-access-secret-1234'
 redact_runner='loaded-glrt-runner-secret-1234'
 redact_api='loaded-api-secret-5678'
 redact_registry='reg[]/.*&\punct$token-9012'
-routable='glrt-AAECAwQFBgcICQoLDA0OD286MQpwOjIKdTozCnQ6Mw8.01.170z6aiyq'
+routable='glrt-AAECAwQFBgcICQoLDA0OD286MQpwOjIKdTozCnQ6Mw8.01.170z6aiyq' # kingfisher:ignore synthetic token, not a credential
 payload="${routable#glrt-}"
 
 fixture="$tmp/fixture.log"

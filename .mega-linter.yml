@@ -58,6 +58,14 @@ DISABLE_LINTERS:
 # release-please-managed output, not hand-authored content.
 FILTER_REGEX_EXCLUDE: (^LICENSE$|^CHANGELOG\.md$|\.git/|megalinter-reports/)
 
+# Kingfisher's GitLab runner-token rule matches this repo's synthetic `glrt-`
+# values: the placeholder gitlab_validate renders into its tmpfs config.toml and
+# the fake tokens the shell tests pin. Each one carries an inline
+# `kingfisher:ignore` directive at the point of use rather than a baseline file,
+# whose fingerprints include byte offsets and so go stale whenever an unrelated
+# edit moves the line. Suppressing per line also keeps a genuinely leaked
+# credential added later in scope.
+
 # .jsonc is used inconsistently across editors (e.g. VS Code config commonly
 # uses .json with comments rather than .jsonc), so allow comments/trailing
 # commas for all JSON rather than relying on file extension.
