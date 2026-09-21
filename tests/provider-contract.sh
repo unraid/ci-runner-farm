@@ -69,6 +69,8 @@ for action in \
 do
   grep -q "case '$action'" "$EXEC" || bad "endpoint action is missing: $action"
 done
+grep -q "case 'recommendations-json'" "$EXEC" || bad "recommendations endpoint action is missing"
+grep -q 'recommendations-json)' "$ENGINE" || bad "recommendations engine command is missing"
 grep -qF "strncmp(\$tok, 'glrt-', 5) === 0" "$EXEC" \
   || bad "runner-token endpoint does not require the exact safe glrt- prefix"
 if grep -qF ')?glrt-' "$EXEC"; then

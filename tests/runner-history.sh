@@ -50,5 +50,45 @@ CRF_CFGDIR="$tmp/config" CRF_RUNDIR="$tmp/run" bash -c '
   snapshot_stats="$(crf_history_stats github "JS lint")"
   IFS="|" read -r _ snapshot_count _ _ _ _ _ <<< "$snapshot_stats"
   [ "$snapshot_count" = 2 ]
+
+  # A disappearing runner, incomplete job context, and an invalid duration must
+  # not create a false completion.
+  disappeared="ci-runner-1 20 300 busy $job64 $start github repo 101 _ _ _ _ _ _ _ _"
+  crf_history_record_snapshot "$disappeared" "ci-runner-2 20 300 idle _ _ github _ _ _ _ _ _ _ _ _" "$now"
+  incomplete="ci-runner-1 20 300 busy _ $start github repo 101 _ _ _ _ _ _ _ _"
+  crf_history_record_snapshot "$incomplete" "$current" "$now"
+  crf_history_record_event github "invalid-zero" 0 "$now"
+  crf_history_record_event github "invalid-too-long" 604801 "$now"
+  [ "$(crf_history_stats github "invalid-zero" | cut -d"|" -f2)" = 0 ]
+  [ "$(crf_history_stats github "invalid-too-long" | cut -d"|" -f2)" = 0 ]
+
+  # Provider remains part of the aggregate identity, and GitLab uses the same
+  # provider-neutral snapshot contract.
+  gitlab_job64="$(b64 "GitLab package")"
+  gitlab_previous="ci-runner-2 20 300 busy $gitlab_job64 $start gitlab group/project 42 _ _ _ _ _ _ _"
+  gitlab_current="ci-runner-2 20 300 idle _ _ gitlab _ _ _ _ _ _ _ _ _ _"
+  crf_history_record_snapshot "$gitlab_previous" "$gitlab_current" "$now"
+  [ "$(crf_history_stats gitlab "GitLab package" | cut -d"|" -f2)" = 1 ]
+
+  # Retention removes old aggregates when the next event is written.
+  CRF_HISTORY_RETENTION_SECONDS=100
+  old_epoch="$((now - 101))"
+  crf_history_record_event github "old-family" 30 "$old_epoch"
+  crf_history_record_event github "new-family" 30 "$now"
+  [ "$(crf_history_stats github "old-family" | cut -d"|" -f2)" = 0 ]
+  [ "$(crf_history_stats github "new-family" | cut -d"|" -f2)" = 1 ]
+
+  # Key and duration caps remain bounded, and raw job metadata does not persist.
+  CRF_HISTORY_RETENTION_SECONDS=7776000
+  CRF_HISTORY_MAX_KEYS=2
+  sensitive="Build PR-123 https://github.example.test/org/repo/tree/secret-branch"
+  crf_history_record_event github "$sensitive" 30 "$now"
+  crf_history_record_event github "second-family" 30 "$((now + 1))"
+  crf_history_record_event github "third-family" 30 "$((now + 2))"
+  [ "$(crf_history_summary | cut -d"|" -f1)" = 2 ]
+  ! grep -Fq "https://github.example.test/org/repo/tree/secret-branch" "$HISTORY_FILE"
+  ! grep -Fq "$sensitive" "$HISTORY_FILE"
+  mode="$(stat -c '%a' "$HISTORY_FILE" 2>/dev/null || stat -f '%Lp' "$HISTORY_FILE")"
+  [ "$mode" = 600 ] || [ "$mode" = 0600 ]
   echo "runner-history: OK"
 ' bash

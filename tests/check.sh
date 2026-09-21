@@ -40,6 +40,8 @@ bash tests/lifecycle-enforcement.sh
 bash tests/runner-recommendations.sh
 bash tests/runner-history.sh
 bash tests/recommendations-engine.sh
+bash tests/recommendation-boundaries.sh
+bash tests/recommendation-history-integration.sh
 bash tests/pool-runtime.sh
 bash tests/numeric-config.sh
 bash tests/safe-paths.sh
