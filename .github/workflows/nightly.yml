@@ -71,6 +71,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          release_base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/nightly"
           ref="repos/${GITHUB_REPOSITORY}/git/refs/tags/nightly"
           if gh api "$ref" >/dev/null 2>&1; then
             gh api --method PATCH "$ref" -f sha="$NIGHTLY_SHA" -F force=true >/dev/null
@@ -108,7 +109,7 @@ jobs:
           plugin_sha256="$(sha256sum ci-runner-farm-nightly.plg | cut -d' ' -f1)"
           package_sha256="$(sha256sum ci-runner-farm-nightly.tgz | cut -d' ' -f1)"
           cat > ci-runner-farm-nightly.json <<EOF
-          {"channel":"nightly","commit":"${NIGHTLY_SHA}","plugin_version":"${NIGHTLY_VERSION}","plugin_url":"https://github.com/${GITHUB_REPOSITORY}/releases/download/nightly/ci-runner-farm-nightly.plg","package_url":"https://github.com/${GITHUB_REPOSITORY}/releases/download/nightly/ci-runner-farm-nightly.tgz","plugin_sha256":"${plugin_sha256}","package_sha256":"${package_sha256}"}
+          {"channel":"nightly","commit":"${NIGHTLY_SHA}","plugin_version":"${NIGHTLY_VERSION}","plugin_url":"${release_base}/ci-runner-farm-nightly.plg","package_url":"${release_base}/ci-runner-farm-nightly.tgz","plugin_sha256":"${plugin_sha256}","package_sha256":"${package_sha256}"}
           EOF
           gh release upload nightly --repo "$GITHUB_REPOSITORY" \
             ci-runner-farm-nightly.json --clobber
@@ -118,6 +119,6 @@ jobs:
           for asset in ci-runner-farm-nightly.plg ci-runner-farm-nightly.tgz ci-runner-farm-nightly.json; do
             curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
               --output "$downloaded/$asset" \
-              "https://github.com/${GITHUB_REPOSITORY}/releases/download/nightly/$asset"
+              "$release_base/$asset"
             cmp "$asset" "$downloaded/$asset"
           done

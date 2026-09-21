@@ -1,0 +1,4 @@
+# This is a moving release channel. It is intentionally absent until the
+# mainline nightly workflow publishes the first release, and can be replaced
+# on every subsequent run.
+https://github.com/unraid/ci-runner-farm/releases/download/nightly/

@@ -45,6 +45,12 @@ grep -qF 'refs/tags/nightly' .github/workflows/nightly.yml
 grep -qF 'ci-runner-farm-nightly.plg' .github/workflows/nightly.yml
 grep -qF 'ci-runner-farm-nightly.tgz' .github/workflows/nightly.yml
 grep -qF 'ci-runner-farm-nightly.json' .github/workflows/nightly.yml
+grep -qF 'release_base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/nightly"' .github/workflows/nightly.yml
+grep -qF 'contents: write' .github/workflows/nightly.yml
+grep -qF 'self-hosted-runner:' .github/actionlint.yaml
+grep -qF -- '- unraid' .github/actionlint.yaml
+grep -qF -- '- build' .github/actionlint.yaml
+grep -qF 'releases/download/nightly/' .lycheeignore
 grep -qF '<Name>CI Runner Farm - Nightly</Name>' community-applications/ci-runner-farm-nightly.xml
 grep -qF '<Beta>True</Beta>' community-applications/ci-runner-farm-nightly.xml
 grep -qF 'releases/download/nightly/ci-runner-farm-nightly.plg' community-applications/ci-runner-farm-nightly.xml

@@ -1,0 +1,6 @@
+self-hosted-runner:
+  # Custom labels used by the farm's build runners. The standard labels
+  # (self-hosted, linux, x64) are understood by actionlint without listing.
+  labels:
+    - unraid
+    - build
