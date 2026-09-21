@@ -81,8 +81,8 @@ for host in "$@"; do
 set -euo pipefail
 plugin="$1"
 [ "$(id -u)" = 0 ] || { echo "install-nightly: root SSH access is required" >&2; exit 1; }
-command -v installplg >/dev/null 2>&1 || { echo "install-nightly: installplg is unavailable" >&2; exit 1; }
-installplg "$plugin"
+command -v plugin >/dev/null 2>&1 || { echo "install-nightly: Unraid plugin command is unavailable" >&2; exit 1; }
+plugin install "$plugin"
 REMOTE
   trap - EXIT HUP INT TERM
   ssh -- "$host" "rm -rf -- '$remote_stage'"
