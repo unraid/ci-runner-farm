@@ -267,6 +267,13 @@ switch ($action) {
     else                  { http_response_code(500); echo crf_json(['ok'=>false,'error'=>'backend unavailable']); }
     break;
 
+  case 'recommendations-json':
+    [$out, $rc] = run_json(escapeshellarg($SCRIPT) . ' recommendations-json');
+    if      ($out !== '') { echo $out; }
+    elseif  ($rc === 0)   { echo json_encode(['version'=>1,'source'=>'live-heuristic','confidence'=>'low','history'=>['keys'=>0,'samples'=>0,'last_completed'=>0,'retention_days'=>90],'recommendations'=>[],'jobs'=>[]]); }
+    else                  { http_response_code(500); echo json_encode(['ok'=>false,'error'=>'backend unavailable']); }
+    break;
+
   case 'start': case 'stop': case 'restart': case 'validate':
     [$out, $rc] = run(escapeshellarg($SCRIPT) . ' ' . escapeshellarg($action));
     echo crf_json(['ok' => $rc === 0, 'action' => $action, 'log' => $out]);

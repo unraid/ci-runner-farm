@@ -28,7 +28,7 @@ DEST="/usr/local/emhttp/plugins/$NAME"
 for required in \
   RunnerFarm.page RunnerFarmDashboard.page RunnerFarmFleet.page RunnerFarmImage.page RunnerFarmSettings.page \
   default.cfg default.Dockerfile default.github.Dockerfile default.gitlab.Dockerfile \
-  include/runner-farm.sh include/exec.php include/crf-core.php include/providers/github.sh include/providers/gitlab.sh \
+  include/runner-farm.sh include/runner-recommendations.sh include/runner-history.sh include/exec.php include/crf-core.php include/providers/github.sh include/providers/gitlab.sh \
   event/docker_started event/stopping_docker \
   nchan/ci_runner_farm README.md
 do
@@ -89,7 +89,7 @@ esac
 for required in \
   RunnerFarm.page RunnerFarmDashboard.page RunnerFarmFleet.page RunnerFarmImage.page RunnerFarmSettings.page \
   default.cfg default.Dockerfile default.github.Dockerfile default.gitlab.Dockerfile \
-  include/runner-farm.sh include/exec.php include/crf-core.php include/providers/github.sh include/providers/gitlab.sh \
+  include/runner-farm.sh include/runner-recommendations.sh include/runner-history.sh include/exec.php include/crf-core.php include/providers/github.sh include/providers/gitlab.sh \
   event/docker_started event/stopping_docker \
   nchan/ci_runner_farm README.md
 do

@@ -9,6 +9,7 @@ RUNTIME="src/usr/local/emhttp/plugins/ci-runner-farm"
 CFG="$RUNTIME/default.cfg"
 ENGINE="$RUNTIME/include/runner-farm.sh"
 UI="$RUNTIME/RunnerFarmSettings.page"
+FLEET_UI="$RUNTIME/RunnerFarmFleet.page"
 IMAGE_UI="$RUNTIME/RunnerFarmImage.page"
 EXEC="$RUNTIME/include/exec.php"
 CORE="$RUNTIME/include/crf-core.php"
@@ -69,6 +70,10 @@ for action in \
 do
   grep -q "case '$action'" "$EXEC" || bad "endpoint action is missing: $action"
 done
+grep -q "case 'recommendations-json'" "$EXEC" || bad "recommendations endpoint action is missing"
+grep -q 'recommendations-json)' "$ENGINE" || bad "recommendations engine command is missing"
+grep -qF 'if(el.innerHTML!==html) el.innerHTML=html;' "$FLEET_UI" \
+  || bad "recommendation live-region rendering rewrites unchanged HTML"
 grep -qF "strncmp(\$tok, 'glrt-', 5) === 0" "$EXEC" \
   || bad "runner-token endpoint does not require the exact safe glrt- prefix"
 if grep -qF ')?glrt-' "$EXEC"; then

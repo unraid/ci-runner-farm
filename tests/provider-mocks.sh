@@ -864,6 +864,7 @@ import json, os
 d = json.loads(os.environ["STATUS_JSON"])
 r = (d.get("runners") or [{}])[0]
 assert d.get("provider") == "gitlab" and d.get("token") is True
+assert isinstance(d.get("recommendations"), dict) and d["recommendations"].get("version") == 1
 assert r.get("provider") == "gitlab" and r.get("project") == "group/project"
 assert r.get("job_id") == "42" and r.get("ref") == "main"
 assert r.get("repo") == "" and r.get("run_id") == ""

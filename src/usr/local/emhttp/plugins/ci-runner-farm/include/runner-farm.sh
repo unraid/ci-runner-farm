@@ -12,6 +12,7 @@
 #   scale <N>        grow/shrink the fleet to N runners
 #   status           human-readable fleet table
 #   status-json      machine-readable status for the web UI
+#   history-daemon   background live-usage sampler for job-duration history
 #   logs <i>         tail logs for runner i
 #   validate         dry-provision the selected provider to prove its generated
 #                    config, mounts, limits, and image, then remove it
@@ -132,6 +133,14 @@ DASHBOARD_WIDGET_ENABLE="true"       # show the Main->Dashboard status tile (rea
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-pools.sh
 . "$SCRIPT_DIR/runner-pools.sh"
+# shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-recommendations.sh
+. "$SCRIPT_DIR/runner-recommendations.sh"
+# shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-history.sh
+. "$SCRIPT_DIR/runner-history.sh"
+
+# Durable aggregate recommendation history lives under the plugin config
+# directory; active snapshots and locks remain on tmpfs in RUNDIR.
+HISTORY_FILE="${CRF_HISTORY_FILE:-${CFGDIR}/recommendations.history}"
 
 # Allowlist of keys the settings page may set. load_cfg only ever assigns these.
 CFG_KEYS="CI_PROVIDER GH_SCOPE GH_OWNER GH_REPOS RUNNER_GROUP GITLAB_URL GITLAB_RUNNER_IMAGE GITLAB_PROJECTS GITLAB_SHUTDOWN_TIMEOUT \
@@ -239,6 +248,7 @@ IMAGEUPDATE_PID="${RUNDIR}/imageupdate.pid"
 LIFECYCLE_PID="${RUNDIR}/lifecycle.pid"
 BOOT_AUTOSTART_PID="${RUNDIR}/boot-autostart.pid"
 RECONCILE_PID="${RUNDIR}/reconcile.pid"
+HISTORY_PID="${RUNDIR}/history.pid"
 IMAGEUPDATE_PENDING="${RUNDIR}/imageupdate.pending"
 SECURITY_CACHE="${RUNDIR}/security-warn.cache"   # cached public-repo warning (TTL below), so the
 SECURITY_TTL="300"                               # UI's 5s status poll never hammers the GitHub API
@@ -865,6 +875,36 @@ autoscale_start() {
   echo $! > "$AUTOSCALE_PID"
   log "autoscale daemon started (pid $(cat "$AUTOSCALE_PID"))"
 }
+
+# Keep job-transition telemetry alive even when no Fleet tab is open. The UI
+# still uses the same usage cache, so this reduces duplicate Docker/provider
+# work instead of creating a second observation path.
+recommendation_history_daemon() {
+  exec 8>&- 7>&- 9>&- 2>/dev/null || true
+  trap 'rm -f "$HISTORY_PID" 2>/dev/null || true' EXIT
+  trap 'rm -f "$HISTORY_PID" 2>/dev/null || true; exit 0' HUP INT TERM
+  log "recommendation history daemon up (every 30s)"
+  while true; do
+    load_cfg
+    [ "$CI_PROVIDER" = gitlab ] || CI_PROVIDER=github
+    reload_secret_files
+    ( flock -n 9 || exit 0; "$0" usage-refresh ) 9>"$RUNDIR/usage.lock" >/dev/null 2>&1 &
+    sleep 30
+  done
+}
+
+recommendation_history_start() {
+  recommendation_history_stop || return 1
+  nohup "$0" history-daemon >>"${RUNDIR}/history.log" 2>&1 &
+  ( umask 077; printf '%s\n' "$!" > "$HISTORY_PID" ) \
+    || { err "could not publish recommendation history PID"; return 1; }
+  log "recommendation history daemon started (pid $(cat "$HISTORY_PID"))"
+}
+
+recommendation_history_stop() {
+  stop_worker_group "recommendation history" "$HISTORY_PID" '[r]unner-farm.sh history-daemon'
+}
+
 stop_worker_group() {
   local label="$1" pidfile="$2" pattern="$3" pids i
   pids="$(pgrep -f "$pattern" 2>/dev/null || true)"
@@ -2200,6 +2240,7 @@ cmd_start() {
   final_count="$(current_count)" || start_failed=1
   log "fleet up: ${final_count:-unknown} runner(s)"
   if [ "${final_count:-0}" -gt 0 ]; then lifecycle_start || start_failed=1; fi
+  recommendation_history_start || start_failed=1
   if [ "$AUTOSCALE" = "true" ]; then autoscale_start || start_failed=1; fi
   if [ "$IMAGE_AUTOUPDATE" = "true" ]; then imageupdate_start || start_failed=1; fi
   if [ "$start_failed" -ne 0 ]; then
@@ -2348,6 +2389,7 @@ cmd_stop() {
   # current Docker state. In particular, a sleeping boot worker must not wake
   # after Stop/uninstall and recreate the farm from retained credentials.
   boot_autostart_stop || return 1
+  recommendation_history_stop || return 1
   autoscale_stop || return 1
   imageupdate_stop || return 1
   lifecycle_stop || return 1
@@ -3000,6 +3042,131 @@ cmd_queued_json() {
   echo "{\"provider\":\"$CI_PROVIDER\",\"queued\":${count:--1},\"age\":$age}"
 }
 
+# Append one already-escaped recommendation item to the caller's dynamic JSON
+# accumulator. Bash dynamic scope lets this remain a tiny serialization helper
+# without introducing another mutable file or a dependency on jq.
+crf_recommendation_append() {
+  local item="$1"
+  [ "$recommendation_count" -gt 0 ] && recommendations+=","
+  recommendations+="$item"
+  recommendation_count=$((recommendation_count + 1))
+}
+
+# Advisory-only job-weight and placement recommendations. This reads the live
+# usage cache and the last provider queue snapshot; it never changes runner
+# labels, pool capacity, configuration, or provider state.
+cmd_recommendations_json() {
+  local now queue=-1 queue_age=999999 first qts qcount
+  local usage_age=999999 usage="" c cpu mem phase job64 started provider project64 jobid joburl64 ref64 refurl64 repo64 pr branch64 runid
+  local elapsed started_epoch weight class score reason target history_key history_count history_p95 history_avg history_min history_max history_last
+  local busy=0 idle=0 light=0 standard=0 heavy=0
+  local jobs='[' job_count=0 recommendations='[' recommendation_count=0
+  local item summary confidence heavy_target='' usage_known=false
+  local history_keys=0 history_samples=0 history_last_completed=0 history_source=live-heuristic
+
+  now=$(date +%s)
+
+  if [ -f "$RUNDIR/queued.cache" ]; then
+    read -r first qts qcount < "$RUNDIR/queued.cache"
+    case "$first" in
+      github|gitlab) queue="$qcount"; queue_age=$(( now - ${qts:-0} )) ;;
+      *) queue="$qts"; queue_age=$(( now - ${first:-0} )) ;;
+    esac
+    case "$queue" in ''|*[!0-9]*) queue=-1 ;; esac
+    # Do not turn an old provider snapshot into a fresh capacity alarm. The
+    # age remains visible in the JSON so the UI/operator can distinguish
+    # "empty" from "not recently measured".
+    [ "$queue_age" -gt 300 ] && queue=-1
+  fi
+
+  if [ -f "$RUNDIR/usage.cache" ]; then
+    usage="$(cat "$RUNDIR/usage.cache" 2>/dev/null)"
+    usage_age=$(( now - $(stat -c %Y "$RUNDIR/usage.cache" 2>/dev/null || echo 0) ))
+    [ -n "$usage" ] && [ "$usage_age" -le 30 ] && usage_known=true
+  fi
+
+  IFS='|' read -r history_keys history_samples history_last_completed <<< "$(crf_history_summary)"
+  case "$history_keys:$history_samples:$history_last_completed" in
+    *[!0-9:]*|'') history_keys=0; history_samples=0; history_last_completed=0 ;;
+  esac
+  [ "$history_samples" -gt 0 ] && history_source=live-historical
+
+  while read -r c cpu mem phase job64 started provider project64 jobid joburl64 ref64 refurl64 repo64 pr branch64 runid; do
+    [ -n "$c" ] || continue
+    case "$phase" in
+      busy) busy=$((busy + 1)) ;;
+      idle) idle=$((idle + 1)) ;;
+      *) continue ;;
+    esac
+    [ "$phase" = busy ] || continue
+
+    job="$(_d64 "$job64")"
+    elapsed=0
+    if [ "$started" != "_" ] && [ -n "$started" ]; then
+      started_epoch="$(date -d "$started" +%s 2>/dev/null || echo 0)"
+      case "$started_epoch" in ''|*[!0-9]*) started_epoch=0 ;; esac
+      [ "$started_epoch" -gt 0 ] && elapsed=$((now - started_epoch))
+      [ "$elapsed" -lt 0 ] && elapsed=0
+    fi
+    IFS='|' read -r history_key history_count history_p95 history_avg history_min history_max history_last \
+      <<< "$(crf_history_stats "$provider" "$job")"
+    case "$history_count:$history_p95:$history_avg:$history_min:$history_max:$history_last" in
+      *[!0-9:]*|'') history_count=0; history_p95=0; history_avg=0; history_min=0; history_max=0; history_last=0 ;;
+    esac
+    weight="$(crf_recommendation_weight "$job" "$cpu" "$mem" "$elapsed" "$history_p95" "$history_count")"
+    IFS='|' read -r class score reason <<< "$weight"
+    target="$(crf_recommendation_target_pool "$class")"
+    [ "$class" = heavy ] && heavy=$((heavy + 1))
+    [ "$class" = standard ] && standard=$((standard + 1))
+    [ "$class" = light ] && light=$((light + 1))
+    [ "$class" = heavy ] && [ -z "$heavy_target" ] && heavy_target="$target"
+
+    item="{\"runner\":\"$(printf '%s' "$c" | json_escape)\",\"job\":\"$(printf '%s' "$job" | json_escape)\",\"class\":\"$class\",\"score\":$score,\"target_pool\":\"$(printf '%s' "$target" | json_escape)\",\"elapsed_seconds\":$elapsed,\"reason\":\"$(printf '%s' "$reason" | json_escape)\",\"history\":{\"samples\":$history_count,\"p95_seconds\":$history_p95,\"average_seconds\":$history_avg,\"min_seconds\":$history_min,\"max_seconds\":$history_max,\"last_completed\":$history_last}}"
+    [ "$job_count" -gt 0 ] && jobs+=","
+    jobs+="$item"
+    job_count=$((job_count + 1))
+  done <<< "$usage"
+  jobs+=']'
+
+  # Prefer actionable diagnostics over a generic status line. The queue value
+  # is intentionally advisory: the provider may not expose every job eligible
+  # for this farm.
+  if [ "$queue" -ge 0 ] 2>/dev/null && [ "$queue" -gt 0 ] && [ "$usage_known" = true ] && [ "$idle" -gt 0 ]; then
+    item="{\"priority\":\"high\",\"kind\":\"routing\",\"message\":\"The provider reports queued work while $idle runner(s) are not busy; inspect labels, groups, or workflow routing before adding capacity.\"}"
+    crf_recommendation_append "$item"
+  elif [ "$queue" -ge 0 ] 2>/dev/null && [ "$queue" -gt 0 ] && [ "$usage_known" = true ] && [ "$idle" -eq 0 ]; then
+    item="{\"priority\":\"high\",\"kind\":\"capacity\",\"message\":\"$queue queued run(s) and no idle runner is visible; add capacity or raise the pool ceiling after confirming the queue targets this farm.\"}"
+    crf_recommendation_append "$item"
+  elif [ "$queue" -ge 0 ] 2>/dev/null && [ "$queue" -gt 0 ]; then
+    item="{\"priority\":\"medium\",\"kind\":\"telemetry\",\"message\":\"The provider reports $queue queued run(s), but live runner usage is unavailable; refresh telemetry before changing capacity or routing.\"}"
+    crf_recommendation_append "$item"
+  fi
+
+  if [ "$heavy" -gt 0 ]; then
+    if [ "$heavy_target" = unassigned ] || ! pool_mode_enabled; then
+      item="{\"priority\":\"medium\",\"kind\":\"placement\",\"message\":\"$heavy heavy job(s) are using the general fleet; create or select a pool with a size-large/large/heavy label and route build-heavy jobs there.\"}"
+    else
+      item="{\"priority\":\"medium\",\"kind\":\"placement\",\"message\":\"$heavy heavy job(s) observed; route them to the '$heavy_target' pool and keep that pool isolated from short validation work.\"}"
+    fi
+    crf_recommendation_append "$item"
+  fi
+
+  if [ "$job_count" -eq 0 ]; then
+    summary="No active jobs in the live sample; historical tracking has $history_samples completed sample(s) across $history_keys job family(ies)."
+    confidence=low
+  elif [ "$recommendation_count" -eq 0 ]; then
+    summary="$job_count active job(s): $light light, $standard standard, $heavy heavy; $history_samples historical sample(s), no immediate capacity or routing warning."
+    confidence=medium
+  else
+    summary="$job_count active job(s): $light light, $standard standard, $heavy heavy; $history_samples historical sample(s), review the advisory actions below."
+    confidence=medium
+  fi
+
+  recommendations+=']'
+  printf '{"version":1,"source":"%s","confidence":"%s","queue":{"count":%s,"age":%s},"usage_age":%s,"history":{"keys":%s,"samples":%s,"last_completed":%s,"retention_days":90},"summary":"%s","recommendations":%s,"jobs":%s}\n' \
+    "$history_source" "$confidence" "$queue" "$queue_age" "$usage_age" "$history_keys" "$history_samples" "$history_last_completed" "$(printf '%s' "$summary" | json_escape)" "$recommendations" "$jobs"
+}
+
 cmd_recycle() {
   # Replace one slot without purging its Docker/cache roots. The old provider
   # owns removal ordering; the selected provider owns replacement startup.
@@ -3158,6 +3325,7 @@ cmd_force_forget_gitlab() {
   # request or fixed-name collision must be a side-effect-free failure.
   gitlab_force_forget_target_ready "$name" || return 1
   boot_autostart_stop || return 1
+  recommendation_history_stop || return 1
   autoscale_stop || return 1
   imageupdate_stop || return 1
   lifecycle_stop || return 1
@@ -3201,8 +3369,11 @@ cmd_usage_refresh() {
   # there's nothing to warn about, which also clears a stale warning after the config
   # is fixed) — so cmd_status_json never runs the per-repo curls on its own hot path.
   public_repo_problem > "$RUNDIR/sec.cache" 2>/dev/null
-  local names; names="$(managed_names)"
+  local names previous_usage current_usage usage_now
+  names="$(managed_names)"
   [ -n "$names" ] || { : > "$RUNDIR/usage.cache"; return 0; }
+  previous_usage="$(cat "$RUNDIR/usage.cache" 2>/dev/null || true)"
+  usage_now="$(date +%s)"
   local statsraw stats_targets="" c provider stat_target
   : > "$RUNDIR/usage.targets.tmp"
   # GitHub work runs in the managed container itself. In isolated GitLab mode,
@@ -3239,6 +3410,9 @@ cmd_usage_refresh() {
       "$(_b64 "$project")" "$job_id" "$(_b64 "$job_url")" "$(_b64 "$ref")" "$(_b64 "$ref_url")" \
       "$(_b64 "$jrepo")" "$jpr" "$(_b64 "$jbranch")" "$jrun" >> "$RUNDIR/usage.cache.tmp"
   done
+  current_usage="$(cat "$RUNDIR/usage.cache.tmp" 2>/dev/null || true)"
+  crf_history_record_snapshot "$previous_usage" "$current_usage" "$usage_now" || \
+    log "recommendation history update was deferred; live usage remains authoritative"
   mv "$RUNDIR/usage.cache.tmp" "$RUNDIR/usage.cache" 2>/dev/null
   rm -f "$RUNDIR/usage.targets.tmp"
 }
@@ -3359,7 +3533,9 @@ cmd_status_json() {
     done < <(pool_records)
     pools="${pjson}]"
   fi
-  echo "{\"provider\":\"$CI_PROVIDER\",\"mode\":\"$RUNNER_MODE\",\"count\":$(echo "$names" | grep -c . ),\"configured\":${configured},\"token\":$(pool_tokens_ready 2>/dev/null && echo true || echo false),\"autoscale\":\"${as} [${AUTOSCALE_MIN}-${AUTOSCALE_MAX}, buffer ${AUTOSCALE_MIN_IDLE}]\",\"image_autoupdate\":\"$(echo "$iu" | json_escape)\",\"warning\":\"${warn}\",\"security\":\"${sec}\",\"stale\":${stalec},\"pools\":${pools},\"runners\":${out}}"
+  local recommendations; recommendations="$(cmd_recommendations_json 2>/dev/null)"
+  [ -n "$recommendations" ] || recommendations='{"version":1,"source":"live-heuristic","confidence":"low","queue":{"count":-1,"age":999999},"usage_age":999999,"history":{"keys":0,"samples":0,"last_completed":0,"retention_days":90},"summary":"Recommendation data is temporarily unavailable.","recommendations":[],"jobs":[]}'
+  echo "{\"provider\":\"$CI_PROVIDER\",\"mode\":\"$RUNNER_MODE\",\"count\":$(echo "$names" | grep -c . ),\"configured\":${configured},\"token\":$(pool_tokens_ready 2>/dev/null && echo true || echo false),\"autoscale\":\"${as} [${AUTOSCALE_MIN}-${AUTOSCALE_MAX}, buffer ${AUTOSCALE_MIN_IDLE}]\",\"image_autoupdate\":\"$(echo "$iu" | json_escape)\",\"warning\":\"${warn}\",\"security\":\"${sec}\",\"stale\":${stalec},\"pools\":${pools},\"recommendations\":${recommendations},\"runners\":${out}}"
 }
 
 # Aggregate-only status for the Main -> Dashboard nchan widget: {count,up,busy,idle}.
@@ -3614,12 +3790,13 @@ cmd_docker_stopping_locked() {
 
 cmd_docker_stopping() {
   boot_autostart_stop || return 1
+  recommendation_history_stop || return 1
   autoscale_stop || return 1
   imageupdate_stop || return 1
   lifecycle_stop || return 1
   reconcile_stop || return 1
 
-  # Avoid changing the legacy GitHub-only event path beyond stopping its two
+  # Avoid changing the legacy GitHub-only event path beyond stopping its host
   # host daemons. During a provider transition, however, a stale GitLab manager
   # still needs the pre-stop drain even when CI_PROVIDER already says github.
   local c timeout lock_wait=0 names snapshot id provider role index gen
@@ -3643,6 +3820,7 @@ cmd_docker_stopping() {
     }
     reload_locked_snapshot || exit 1
     boot_autostart_stop || exit 1
+    recommendation_history_stop || exit 1
     autoscale_stop || exit 1
     imageupdate_stop || exit 1
     lifecycle_stop || exit 1
@@ -3667,6 +3845,7 @@ case "${1:-status}" in
   scale)        with_fleet_lock wait cmd_scale "${2:?usage: scale <N>}" ;;
   status)       cmd_status ;;
   status-json)  cmd_status_json ;;
+  recommendations-json) cmd_recommendations_json ;;
   dashboard-json) cmd_dashboard_json ;;
   image-info-json) cmd_image_info_json ;;
   queued-json)  cmd_queued_json ;;
@@ -3690,6 +3869,7 @@ case "${1:-status}" in
   farm-log)         cmd_farm_log ;;
   prune-cache)      with_fleet_lock wait cmd_prune_cache ;;
   autoscale-daemon) autoscale_daemon ;;
+  history-daemon) recommendation_history_daemon ;;
   autoscale-tick)   with_fleet_lock wait autoscale_tick ;;
   autoscale-start)  autoscale_start ;;
   autoscale-stop)   autoscale_stop ;;
@@ -3707,5 +3887,5 @@ case "${1:-status}" in
   credential-clear-github-token) with_fleet_lock wait cmd_credential_clear_github_token ;;
   credential-clear-gitlab-runner) with_fleet_lock wait cmd_credential_clear_gitlab_runner "${2:-0}" ;;
   credential-clear-registry-token) with_fleet_lock wait cmd_credential_clear_registry_token ;;
-  *) echo "usage: $0 {start|boot-autostart|docker-stopping|stop|restart|scale N|recycle NAME|force-forget-gitlab NAME|status|status-json|logs i|validate|build-image|prune-cache|autoscale-tick|autoscale-start|autoscale-stop|autoscale-status|lifecycle-tick|lifecycle-start|lifecycle-stop|lifecycle-status|imageupdate-tick|imageupdate-start|imageupdate-stop|imageupdate-status}"; exit 1 ;;
+  *) echo "usage: $0 {start|boot-autostart|docker-stopping|stop|restart|scale N|recycle NAME|force-forget-gitlab NAME|status|status-json|recommendations-json|logs i|validate|build-image|prune-cache|autoscale-tick|autoscale-start|autoscale-stop|autoscale-status|lifecycle-tick|lifecycle-start|lifecycle-stop|lifecycle-status|history-daemon|imageupdate-tick|imageupdate-start|imageupdate-stop|imageupdate-status}"; exit 1 ;;
 esac

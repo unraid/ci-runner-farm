@@ -49,6 +49,11 @@ Tag="server"
   <span class="crf-rs-seg crf-muted" id="crf-rs-total">&ndash; total across configured projects</span>
 </div>
 
+<div class="crf-recommendations" id="crf-recommendations" aria-live="polite">
+  <div class="crf-rec-head"><span>Job-weight recommendations</span><span class="crf-muted">live advisory</span></div>
+  <div id="crf-rec-body" class="crf-muted">Collecting live job context...</div>
+</div>
+
 <div class="crf-console">
   <div class="crf-console-head">
     <span>Fleet log</span>
@@ -77,6 +82,10 @@ Tag="server"
   .crf-runstats{display:flex;align-items:center;gap:16px;flex-wrap:wrap;border:1px solid var(--border-color);border-radius:6px;background:var(--shade-bg-color,transparent);padding:8px 14px;margin:0 0 8px;font-size:13px;color:var(--text-color)}
   .crf-rs-title{font-size:11px;color:var(--alt-text-color);letter-spacing:.03em}
   .crf-rs-seg b{font-weight:500}
+  .crf-recommendations{border:1px solid var(--border-color);border-radius:6px;background:var(--shade-bg-color,transparent);padding:8px 14px;margin:0 0 8px;font-size:13px;color:var(--text-color)}
+  .crf-rec-head{display:flex;justify-content:space-between;gap:12px;margin-bottom:4px;font-size:11px;color:var(--alt-text-color);letter-spacing:.03em}
+  .crf-rec-item{margin-top:3px}.crf-rec-high{color:var(--crf-err)}.crf-rec-medium{color:var(--crf-busy)}
+  .crf-rec-job{display:inline-block;margin:4px 6px 0 0;padding:2px 6px;border:1px solid var(--border-color);border-radius:8px;font-size:11px}
   .crf-toolbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0 0 8px}
   .crf-scale{margin-left:auto;display:flex;align-items:center;gap:6px;color:var(--alt-text-color);font-size:13px}
   .crf-scale input[type=number]{width:4em;height:26px;box-sizing:border-box;border-radius:6px;padding:0 8px;font-size:12px;margin:0}
@@ -170,6 +179,10 @@ function crfElapsed(iso){
   const m=Math.floor((Date.now()-t)/60000);
   return {m, txt: m<1?'<1m': m<60? m+'m' : Math.floor(m/60)+'h'+String(m%60).padStart(2,'0')};
 }
+function crfDurationSeconds(value){
+  const s=Number(value); if(!Number.isFinite(s)||s<0) return '';
+  return s<60?Math.round(s)+'s':s<3600?Math.round(s/60)+'m':(s/3600).toFixed(1)+'h';
+}
 function crfBar(pct){
   const p=Math.max(0,Math.min(100,Math.round(pct)));
   const cls=p>90?' crf-hot':p>60?' crf-mid':'';
@@ -215,6 +228,22 @@ function crfVolatile(r){
   const memTxt=memKnown?((r.mem_used_mib>=1024?( (r.mem_used_mib/1024).toFixed(1)+'g'):(r.mem_used_mib+'m'))+'/'+r.mem_gb+'g'):(running?'…':'&ndash;');
   return {elapsedHtml,cpuPct,cpuTxt,memPct,memTxt};
 }
+function crfRenderRecommendations(x){
+  const el=document.getElementById('crf-rec-body'); if(!el) return;
+  if(!x){el.textContent='Recommendation data unavailable.';return;}
+  const recs=Array.isArray(x.recommendations)?x.recommendations:[];
+  const jobs=Array.isArray(x.jobs)?x.jobs:[];
+  const hist=x.history||{};
+  const histText=Number(hist.samples)>0?(hist.samples+' historical sample'+(hist.samples===1?'':'s')):'no historical samples yet';
+  let html='<span>'+crfEsc(x.summary||'No recommendation summary.')+'</span><span class="crf-muted"> · '+crfEsc(histText)+'</span>';
+  if(recs.length){
+    html+='<div>'+recs.slice(0,4).map(r=>'<div class="crf-rec-item crf-rec-'+crfEsc(r.priority||'medium')+'">'+crfEsc(r.priority||'advisory')+': '+crfEsc(r.message||'Review farm capacity and routing.')+'</div>').join('')+'</div>';
+  }
+  if(jobs.length){
+    html+='<div>'+jobs.slice(0,8).map(j=>{const h=j.history||{};const hs=Number(h.samples)>0?' · P95 '+crfDurationSeconds(h.p95_seconds)+' ('+h.samples+')':'';return '<span class="crf-rec-job" title="'+crfEsc(j.reason||'')+'">'+crfEsc(String(j.job||'job').slice(0,48))+' · '+crfEsc(j.class||'unknown')+' '+crfEsc(j.score||'?')+'/5 → '+crfEsc(j.target_pool||'unassigned')+crfEsc(hs)+'</span>';}).join('')+'</div>';
+  }
+  if(el.innerHTML!==html) el.innerHTML=html;
+}
 function crfRefresh(){
   // In-flight guard: never stack a new status poll while the previous is still
   // outstanding, so a slow backend can't spiral into overlapping polls.
@@ -222,6 +251,7 @@ function crfRefresh(){
   window.__crfBusyStatus=true;
   crfPost({action:'status-json'}).then(d=>{
     window.CRF_LAST=d;
+    crfRenderRecommendations(d.recommendations);
     const provider=(d.provider==='gitlab'||d.provider==='github')?d.provider:((d.runners||[]).some(r=>r.provider==='gitlab')?'gitlab':'github');
     const warn=document.getElementById('crf-warn');
     if(warn){ if(d.warning){ warn.textContent='⚠ '+d.warning; warn.style.display='block'; } else { warn.textContent=''; warn.style.display='none'; } }
