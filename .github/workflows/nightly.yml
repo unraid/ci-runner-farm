@@ -22,7 +22,12 @@ jobs:
   publish-nightly:
     if: ${{ github.repository == 'unraid/ci-runner-farm' }}
     name: Build and publish nightly plugin
-    runs-on: [self-hosted, unraid, build]
+    # The repository is public, while the Default/Titan groups intentionally
+    # reject public repositories. This dedicated group is limited to this
+    # workflow and one farm runner; do not broaden it to the general farm.
+    runs-on:
+      group: ci-runner-farm-public-build
+      labels: [self-hosted, unraid, build]
     steps:
       - name: Checkout mainline
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
