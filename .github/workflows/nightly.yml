@@ -1,0 +1,124 @@
+name: Nightly Plugin
+
+# Mainline nightlies are built on the farm itself. This exercises the exact
+# self-hosted path that the plugin manages while keeping stable release assets
+# owned by release-please.
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  publish-nightly:
+    if: ${{ github.repository == 'unraid/ci-runner-farm' }}
+    name: Build and publish nightly plugin
+    runs-on: [self-hosted, unraid, build]
+    steps:
+      - name: Checkout mainline
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build nightly plugin
+        id: build
+        env:
+          CHANNEL: nightly
+          REPO: ${{ github.repository }}
+          BUILD_NUMBER: ${{ github.run_number }}
+          NIGHTLY_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_version="$(python3 -c 'import json; print(json.load(open(".release-please-manifest.json"))["."])')"
+          nightly_version="${base_version}-nightly.${GITHUB_RUN_NUMBER}"
+          build_date="$(git show -s --format=%ct HEAD | python3 -c 'import datetime, sys; print(datetime.datetime.fromtimestamp(int(sys.stdin.read()), datetime.timezone.utc).strftime("%Y.%m.%d.%H%M"))')"
+          DATE="$build_date" INTERNAL_VERSION="$nightly_version" bash ./build-plg.sh
+          printf 'version=%s\n' "$nightly_version" >> "$GITHUB_OUTPUT"
+
+      - name: Validate nightly package
+        env:
+          NIGHTLY_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          plg="ci-runner-farm-nightly.plg"
+          tgz="ci-runner-farm-nightly.tgz"
+          python3 -c "import xml.etree.ElementTree as ET; ET.parse('$plg')"
+          plg_md5="$(sed -n 's/^<!ENTITY packageMD5[[:space:]]*"\([0-9a-f]*\)">$/\1/p' "$plg")"
+          tgz_md5="$(md5sum "$tgz" | cut -d' ' -f1)"
+          test -n "$plg_md5" && test "$plg_md5" = "$tgz_md5"
+          extracted="$(mktemp -d)"
+          trap 'rm -rf "$extracted"' EXIT
+          tar -xzf "$tgz" -C "$extracted"
+          diff -r "$extracted" src/usr/local/emhttp/plugins/ci-runner-farm
+          grep -qF "Nightly build of main commit ${NIGHTLY_SHA}." "$plg"
+
+      - name: Move nightly tag and publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NIGHTLY_SHA: ${{ github.sha }}
+          NIGHTLY_VERSION: ${{ steps.build.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/nightly"
+          ref="repos/${GITHUB_REPOSITORY}/git/refs/tags/nightly"
+          if gh api "$ref" >/dev/null 2>&1; then
+            gh api --method PATCH "$ref" -f sha="$NIGHTLY_SHA" -F force=true >/dev/null
+          else
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref=refs/tags/nightly -f sha="$NIGHTLY_SHA" >/dev/null
+          fi
+
+          notes="$(mktemp)"
+          trap 'rm -f "$notes"' EXIT
+          cat > "$notes" <<EOF
+          CI Runner Farm nightly build.
+
+          Mainline commit: ${NIGHTLY_SHA}
+          Plugin version: ${NIGHTLY_VERSION}
+
+          This moving prerelease channel contains unreleased changes and is
+          intended for the CI Runner Farm fleet, not general production use.
+          EOF
+
+          if gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit nightly --repo "$GITHUB_REPOSITORY" \
+              --title "CI Runner Farm Nightly" --notes-file "$notes" --prerelease
+          else
+            gh release create nightly --repo "$GITHUB_REPOSITORY" \
+              --title "CI Runner Farm Nightly" --notes-file "$notes" \
+              --prerelease --target "$NIGHTLY_SHA"
+          fi
+
+          gh release upload nightly --repo "$GITHUB_REPOSITORY" \
+            ci-runner-farm-nightly.tgz --clobber
+          gh release upload nightly --repo "$GITHUB_REPOSITORY" \
+            ci-runner-farm-nightly.plg --clobber
+
+          plugin_sha256="$(sha256sum ci-runner-farm-nightly.plg | cut -d' ' -f1)"
+          package_sha256="$(sha256sum ci-runner-farm-nightly.tgz | cut -d' ' -f1)"
+          cat > ci-runner-farm-nightly.json <<EOF
+          {"channel":"nightly","commit":"${NIGHTLY_SHA}","plugin_version":"${NIGHTLY_VERSION}","plugin_url":"${release_base}/ci-runner-farm-nightly.plg","package_url":"${release_base}/ci-runner-farm-nightly.tgz","plugin_sha256":"${plugin_sha256}","package_sha256":"${package_sha256}"}
+          EOF
+          gh release upload nightly --repo "$GITHUB_REPOSITORY" \
+            ci-runner-farm-nightly.json --clobber
+
+          downloaded="$(mktemp -d)"
+          trap 'rm -rf "$downloaded" "$notes"' EXIT
+          for asset in ci-runner-farm-nightly.plg ci-runner-farm-nightly.tgz ci-runner-farm-nightly.json; do
+            curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
+              --output "$downloaded/$asset" \
+              "$release_base/$asset"
+            cmp "$asset" "$downloaded/$asset"
+          done

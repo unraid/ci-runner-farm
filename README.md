@@ -116,6 +116,17 @@ In **Plugins → Install Plugin**, paste:
 https://github.com/unraid/ci-runner-farm/releases/latest/download/ci-runner-farm.plg
 ```
 
+For the moving mainline preview, use the separate CA entry **CI Runner Farm -
+Nightly** or paste:
+
+```text
+https://github.com/unraid/ci-runner-farm/releases/download/nightly/ci-runner-farm-nightly.plg
+```
+
+Nightly is built on the farm from `main`, may contain breaking changes, and
+replaces the stable plugin channel on the host. Keep the stable release URL
+available for rollback; the two channels are not intended to run side by side.
+
 Everything is managed from **Settings → Utilities → CI Runner Farm**. The page
 has **Fleet**, **Runner image**, and **Settings** tabs.
 

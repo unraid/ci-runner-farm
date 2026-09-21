@@ -76,6 +76,17 @@ repositories in GitHub or GitLab.
 
 `Tools:System Plugins: Productivity: Network:Management:`
 
+## Nightly channel
+
+The companion `ci-runner-farm-nightly.xml` listing is a separately named beta
+plugin entry for the farm itself. It is generated from the same source tree as
+the stable plugin, follows `main`, and is published only after a self-hosted
+farm build validates the descriptor and package. It uses the same installed
+runtime/config contract, so installing it switches a host from stable to the
+nightly channel instead of creating a second fleet. Nightly may contain
+breaking changes; use it only on trusted farm systems and keep the stable
+release available for rollback.
+
 ## Screenshots
 
 Additional images available under `docs/images/` in the repo:

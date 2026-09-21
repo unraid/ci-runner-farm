@@ -10,6 +10,7 @@ single `ca_profile.xml`. These files are served raw from this repo.
 | File | Purpose |
 |---|---|
 | [`ci-runner-farm.xml`](ci-runner-farm.xml) | CA plugin template — name, description, category, icon, `PluginURL`, support/project links. |
+| [`ci-runner-farm-nightly.xml`](ci-runner-farm-nightly.xml) | Beta CA template for the moving mainline/nightly channel. |
 | [`ca_profile.xml`](ca_profile.xml) | Maintainer profile shown next to the listing. |
 | [`ci-runner-farm.png`](ci-runner-farm.png) | 256×256 listing icon (source: [`ci-runner-farm.svg`](ci-runner-farm.svg)). |
 | [`DESCRIPTION.md`](DESCRIPTION.md) | Copy for the CA listing and the forum support thread. |
@@ -17,6 +18,14 @@ single `ca_profile.xml`. These files are served raw from this repo.
 `PluginURL` points at `releases/latest/download/ci-runner-farm.plg`, so CA always
 installs the newest published release, and Unraid's "check for updates" resolves
 from the same URL.
+
+The nightly listing is intentionally separate, separately named, and marked
+beta. Its `PluginURL` points at the moving `nightly` release. The descriptor and
+package are built from the same source tree as stable, but the channel may
+contain breaking mainline changes. It preserves the stable plugin's runtime and
+configuration contract, so it replaces stable on a host rather than creating a
+second fleet. The nightly workflow builds and publishes from `main` on a runner
+with the farm's `self-hosted`, `unraid`, and `build` labels.
 
 ## Prerequisites (must be true before CA can list this)
 
@@ -61,3 +70,4 @@ rsvg-convert -w 256 -h 256 ci-runner-farm.svg -o ci-runner-farm.png
 - [ ] Forum support thread created; `<Support>` + `<Forum>` updated to real URLs
 - [ ] Raw URLs for the template, profile, icon, and screenshot all load in a browser
 - [ ] Submitted via the CA portal and passed the preview/validation
+- [ ] For nightly use, verify the moving nightly release asset before migrating any farm host
