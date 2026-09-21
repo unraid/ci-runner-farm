@@ -14,6 +14,9 @@
 #                     Defaults to 0 for local dev builds.
 #   DATE              YYYY.MM.DD.HHMM build stamp. Defaults to now (UTC).
 #   REPO              owner/name on GitHub, used for pluginURL + support URL.
+#   CHANNEL           stable (default) or nightly. Nightly emits a separate
+#                     preview artifact and release channel from the same source
+#                     tree while preserving the runtime/config contract.
 #
 # The Unraid plugin-manager <version> ("external" version) is
 #   YYYY.MM.DD.HHMM.BUILD-INTERNAL  e.g. 2026.06.24.1530.42-0.1.0
@@ -24,9 +27,15 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 NAME="ci-runner-farm"
-OUT="${NAME}.plg"
+CHANNEL="${CHANNEL:-stable}"
+case "$CHANNEL" in
+  stable) ASSET_NAME="$NAME" ;;
+  nightly) ASSET_NAME="${NAME}-nightly" ;;
+  *) echo "CHANNEL must be stable or nightly: $CHANNEL" >&2; exit 1 ;;
+esac
+OUT="${ASSET_NAME}.plg"
 SRCDIR="src/usr/local/emhttp/plugins/${NAME}"
-TGZ="${NAME}.tgz"
+TGZ="${ASSET_NAME}.tgz"
 REPO="${REPO:-unraid/ci-runner-farm}"
 
 # Build the .tgz package REPRODUCIBLY: byte-identical output (=> identical MD5)
@@ -319,10 +328,18 @@ if [ "${1:-}" = "--dev" ]; then build_dev_package; exit $?; fi
 if [ "${1:-}" = "--tgz-only" ]; then make_tgz; echo "built $TGZ ($(wc -c < "$TGZ" | tr -d ' ') bytes)"; exit 0; fi
 
 # Internal SemVer: explicit env wins, else the VERSION file, else 0.0.0 (dev).
-INTERNAL_VERSION="${INTERNAL_VERSION:-$( [ -f VERSION ] && tr -d '[:space:]' < VERSION || echo '0.0.0' )}"
-INTERNAL_VERSION="${INTERNAL_VERSION:-0.0.0}"
+BASE_INTERNAL_VERSION="$( [ -f VERSION ] && tr -d '[:space:]' < VERSION || echo '0.0.0' )"
+BASE_INTERNAL_VERSION="${BASE_INTERNAL_VERSION:-0.0.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-${GITHUB_RUN_NUMBER:-0}}"
 DATE="${DATE:-$(date -u +%Y.%m.%d.%H%M)}"
+
+if [ -n "${INTERNAL_VERSION:-}" ]; then
+  INTERNAL_VERSION="$INTERNAL_VERSION"
+elif [ "$CHANNEL" = nightly ]; then
+  INTERNAL_VERSION="${BASE_INTERNAL_VERSION}-nightly.${BUILD_NUMBER}"
+else
+  INTERNAL_VERSION="$BASE_INTERNAL_VERSION"
+fi
 
 # Validate the pieces so a bad release input fails the build, not the install.
 [[ "$DATE" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]{4}$ ]] || { echo "DATE must be YYYY.MM.DD.HHMM: $DATE" >&2; exit 1; }
@@ -330,17 +347,26 @@ DATE="${DATE:-$(date -u +%Y.%m.%d.%H%M)}"
 [[ "$INTERNAL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "INTERNAL_VERSION must be SemVer: $INTERNAL_VERSION" >&2; exit 1; }
 
 VERSION="${DATE}.${BUILD_NUMBER}-${INTERNAL_VERSION}"
-RELEASE_TAG="v${INTERNAL_VERSION}"
-PLUGIN_URL="https://github.com/${REPO}/releases/latest/download/${NAME}.plg"
 SUPPORT_URL="https://github.com/${REPO}/issues"
 
-# The package is published as a release asset under a version-pinned name so an
-# old .plg never resolves a newer release's package. pluginURL stays "latest/"
-# (update checks find the newest .plg); packageURL is tag-pinned (each .plg
-# fetches exactly its own package). The .tgz itself is NOT committed — CI rebuilds
-# it reproducibly at publish (see make_tgz above); only the .plg is committed.
-PACKAGE_NAME="${NAME}-${VERSION}.tgz"
-PACKAGE_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${PACKAGE_NAME}"
+if [ "$CHANNEL" = nightly ]; then
+  RELEASE_TAG="${RELEASE_TAG:-nightly}"
+  PLUGIN_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${OUT}"
+  PACKAGE_NAME="$TGZ"
+  PACKAGE_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${PACKAGE_NAME}"
+else
+  RELEASE_TAG="v${INTERNAL_VERSION}"
+  PLUGIN_URL="https://github.com/${REPO}/releases/latest/download/${OUT}"
+  # Stable packages are version-pinned so an older descriptor can never fetch
+  # bytes from a newer release. The nightly channel deliberately uses one
+  # moving package name because its release tag is mutable.
+  PACKAGE_NAME="${NAME}-${VERSION}.tgz"
+  PACKAGE_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${PACKAGE_NAME}"
+fi
+
+# Stable packages are version-pinned; the nightly channel uses one moving
+# package name. In both cases the .tgz is rebuilt reproducibly at publish and
+# only the .plg descriptor is committed.
 
 # Portable MD5 (md5sum on Linux/CI, md5 on macOS/BSD dev boxes).
 md5_of() { if command -v md5sum >/dev/null 2>&1; then md5sum "$1" | cut -d' ' -f1; else md5 -q "$1"; fi; }
@@ -352,10 +378,15 @@ xml_escape() {
     -e 's/>/\&gt;/g'
 }
 
-# Changelog body for the <CHANGES> block: pull the newest CHANGELOG.md section
-# if present, else a generic line. Kept plain so the plugin manager renders it.
+# Changelog body for the <CHANGES> block: stable releases use the newest
+# CHANGELOG.md section; nightly releases identify the exact mainline commit and
+# deliberately do not inherit stable-release copy. Kept plain so the plugin
+# manager renders it.
 changes="- Containerized GitHub Actions runner farm for Unraid."
-if [ -f CHANGELOG.md ]; then
+if [ "$CHANNEL" = nightly ]; then
+  nightly_sha="${NIGHTLY_SHA:-unknown}"
+  changes="- Nightly build of main commit ${nightly_sha}. This channel contains unreleased changes and is intended for farm validation."
+elif [ -f CHANGELOG.md ]; then
   section="$(awk '/^## /{n++; if(n==2) exit} n==1 && !/^## /' CHANGELOG.md | sed '/^[[:space:]]*$/d')"
   [ -n "$section" ] && changes="$section"
 fi
@@ -550,4 +581,4 @@ echo "ci-runner-farm removed. Config + credentials left in /boot/config/plugins/
 </PLUGIN>
 PLG
 
-echo "built $OUT + $TGZ (version $VERSION, tag $RELEASE_TAG, package $(wc -c < "$TGZ" | tr -d ' ') bytes, md5 $PACKAGE_MD5)"
+echo "built $OUT + $TGZ (channel $CHANNEL, version $VERSION, tag $RELEASE_TAG, package $(wc -c < "$TGZ" | tr -d ' ') bytes, md5 $PACKAGE_MD5)"

@@ -6,6 +6,7 @@ cd "$(dirname "$0")/.."
 
 RP=".github/workflows/release-please.yml"
 REL=".github/workflows/release.yml"
+NIGHTLY=".github/workflows/nightly.yml"
 
 assert_all_jobs_guarded() {
   local file="$1" jobs job block found=0
@@ -35,6 +36,7 @@ assert_all_jobs_guarded() {
 
 assert_all_jobs_guarded "$RP"
 assert_all_jobs_guarded "$REL"
+assert_all_jobs_guarded "$NIGHTLY"
 
 if [ -e .gitlab-ci.yml ]; then
   echo "release-guard: this fork keeps its own CI on GitHub; .gitlab-ci.yml is out of scope" >&2
