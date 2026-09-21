@@ -1970,14 +1970,18 @@ clear_args_tmpdir() {
 }
 
 start_one() {
-  local idx="$1" name="${NAME_PREFIX}-$1" snapshot
+  local idx="$1" name="${NAME_PREFIX}-$1" snapshot current_gen
   if docker inspect "$name" >/dev/null 2>&1; then
     snapshot="$(managed_runner_snapshot "$name")" \
       || { err "refusing fixed-name collision while starting $name"; return 1; }
     log "owned runner $name already exists; skipping"
     return 0
   fi
-  provider_call start_one "$idx" "$name"
+  current_gen="$(crf_confgen)" || return 1
+  crf_prepare_slot_cache "$name" "$CI_PROVIDER" "$current_gen" || return 1
+  provider_call start_one "$idx" "$name" || return 1
+  crf_record_cache_identity "$name" "$CI_PROVIDER" "$current_gen" \
+    || { err "runner $name started, but its cache identity could not be recorded; future starts will purge its retained data"; return 1; }
 }
 
 start_configured_capacity() {
@@ -2006,12 +2010,18 @@ start_configured_capacity() {
 # needs a fresh short-lived registration token; a stale/provider-switched GitLab
 # manager must unregister its old persisted identity before replacement.
 recreate_stopped_runner() {
-  local c="$1" supplied_snapshot="${2:-}" snapshot id provider role idx gen pool
+  local c="$1" supplied_snapshot="${2:-}" snapshot id provider role idx gen pool current_gen purge=true
   snapshot="$supplied_snapshot"
   [ -n "$snapshot" ] || snapshot="$(managed_runner_snapshot "$c")" || return 1
   IFS='|' read -r id provider role idx gen <<< "$snapshot"
   pool="$(runner_pool "$c")" || return 1
-  remove_runner "$c" false "$id" "$provider" || return 1
+  current_gen="$(expected_runner_confgen "$c")" || return 1
+  if [ "$provider" = "$CI_PROVIDER" ] \
+    && [ "$gen" = "$current_gen" ] \
+    && crf_cache_identity_matches "$c" "$provider" "$gen"; then
+    purge=false
+  fi
+  remove_runner "$c" "$purge" "$id" "$provider" || return 1
   pool_activate "$pool" || { err "runner $c belongs to unknown pool $pool"; return 1; }
   start_one "$idx"
 }
@@ -2022,7 +2032,7 @@ recreate_stopped_runner() {
 # routine outage would create needless remote churn and make recovery depend on
 # GitLab availability.
 start_stopped_managed() {
-  local c st provider idx names snapshot id role gen
+  local c st provider idx names snapshot id role gen current_gen
   names="$(managed_names)" || return 1
   for c in $names; do
     [ -n "$c" ] || continue
@@ -2031,8 +2041,10 @@ start_stopped_managed() {
     st="$(docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null)" \
       || { err "could not inspect stopped/running state for owned runner $c"; return 1; }
     [ "$st" = "true" ] && continue
+    current_gen="$(expected_runner_confgen "$c")" || return 1
     if [ "$provider" = gitlab ] && [ "$CI_PROVIDER" = gitlab ] \
-      && [ "$gen" = "$(crf_confgen)" ]; then
+      && [ "$gen" = "$current_gen" ] \
+      && crf_cache_identity_matches "$c" "$provider" "$gen"; then
       log "restarting stopped GitLab manager $c with its persisted system ID"
       gitlab_start_stopped "$c" "$idx" "$id" || return 1
     else
@@ -2405,7 +2417,10 @@ remove_runner() {
   CRF_REMOVE_SLOT="$c"
   CRF_REMOVE_ID="$immutable_id"
   CRF_REMOVE_PROVIDER="$provider"
-  "${provider}_remove_runner" "$c" "$purge"
+  "${provider}_remove_runner" "$c" "$purge" || return 1
+  if [ "$purge" = true ]; then
+    crf_purge_slot_cache "$c"
+  fi
 }
 
 # Stop every running GitLab manager concurrently before a full fleet teardown.
@@ -2476,7 +2491,7 @@ cmd_stop() {
   lifecycle_stop || return 1
   reconcile_stop || return 1
   quiesce_gitlab_managers_for_stop || return 1
-  local names c remaining remaining_managers stop_failed=0
+  local names c remaining remaining_managers stop_failed=0 snapshot id provider role index gen
   names="$(managed_names)" \
     || { err "could not enumerate managed runners before stop"; return 1; }
   if [ -z "$names" ]; then
@@ -2485,7 +2500,14 @@ cmd_stop() {
     while IFS= read -r c; do
       [ -n "$c" ] || continue
       log "stopping $c (graceful deregister)"
-      remove_runner "$c" false || stop_failed=1
+      snapshot="$(managed_runner_snapshot "$c")" || { stop_failed=1; continue; }
+      IFS='|' read -r id provider role index gen <<< "$snapshot"
+      if remove_runner "$c" false; then
+        crf_record_cache_identity "$c" "$provider" "$gen" \
+          || { err "could not record retained cache identity for $c; future starts will purge its per-slot data"; stop_failed=1; }
+      else
+        stop_failed=1
+      fi
     done <<< "$names"
   fi
   # A provider removal that failed closed can intentionally leave a manager and
@@ -3025,6 +3047,84 @@ crf_safe_cache_root() {
     /mnt/*)   echo "bare-mount-root (point CACHE_ROOT at a subdirectory, e.g. /mnt/<pool>/github-runner)" >&2; return 1 ;;
     *)        echo not-under-mnt >&2; return 1 ;;
   esac
+}
+
+# Retained per-slot data is reusable only when provider and baked runner
+# configuration still match. Missing identity is treated as unsafe legacy data.
+crf_cache_slot_path() {
+  local kind="$1" name="$2" root path real
+  case "$kind" in
+    docker|work|dind-logs|gitlab-cache|gitlab-sockets) ;;
+    *) return 1 ;;
+  esac
+  case "$name" in ''|*[!A-Za-z0-9_.-]*) return 1 ;; esac
+  root="$(crf_safe_cache_root)" || return 1
+  path="$root/$kind/$name"
+  real="$(realpath -m -- "$path" 2>/dev/null)" || return 1
+  [ "$real" = "$path" ] || return 1
+  case "$real" in "$root"/*) printf '%s\n' "$real" ;; *) return 1 ;; esac
+}
+
+crf_cache_identity_path() {
+  local name="$1" root
+  case "$name" in ''|*[!A-Za-z0-9_.-]*) return 1 ;; esac
+  root="$(crf_safe_cache_root)" || return 1
+  printf '%s/.crf-cache-identities/%s\n' "$root" "$name"
+}
+
+crf_cache_identity_matches() {
+  local name="$1" provider="$2" gen="$3" path recorded_provider recorded_gen extra kind
+  path="$(crf_cache_identity_path "$name")" || return 1
+  [ -f "$path" ] && [ ! -L "$path" ] || return 1
+  IFS='|' read -r recorded_provider recorded_gen extra < "$path" || return 1
+  [ -n "$recorded_provider" ] && [ -n "$recorded_gen" ] && [ -z "$extra" ] \
+    || return 1
+  [ "$recorded_provider" = "$provider" ] && [ "$recorded_gen" = "$gen" ] || return 1
+  for kind in docker work dind-logs gitlab-cache gitlab-sockets; do
+    crf_cache_slot_path "$kind" "$name" >/dev/null || return 1
+  done
+}
+
+crf_record_cache_identity() {
+  local name="$1" provider="$2" gen="$3" path dir tmp
+  path="$(crf_cache_identity_path "$name")" || return 1
+  dir="${path%/*}"
+  [ ! -L "$dir" ] || return 1
+  mkdir -p "$dir" && chmod 700 "$dir" 2>/dev/null || return 1
+  [ ! -L "$path" ] || return 1
+  tmp="$(mktemp "$dir/.identity.XXXXXX")" || return 1
+  if ! ( umask 077; printf '%s|%s\n' "$provider" "$gen" > "$tmp" ); then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  chmod 600 "$tmp" 2>/dev/null || { rm -f -- "$tmp"; return 1; }
+  mv -f -- "$tmp" "$path" || { rm -f -- "$tmp"; return 1; }
+}
+
+crf_forget_cache_identity() {
+  local path
+  path="$(crf_cache_identity_path "$1")" || return 1
+  rm -f -- "$path"
+}
+
+crf_purge_slot_cache() {
+  local name="$1" kind path failed=0
+  for kind in docker work dind-logs gitlab-cache gitlab-sockets; do
+    path="$(crf_cache_slot_path "$kind" "$name")" \
+      || { err "refusing cache cleanup for unsafe slot '$name'"; failed=1; continue; }
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      rm -rf -- "$path" || failed=1
+    fi
+  done
+  crf_forget_cache_identity "$name" || failed=1
+  return "$failed"
+}
+
+crf_prepare_slot_cache() {
+  local name="$1" provider="$2" gen="$3"
+  crf_cache_identity_matches "$name" "$provider" "$gen" && return 0
+  log "cache identity for $name is absent or changed; purging retained per-slot data"
+  crf_purge_slot_cache "$name"
 }
 
 # Resolve a CACHE_MOUNTS host subdir against the (canonical) cache root and confirm
@@ -3703,7 +3803,7 @@ cmd_prune_cache() {
   [ -z "$active" ] \
     || { err "refusing to prune cache while GitLab executor containers exist"; return 1; }
   root="$(crf_safe_cache_root)" || { err "refusing to prune-cache: CACHE_ROOT='$CACHE_ROOT' is unsafe (system dir, share/pool root, or unresolvable — point it at /mnt/<pool>/<subdir>)"; return 1; }
-  dirs="docker work dind-logs gitlab-cache gitlab-sockets registry-mirror $CACHE_PKG_DIRS"
+  dirs="docker work dind-logs gitlab-cache gitlab-sockets registry-mirror .crf-cache-identities $CACHE_PKG_DIRS"
   for m in $CACHE_MOUNTS; do dirs="$dirs ${m%%:*}"; done
   for d in $dirs; do
     case "$d" in ''|.|..|*/*) continue ;; esac   # simple child names only — never a path/traversal

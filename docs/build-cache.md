@@ -111,6 +111,11 @@ Named pools require the same scheduled Fleet Restart described above.
 **Stop** and **Restart** retain per-slot Docker data, GitLab job caches, and the
 shared image mirror cache. A later Start reuses the retained data for the same
 slot and cache root. This applies with the build cache profile on or off.
+The plugin records the provider and baked runner configuration identity for each
+retained slot. If that identity changes, including a provider, owner, project,
+registry, or trust-scope change, the plugin purges that slot's retained Docker,
+workspace, job-cache, socket, and log data before starting it again. The shared
+image mirror remains separate and is not treated as per-slot job state.
 The plugin still removes runner containers and performs provider credential
 cleanup. Plugin uninstall and active GitLab runner-token removal also retain
 caches because they use Stop.
@@ -143,8 +148,9 @@ It does not contact a farm host or modify existing runners.
 ### Verify an authenticated registry
 
 The **Lint** workflow has a manual **Also verify authenticated GHCR cache reuse**
-option. Run it only from a trusted, reviewed ref. Pull-request events cannot
-start this package-writing job. GitHub assigns its runner.
+option. The package-writing job accepts dispatches only from the repository's
+`main` branch. Pull-request events and other refs cannot start it. Review the
+exact `main` commit before dispatching. GitHub assigns its runner.
 
 The job uses its short-lived `GITHUB_TOKEN` with `packages: write`, not a farm
 credential. It exports synthetic Busybox layers to

@@ -1166,6 +1166,12 @@ fi
   DISPATCH_LOG="$tmp/start-stopped-dispatch.log"
   DISPATCH_MANAGER_ID=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
   CI_PROVIDER=gitlab
+  crf_safe_cache_root() { printf '%s\n' "$CACHE_ROOT"; }
+  for cache_dir in docker work dind-logs gitlab-cache gitlab-sockets; do
+    mkdir -p "$CACHE_ROOT/$cache_dir/ci-runner-1"
+  done
+  crf_record_cache_identity ci-runner-1 gitlab dispatch-generation \
+    || fail "could not record stopped-manager cache identity"
   managed_names() { printf '%s\n' ci-runner-1; }
   managed_runner_snapshot() {
     printf '%s|gitlab|manager|1|dispatch-generation\n' "$DISPATCH_MANAGER_ID"
@@ -1608,6 +1614,7 @@ grep -qx 'recycle ci-runner-1' "$ACTION_LOG" || fail "image update bypassed cmd_
 # than weakening isolation underneath the survivor.
 : > "$ACTION_LOG"
 managed_names() { printf '%s\n' ci-runner-1; }
+managed_runner_snapshot() { printf '%s|gitlab|manager|1|stop-generation\n' manager-id; }
 remove_runner() { printf 'remove %s\n' "$1" >> "$ACTION_LOG"; return 1; }
 autoscale_stop() { :; }; imageupdate_stop() { :; }
 quiesce_gitlab_managers_for_stop() { :; }

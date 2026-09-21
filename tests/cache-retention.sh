@@ -19,18 +19,43 @@ for provider in github gitlab; do
     CACHE_MOUNTS=''
     NO_REGISTER=1
     slot=ci-runner-1
+    crf_safe_cache_root() { printf '%s\n' "$CACHE_ROOT"; }
     fixture_id=$(printf '%064d' 1)
     present="$tmp/$provider/present"
     effects="$tmp/$provider/effects"
     touch "$present" "$effects"
-    for dir in docker gitlab-cache registry-mirror; do
+    for dir in docker work dind-logs gitlab-cache gitlab-sockets registry-mirror; do
       mkdir -p "$CACHE_ROOT/$dir/$slot"
       printf 'retained\n' > "$CACHE_ROOT/$dir/$slot/proof"
     done
 
+    # Unknown or changed identity must never reuse retained per-slot state.
+    crf_prepare_slot_cache "$slot" "$fixture_provider" old-generation || fail 'legacy cache identity was reused'
+    for dir in docker work dind-logs gitlab-cache gitlab-sockets; do
+      [ ! -e "$CACHE_ROOT/$dir/$slot" ] || fail "identity purge retained $dir data"
+    done
+    [ -f "$CACHE_ROOT/registry-mirror/$slot/proof" ] || fail 'identity purge deleted shared mirror data'
+    for dir in docker work dind-logs gitlab-cache gitlab-sockets; do
+      mkdir -p "$CACHE_ROOT/$dir/$slot"
+      printf 'retained\n' > "$CACHE_ROOT/$dir/$slot/proof"
+    done
+    crf_record_cache_identity "$slot" "$fixture_provider" old-generation \
+      || fail 'could not record cache identity'
+    crf_prepare_slot_cache "$slot" "$fixture_provider" old-generation \
+      || fail 'matching cache identity was not reusable'
+    crf_prepare_slot_cache "$slot" "$fixture_provider" new-generation \
+      || fail 'changed cache identity could not be purged'
+    [ ! -e "$CACHE_ROOT/docker/$slot" ] || fail 'changed identity retained Docker data'
+    [ -f "$CACHE_ROOT/registry-mirror/$slot/proof" ] || fail 'changed identity deleted shared mirror data'
+    for dir in docker work dind-logs gitlab-cache gitlab-sockets; do
+      mkdir -p "$CACHE_ROOT/$dir/$slot"
+      printf 'retained\n' > "$CACHE_ROOT/$dir/$slot/proof"
+    done
+    crf_record_cache_identity "$slot" "$fixture_provider" generation \
+      || fail 'could not restore current cache identity'
+
     # Replace external Docker/API/process boundaries, not Stop, remove_runner,
     # the provider removal adapters, or their cache retention decisions.
-    crf_safe_cache_root() { printf '%s\n' "$CACHE_ROOT"; }
     boot_autostart_stop() { return 0; }
     autoscale_stop() { return 0; }
     imageupdate_stop() { return 0; }

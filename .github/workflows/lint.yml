@@ -44,7 +44,7 @@ jobs:
 
   registry-cache:
     name: Authenticated registry cache proof
-    if: github.event_name == 'workflow_dispatch' && inputs.registry_cache_test
+    if: github.event_name == 'workflow_dispatch' && inputs.registry_cache_test && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
