@@ -242,7 +242,7 @@ function crfRenderRecommendations(x){
   if(jobs.length){
     html+='<div>'+jobs.slice(0,8).map(j=>{const h=j.history||{};const hs=Number(h.samples)>0?' · P95 '+crfDurationSeconds(h.p95_seconds)+' ('+h.samples+')':'';return '<span class="crf-rec-job" title="'+crfEsc(j.reason||'')+'">'+crfEsc(String(j.job||'job').slice(0,48))+' · '+crfEsc(j.class||'unknown')+' '+crfEsc(j.score||'?')+'/5 → '+crfEsc(j.target_pool||'unassigned')+crfEsc(hs)+'</span>';}).join('')+'</div>';
   }
-  el.innerHTML=html;
+  if(el.innerHTML!==html) el.innerHTML=html;
 }
 function crfRefresh(){
   // In-flight guard: never stack a new status poll while the previous is still

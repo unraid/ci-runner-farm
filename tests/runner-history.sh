@@ -44,6 +44,14 @@ CRF_CFGDIR="$tmp/config" CRF_RUNDIR="$tmp/run" bash -c '
   IFS="|" read -r _ snapshot_count _ _ _ _ _ <<< "$snapshot_stats"
   [ "$snapshot_count" = 2 ]
 
+  # An unchanged provider/run ID with incomplete current context is still the
+  # same live job. Do not record a false completion while telemetry fills in.
+  current_incomplete="ci-runner-1 20 300 busy _ _ github repo 101 _ _ _ _ _ _ _ _"
+  crf_history_record_snapshot "$previous" "$current_incomplete" "$now"
+  snapshot_stats="$(crf_history_stats github "JS lint")"
+  IFS="|" read -r _ snapshot_count _ _ _ _ _ <<< "$snapshot_stats"
+  [ "$snapshot_count" = 2 ]
+
   # The same busy job observed twice is not a completion.
   current_busy="ci-runner-1 20 300 busy $job64 $start github repo 101 _ _ _ _ _ _ _ _"
   crf_history_record_snapshot "$previous" "$current_busy" "$now"
@@ -74,6 +82,7 @@ CRF_CFGDIR="$tmp/config" CRF_RUNDIR="$tmp/run" bash -c '
   CRF_HISTORY_RETENTION_SECONDS=100
   old_epoch="$((now - 101))"
   crf_history_record_event github "old-family" 30 "$old_epoch"
+  [ "$(crf_history_stats github "old-family" | cut -d"|" -f2)" = 0 ]
   crf_history_record_event github "new-family" 30 "$now"
   [ "$(crf_history_stats github "old-family" | cut -d"|" -f2)" = 0 ]
   [ "$(crf_history_stats github "new-family" | cut -d"|" -f2)" = 1 ]

@@ -20,12 +20,13 @@ crf_history_cache_file() {
 }
 
 crf_history_refresh_cache() {
-  local history cache tmp
+  local history cache tmp cutoff
   history="$(crf_history_file)"; cache="$(crf_history_cache_file)"
   mkdir -p "$(dirname "$cache")" 2>/dev/null || return 1
   tmp="$(mktemp "${cache}.tmp.XXXXXX")" || return 1
+  cutoff=$(( $(date +%s) - CRF_HISTORY_RETENTION_SECONDS ))
   if [ -f "$history" ]; then
-    awk -F '\t' '$1 == "v1" && NF >= 17 { print }' "$history" > "$tmp" || { rm -f "$tmp"; return 1; }
+    awk -F '\t' -v cutoff="$cutoff" '$1 == "v1" && NF >= 17 && ($17 + 0) >= cutoff { print }' "$history" > "$tmp" || { rm -f "$tmp"; return 1; }
   else
     : > "$tmp"
   fi
@@ -101,10 +102,11 @@ crf_history_bucket_ceiling() {
 crf_history_stats() {
   local provider="${1:-unknown}" job="${2:-unknown}" key line
   local version hprovider hkey count total min max b0 b1 b2 b3 b4 b5 b6 b7 b8 last
-  local rank cumulative bucket p95 avg
+  local rank cumulative bucket p95 avg cutoff
   key="$(crf_history_key "$provider" "$job")"
-  line="$(awk -F '\t' -v p="$provider" -v k="$key" \
-    '$1 == "v1" && $2 == p && $3 == k && NF >= 17 { print; exit }' "$(crf_history_read_file)" 2>/dev/null || true)"
+  cutoff=$(( $(date +%s) - CRF_HISTORY_RETENTION_SECONDS ))
+  line="$(awk -F '\t' -v p="$provider" -v k="$key" -v cutoff="$cutoff" \
+    '$1 == "v1" && $2 == p && $3 == k && NF >= 17 && ($17 + 0) >= cutoff { print; exit }' "$(crf_history_read_file)" 2>/dev/null || true)"
   if [ -z "$line" ]; then
     printf '%s|0|0|0|0|0|0\n' "$key"
     return 0
@@ -132,10 +134,11 @@ crf_history_stats() {
 }
 
 crf_history_summary() {
-  local file; file="$(crf_history_read_file)"
+  local file cutoff; file="$(crf_history_read_file)"
   [ -f "$file" ] || { printf '0|0|0\n'; return 0; }
-  awk -F '\t' '
-    $1 == "v1" && NF >= 17 && $4 ~ /^[0-9]+$/ {
+  cutoff=$(( $(date +%s) - CRF_HISTORY_RETENTION_SECONDS ))
+  awk -F '\t' -v cutoff="$cutoff" '
+    $1 == "v1" && NF >= 17 && ($17 + 0) >= cutoff && $4 ~ /^[0-9]+$/ {
       keys++; samples += $4; if (($17 + 0) > last) last = $17 + 0
     }
     END { printf "%d|%d|%d\n", keys + 0, samples + 0, last + 0 }
@@ -214,16 +217,16 @@ crf_history_record_snapshot() {
     cur="$(printf '%s\n' "$current" | awk -v n="$runner" '$1 == n { print; exit }')"
     [ -n "$cur" ] || continue
     read -r _ cur_cpu cur_mem cur_phase cur_job64 cur_started cur_provider cur_project64 cur_jobid _ <<< "$cur"
-    same=false
-    case "$cur_phase" in
-      busy)
-        if [ "$cur_provider" = "$provider" ] && [ "$jobid" != _ ] && [ "$cur_jobid" != _ ]; then
+      same=false
+      case "$cur_phase" in
+        busy)
+        if [ "$cur_job64" = _ ] || [ "$cur_started" = _ ]; then
+          same=true # incomplete live context: wait for a complete sample
+        elif [ "$cur_provider" = "$provider" ] && [ "$jobid" != _ ] && [ "$cur_jobid" != _ ]; then
           # GitHub's current context uses workflow-run ID as the stable
           # provider identifier, so keep the job family and start time in the
           # identity check to distinguish matrix jobs and retries.
           [ "$jobid" = "$cur_jobid" ] && [ "$job64" = "$cur_job64" ] && [ "$started" = "$cur_started" ] && same=true
-        elif [ "$cur_job64" = _ ] || [ "$cur_started" = _ ]; then
-          same=true # incomplete live context: wait for a complete sample
         elif [ "$cur_provider" = "$provider" ] && [ "$cur_job64" = "$job64" ] && [ "$cur_started" = "$started" ]; then
           same=true
         fi
