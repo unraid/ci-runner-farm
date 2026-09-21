@@ -55,6 +55,6 @@ grep -qF 'releases/download/nightly/' .lycheeignore
 grep -qF '<Name>CI Runner Farm - Nightly</Name>' community-applications/ci-runner-farm-nightly.xml
 grep -qF '<Beta>True</Beta>' community-applications/ci-runner-farm-nightly.xml
 grep -qF 'releases/download/nightly/ci-runner-farm-nightly.plg' community-applications/ci-runner-farm-nightly.xml
-grep -qF 'installplg' install-nightly.sh
+grep -qF 'plugin install' install-nightly.sh
 
 echo "nightly-channel: OK — descriptor, package, CA entry, and farm workflow are wired"
