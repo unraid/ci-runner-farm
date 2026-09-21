@@ -21,6 +21,7 @@ provider's credentials and runtime.
 | Bring your own job image | Pull a remote image or edit and build a provider-specific starter image in the plugin. |
 | Named runner pools | Route jobs to purpose-built pools with independent fixed capacity, labels/tags, CPU, memory, and images. |
 | Fleet controls and telemetry | Validate, start, stop, scale, recycle, and inspect runner/job state from the Unraid webGUI. |
+| Job-weight recommendations | Show explainable live and historical weights (light, standard, or heavy), a suggested pool, and capacity/routing warnings. Advisory only; it never changes labels, capacity, or workflow routing. |
 | Optional autoscaling | Keep a warm idle buffer between configured minimum and maximum runner counts. |
 
 ## Architecture
@@ -82,6 +83,22 @@ and global image auto-update in pool mode. `min`, `max`, and `idle` are retained
 in the versioned contract so adding per-pool autoscaling later does not require
 reformatting every pool. Saving pool changes does not interrupt jobs; use Fleet
 **Restart** when ready to apply exact membership, images, and limits.
+
+### Job-weight recommendations
+
+The Fleet tab includes a read-only recommendation panel. It classifies active
+jobs on a 1–5 scale using the job name, elapsed time, CPU, and memory signals;
+maps the result to `light`, `standard`, or `heavy`; and suggests a named pool
+when its labels include `size-small`, `size-standard`, or `size-large` (the
+short aliases `small`, `standard`, `large`, and `heavy` are also accepted).
+Queue pressure produces separate routing or capacity advice. The engine is
+deliberately advisory: it does not resize the farm, relabel runners, or change
+workflow routing. Completed jobs are aggregated for 90 days into a bounded
+history under the plugin configuration directory. The history stores only a
+normalized provider/job-family key, counts, duration totals, min/max, and a
+coarse histogram; it does not persist URLs, refs, repositories, or branch names.
+After three samples, the approximate historical P95 duration can raise a job's
+weight and is shown beside the live recommendation.
 
 ## Install
 
@@ -426,7 +443,7 @@ no candidate to this watchdog.
 ## CLI
 
 ```text
-include/runner-farm.sh {start|boot-autostart|docker-stopping|stop|restart|scale N|status|status-json|logs i|validate|build-image|prune-cache|autoscale-*|lifecycle-*}
+include/runner-farm.sh {start|boot-autostart|docker-stopping|stop|restart|scale N|status|status-json|recommendations-json|logs i|validate|build-image|prune-cache|autoscale-*|lifecycle-*|history-daemon}
 ```
 
 ## Development
@@ -482,6 +499,8 @@ src/usr/local/emhttp/plugins/ci-runner-farm/
   default.gitlab.Dockerfile         GitLab Docker-executor job starter
   default.cfg                       public reference defaults
   include/runner-farm.sh            common lifecycle engine
+  include/runner-recommendations.sh live weight and pool-target heuristics
+  include/runner-history.sh         bounded durable duration aggregates
   include/providers/                provider adapters
   include/exec.php                  CSRF-guarded web endpoint
 ```

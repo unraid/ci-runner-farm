@@ -75,6 +75,7 @@ for required in \
   default.cfg default.Dockerfile default.github.Dockerfile default.gitlab.Dockerfile \
   event/docker_started event/stopping_docker include/runner-farm.sh include/exec.php include/crf-core.php \
   include/boot-log.sh include/encoding.php include/providers/github.sh include/providers/gitlab.sh \
+  include/runner-recommendations.sh include/runner-history.sh \
   nchan/ci_runner_farm README.md
 do
   [ -f "$tmp/extracted/$required" ] || {

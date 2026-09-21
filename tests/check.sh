@@ -37,6 +37,9 @@ bash tests/autoscale-queue.sh
 bash tests/imageupdate-drift.sh
 bash tests/github-liveness.sh
 bash tests/lifecycle-enforcement.sh
+bash tests/runner-recommendations.sh
+bash tests/runner-history.sh
+bash tests/recommendations-engine.sh
 bash tests/pool-runtime.sh
 bash tests/numeric-config.sh
 bash tests/safe-paths.sh
