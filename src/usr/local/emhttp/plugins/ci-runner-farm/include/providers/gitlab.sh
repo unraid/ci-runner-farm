@@ -57,6 +57,9 @@ gitlab_shutdown_timeout() {
 }
 gitlab_docker_stopping_timeout() { gitlab_shutdown_timeout; }
 gitlab_docker_stopping() { provider_stop_container "$1"; }
+# GitLab's manager owns its executor job containers and the existing sidecar
+# lifecycle checks. Keep the provider-neutral lifecycle watchdog a no-op here.
+gitlab_lifecycle_candidate() { return 0; }
 # Build-poison self-heal is GitHub-only for now: the dangling-lease failure has
 # only been observed under the GitHub DinD slots, and GitLab job logs live in
 # GitLab, outside the scan this hook feeds. heal_poisoned_runners also ignores

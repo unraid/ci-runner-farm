@@ -41,6 +41,82 @@ github_runner_state() {
   esac
 }
 
+# GitHub's runner cancellation signal stops the step process, but a process can
+# have already created detached containers in the runner's private DinD daemon.
+# Run cleanup only after the runner reports idle. The inner check repeats that
+# guard before it mutates Docker, then verifies that no containers remain. It
+# removes containers, not images or volumes, so the layer cache stays intact.
+github_job_scope_clean() {
+  local c="$1"
+  timeout 120 docker exec "$c" sh -c '
+    command -v pgrep >/dev/null 2>&1 && pgrep -x Runner.Worker >/dev/null 2>&1 && exit 20
+    command -v docker >/dev/null 2>&1 || exit 0
+    ids="$(docker ps --all --quiet 2>/dev/null)" || exit 21
+    [ -z "$ids" ] && exit 0
+    docker rm --force $ids >/dev/null 2>&1 || exit 22
+    command -v pgrep >/dev/null 2>&1 && pgrep -x Runner.Worker >/dev/null 2>&1 && exit 20
+    [ -z "$(docker ps --all --quiet 2>/dev/null)" ]
+  ' >/dev/null 2>&1
+}
+
+# Check the outer runner cgroup after cleanup. This catches a detached process
+# that did not come from a Docker container. Unknown cgroup data is not a
+# failure because older custom images can omit the pids files.
+github_runner_pid_pressure() {
+  local c="$1" current limit
+  current="$(timeout 10 docker exec "$c" sh -c 'cat /sys/fs/cgroup/pids.current' 2>/dev/null)" || return 2
+  limit="$(docker inspect -f '{{.HostConfig.PidsLimit}}' "$c" 2>/dev/null)" || return 2
+  case "$current" in ''|*[!0-9]*) return 2 ;; esac
+  case "$limit" in ''|*[!0-9]*|0) return 2 ;; esac
+  [ "$((current * 100))" -ge "$((limit * LIFECYCLE_PID_PRESSURE_PERCENT))" ]
+}
+
+# Return one idle slot that needs a full recycle. The marker requires two
+# consecutive observations for the same immutable container ID. This prevents
+# one slow Docker response from stopping a healthy runner and lets a busy job
+# clear the marker before the next check.
+github_lifecycle_candidate() {
+  [ "$DIND" = true ] || return 0
+  local names c snapshot id provider role index gen state marker marked_id count problem pressure_rc
+  names="$(managed_names)" || return 1
+  for c in $names; do
+    [ -n "$c" ] || continue
+    snapshot="$(managed_runner_snapshot "$c")" || return 1
+    IFS='|' read -r id provider role index gen <<< "$snapshot"
+    [ "$provider" = github ] && [ "$role" = runner ] || continue
+    state="$(github_runner_state "$c")"
+    if [ "$state" != idle ]; then
+      rm -f "$RUNDIR/github-lifecycle.$c" 2>/dev/null || true
+      continue
+    fi
+
+    problem=0
+    github_job_scope_clean "$c" || problem=1
+    if [ "$problem" -eq 0 ]; then
+      github_runner_pid_pressure "$c"
+      pressure_rc=$?
+      [ "$pressure_rc" -eq 0 ] && problem=1
+    fi
+    if [ "$problem" -eq 0 ]; then
+      rm -f "$RUNDIR/github-lifecycle.$c" 2>/dev/null || true
+      continue
+    fi
+
+    marker="$RUNDIR/github-lifecycle.$c"; marked_id=""; count=0
+    [ -f "$marker" ] && read -r marked_id count < "$marker"
+    [ "$marked_id" = "$id" ] || count=0
+    case "$count" in ''|*[!0-9]*) count=0 ;; esac
+    count=$((count + 1))
+    printf '%s %s\n' "$id" "$count" > "$marker"
+    if [ "$count" -ge "$LIFECYCLE_CONFIRMATIONS" ]; then
+      printf '%s\n' "$c"
+      return 0
+    fi
+    printf '[ci-runner-farm] lifecycle: %s idle but job-scope cleanup or PID check failed (confirmation %s/%s)\n' \
+      "$c" "$count" "$LIFECYCLE_CONFIRMATIONS" >&2
+  done
+}
+
 # Docker can report a healthy listener after its GitHub control-plane session
 # becomes stale. Keep a short host-side inventory cache so autoscale can detect
 # that mismatch without placing the long-lived PAT in the runner container.

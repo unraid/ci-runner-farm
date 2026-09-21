@@ -412,12 +412,21 @@ clears just the `buildkit/` subdirectory of its Docker root (warm image and
 layer caches survive), and starts the same container again. Events appear in
 the autoscale log.
 
+Every running fleet also has a provider-neutral lifecycle watchdog. For idle
+GitHub DinD slots, it checks the runner's private Docker daemon for leftover job,
+helper, or service containers and removes those containers while preserving
+images, volumes, and layer caches. It also checks outer-runner PID pressure.
+Two consecutive failed cleanup or pressure checks trigger a full slot recycle.
+The watchdog runs independently of autoscaling, so fixed-size fleets receive
+the same protection. GitLab keeps its manager-owned lifecycle path and exposes
+no candidate to this watchdog.
+
 ![Fleet state and controls](docs/images/fleet.png)
 
 ## CLI
 
 ```text
-include/runner-farm.sh {start|boot-autostart|docker-stopping|stop|restart|scale N|status|status-json|logs i|validate|build-image|prune-cache|autoscale-*}
+include/runner-farm.sh {start|boot-autostart|docker-stopping|stop|restart|scale N|status|status-json|logs i|validate|build-image|prune-cache|autoscale-*|lifecycle-*}
 ```
 
 ## Development
