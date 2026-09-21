@@ -10,7 +10,7 @@
 # does not resurrect explicitly-stopped containers when the daemon returns, so
 # the fleet would otherwise stay down until the next reboot. boot-autostart waits
 # for dockerd + the cache pool to be ready, restarts any stopped runners in place,
-# refills the fleet to its floor, and relaunches the autoscale/image-update
+# refills the fleet to its floor, and relaunches the lifecycle/autoscale/image-update
 # daemons. It is idempotent and a no-op until the selected provider's runner
 # token is configured.
 #

@@ -66,6 +66,11 @@ Autoscaling is off by default. When explicitly enabled for GitLab, scale demand
 comes only from live manager metrics and observed job containers; advisory queue
 telemetry for monitored projects is never used to drive capacity.
 
+Every running fleet also starts a lifecycle watchdog. In GitHub DinD mode, it
+cleans leftover private job containers and recycles an idle slot after two
+consecutive cleanup or PID-pressure failures. It runs even when autoscaling is
+off. GitLab manager lifecycle remains provider-owned.
+
 Credentials are stored separately under
 `/boot/config/plugins/ci-runner-farm/` and never in the main configuration:
 `token` (GitHub), `gitlab-runner-token`, optional `gitlab-api-token`, optional

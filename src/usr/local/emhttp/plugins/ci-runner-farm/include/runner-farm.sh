@@ -113,6 +113,12 @@ AUTOSCALE_IDLE_GRACE="5"             # consecutive over-idle checks before scali
 POISON_SCAN_INTERVAL="${CRF_POISON_SCAN_INTERVAL:-300}"           # min seconds between failed-job log scans
 POISON_SCAN_LOOKBACK="${CRF_POISON_SCAN_LOOKBACK:-1800}"          # only consider workflow runs created this recently
 POISON_HEAL_MIN_INTERVAL="${CRF_POISON_HEAL_MIN_INTERVAL:-3600}"  # at most one buildkit reset per slot per hour
+# ---- job lifecycle enforcement --------------------------------------------
+# Internal cadence/bounds, deliberately not web-settable. The watchdog runs
+# independently of autoscaling so a fixed-size fleet receives the same cleanup.
+LIFECYCLE_INTERVAL="30"                  # seconds between idle-slot checks
+LIFECYCLE_CONFIRMATIONS="2"              # consecutive failed checks before recycle
+LIFECYCLE_PID_PRESSURE_PERCENT="75"      # idle-slot PID pressure that needs recycle
 # ---- image auto-update: keep the runner image current, roll the fleet --------
 IMAGE_AUTOUPDATE="false"             # true => a daemon periodically pulls the runner image and,
                                      # when the digest moves, recreates runners on the new image.
@@ -230,6 +236,7 @@ reload_locked_snapshot() {
 # later match an unrelated reused PID that autoscale_stop would then kill.
 AUTOSCALE_PID="${RUNDIR}/autoscale.pid"
 IMAGEUPDATE_PID="${RUNDIR}/imageupdate.pid"
+LIFECYCLE_PID="${RUNDIR}/lifecycle.pid"
 BOOT_AUTOSTART_PID="${RUNDIR}/boot-autostart.pid"
 RECONCILE_PID="${RUNDIR}/reconcile.pid"
 IMAGEUPDATE_PENDING="${RUNDIR}/imageupdate.pending"
@@ -886,6 +893,59 @@ autoscale_stop() {
 autoscale_status() {
   if [ -f "$AUTOSCALE_PID" ] && kill -0 "$(cat "$AUTOSCALE_PID" 2>/dev/null)" 2>/dev/null; then
     echo "running (pid $(cat "$AUTOSCALE_PID"))"
+  else echo "stopped"; fi
+}
+
+# Run the provider lifecycle watchdog independently of autoscaling. A fixed-size
+# farm must receive the same cleanup and recycle protection as an autoscaled one.
+lifecycle_tick() {
+  local candidate snapshot provider role index gen
+  candidate="$(provider_call lifecycle_candidate)" \
+    || { err "lifecycle: provider could not inspect idle job scope"; return 1; }
+  [ -n "$candidate" ] || return 0
+  printf '%s' "$candidate" | grep -qE '^ci-runner-([0-9]+|[a-z][a-z0-9-]{0,23}-[0-9]+)$' \
+    || { err "lifecycle: provider returned an invalid recycle target"; return 1; }
+  snapshot="$(managed_runner_snapshot "$candidate")" \
+    || { err "lifecycle: recycle target is not an owned managed runner"; return 1; }
+  IFS='|' read -r _ provider role index gen <<< "$snapshot"
+  [ "$role" = runner ] || { err "lifecycle: recycle target is not a runner slot"; return 1; }
+  [ "$(runner_state "$candidate")" = idle ] || return 0
+  log "lifecycle: recycling $candidate after repeated idle job-scope cleanup failures"
+  cmd_recycle "$candidate" >/dev/null \
+    || { err "lifecycle: could not recycle $candidate; will retry"; return 1; }
+}
+
+lifecycle_daemon() {
+  # This daemon is nohup'd from cmd_start under fleet.lock. Do not inherit that
+  # lock or the worker would hold it for its entire lifetime.
+  exec 8>&- 7>&- 9>&- 2>/dev/null || true
+  log "lifecycle watchdog up (every ${LIFECYCLE_INTERVAL}s)"
+  while true; do
+    load_cfg
+    reload_secret_files
+    with_fleet_lock try lifecycle_tick
+    sleep "$LIFECYCLE_INTERVAL"
+  done
+}
+
+lifecycle_start() {
+  if [ -f "$LIFECYCLE_PID" ] && kill -0 "$(cat "$LIFECYCLE_PID" 2>/dev/null)" 2>/dev/null \
+     && pgrep -f '[r]unner-farm.sh lifecycle-daemon' >/dev/null 2>&1; then
+    return 0
+  fi
+  lifecycle_stop || return 1
+  nohup "$0" lifecycle-daemon >>"${RUNDIR}/lifecycle.log" 2>&1 &
+  echo $! > "$LIFECYCLE_PID"
+  log "lifecycle watchdog started (pid $(cat "$LIFECYCLE_PID"))"
+}
+
+lifecycle_stop() {
+  stop_worker_group "lifecycle" "$LIFECYCLE_PID" '[r]unner-farm.sh lifecycle-daemon'
+}
+
+lifecycle_status() {
+  if [ -f "$LIFECYCLE_PID" ] && kill -0 "$(cat "$LIFECYCLE_PID" 2>/dev/null)" 2>/dev/null; then
+    echo "running (pid $(cat "$LIFECYCLE_PID"))"
   else echo "stopped"; fi
 }
 
@@ -2139,6 +2199,7 @@ cmd_start() {
   local final_count
   final_count="$(current_count)" || start_failed=1
   log "fleet up: ${final_count:-unknown} runner(s)"
+  if [ "${final_count:-0}" -gt 0 ]; then lifecycle_start || start_failed=1; fi
   if [ "$AUTOSCALE" = "true" ]; then autoscale_start || start_failed=1; fi
   if [ "$IMAGE_AUTOUPDATE" = "true" ]; then imageupdate_start || start_failed=1; fi
   if [ "$start_failed" -ne 0 ]; then
@@ -2289,6 +2350,7 @@ cmd_stop() {
   boot_autostart_stop || return 1
   autoscale_stop || return 1
   imageupdate_stop || return 1
+  lifecycle_stop || return 1
   reconcile_stop || return 1
   quiesce_gitlab_managers_for_stop || return 1
   local names c remaining remaining_managers stop_failed=0
@@ -2672,6 +2734,7 @@ cmd_scale() {
     err "scale requested $target runner(s), but the fleet has $current after one or more lifecycle failures"
     return 1
   fi
+  if [ "$current" -gt 0 ]; then lifecycle_start || return 1; else lifecycle_stop || return 1; fi
 }
 
 cmd_status() {
@@ -3097,6 +3160,7 @@ cmd_force_forget_gitlab() {
   boot_autostart_stop || return 1
   autoscale_stop || return 1
   imageupdate_stop || return 1
+  lifecycle_stop || return 1
   reconcile_stop || return 1
   gitlab_force_forget_local "$name" || return 1
   log "WARNING: locally forgot $name without contacting GitLab; remove any lingering offline manager from the GitLab UI"
@@ -3437,12 +3501,20 @@ cmd_build_status() {
   printf '{"ok":true,"running":%s,"rc":%s,"log":%s}\n' "$running" "$rc" "$(printf '%s' "$disp" | json_string)"
 }
 
-# {ok,log} — live farm activity for the Fleet log idle state: the autoscale daemon log
-# (tmpfs) or boot.log before the daemon ran, minus docker's noisy swap-limit warning.
+# {ok,log} — live farm activity for the Fleet log idle state: daemon logs on
+# tmpfs, or boot.log before a daemon ran, minus Docker's noisy swap-limit warning.
 cmd_farm_log() {
-  local as="$RUNDIR/autoscale.log" bt="$CFGDIR/boot.log" src txt
-  src="$as"; [ -f "$as" ] || src="$bt"
-  txt="$([ -f "$src" ] && tail -n 150 "$src" | grep -v 'swap limit capabilities' | tail -n 60 | redact_log_stream)"
+  local as="$RUNDIR/autoscale.log" lc="$RUNDIR/lifecycle.log" bt="$CFGDIR/boot.log" txt
+  if [ -f "$as" ] || [ -f "$lc" ]; then
+    txt="$(
+      {
+        [ -f "$as" ] && tail -n 150 "$as"
+        [ -f "$lc" ] && tail -n 150 "$lc"
+      } | grep -v 'swap limit capabilities' | tail -n 60 | redact_log_stream
+    )"
+  else
+    txt="$(tail -n 60 "$bt" 2>/dev/null | grep -v 'swap limit capabilities' | redact_log_stream)"
+  fi
   printf '{"ok":true,"log":%s}\n' "$(printf '%s' "$txt" | json_string)"
 }
 
@@ -3544,6 +3616,7 @@ cmd_docker_stopping() {
   boot_autostart_stop || return 1
   autoscale_stop || return 1
   imageupdate_stop || return 1
+  lifecycle_stop || return 1
   reconcile_stop || return 1
 
   # Avoid changing the legacy GitHub-only event path beyond stopping its two
@@ -3572,6 +3645,7 @@ cmd_docker_stopping() {
     boot_autostart_stop || exit 1
     autoscale_stop || exit 1
     imageupdate_stop || exit 1
+    lifecycle_stop || exit 1
     reconcile_stop || exit 1
     cmd_docker_stopping_locked
   ) 8>"$RUNDIR/fleet.lock"
@@ -3620,6 +3694,11 @@ case "${1:-status}" in
   autoscale-start)  autoscale_start ;;
   autoscale-stop)   autoscale_stop ;;
   autoscale-status) autoscale_status ;;
+  lifecycle-daemon) lifecycle_daemon ;;
+  lifecycle-tick)   with_fleet_lock wait lifecycle_tick ;;
+  lifecycle-start)  lifecycle_start ;;
+  lifecycle-stop)   lifecycle_stop ;;
+  lifecycle-status) lifecycle_status ;;
   imageupdate-daemon) imageupdate_daemon ;;
   imageupdate-tick)   with_fleet_lock wait imageupdate_tick ;;
   imageupdate-start)  imageupdate_start ;;
@@ -3628,5 +3707,5 @@ case "${1:-status}" in
   credential-clear-github-token) with_fleet_lock wait cmd_credential_clear_github_token ;;
   credential-clear-gitlab-runner) with_fleet_lock wait cmd_credential_clear_gitlab_runner "${2:-0}" ;;
   credential-clear-registry-token) with_fleet_lock wait cmd_credential_clear_registry_token ;;
-  *) echo "usage: $0 {start|boot-autostart|docker-stopping|stop|restart|scale N|recycle NAME|force-forget-gitlab NAME|status|status-json|logs i|validate|build-image|prune-cache|autoscale-tick|autoscale-start|autoscale-stop|autoscale-status|imageupdate-tick|imageupdate-start|imageupdate-stop|imageupdate-status}"; exit 1 ;;
+  *) echo "usage: $0 {start|boot-autostart|docker-stopping|stop|restart|scale N|recycle NAME|force-forget-gitlab NAME|status|status-json|logs i|validate|build-image|prune-cache|autoscale-tick|autoscale-start|autoscale-stop|autoscale-status|lifecycle-tick|lifecycle-start|lifecycle-stop|lifecycle-status|imageupdate-tick|imageupdate-start|imageupdate-stop|imageupdate-status}"; exit 1 ;;
 esac

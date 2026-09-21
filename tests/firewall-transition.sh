@@ -121,6 +121,7 @@ on_expected_network() { return 0; }
 start_stopped_managed() { return 0; }
 reap_dead_runners() { return 0; }
 start_one() { return 0; }
+lifecycle_start() { return 0; }
 AUTOSCALE=false IMAGE_AUTOUPDATE=false RUNNER_COUNT=1
 cmd_start >/dev/null
 [ "$(sed -n '1p' "$IPTABLES_LOG")" = base ] || fail "Start skipped shared base provisioning"
