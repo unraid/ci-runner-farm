@@ -35,6 +35,7 @@ WORK_TMPFS_SIZE='2g'; DIND=true; SHARE_DOCKER_SOCK=false
 SHARED_IMAGE_CACHE=true; NETWORK_ISOLATION=off; EPHEMERAL=false; RUN_AS_ROOT=false
 host() { printf 'mockhost\n'; }
 runner_host_service_ipv4() { printf '192.0.2.10\n'; }
+github_kvm_gid() { return 1; }
 legacy_confgen="$(printf '%s\0' github-dind-cgroupns-v1 "$GH_SCOPE" "$GH_OWNER" "$GH_REPOS" "$RUNNER_GROUP" "$RUNNER_LABELS" \
   "$EPHEMERAL" "$RUNNER_CPUS" "$RUNNER_MEMORY" "$WORK_TMPFS_SIZE" "$CACHE_MOUNTS" \
   "$DIND" "$SHARE_DOCKER_SOCK" "$RUN_AS_ROOT" "$IMAGE_SOURCE" "$IMAGE" \
@@ -104,6 +105,28 @@ if clear_args_tmpdir 2>/dev/null; then fail "engine removed a temporary argv dir
 ARGS_TMPDIR="$CRF_RUNDIR/../outside-rundir"
 if clear_args_tmpdir 2>/dev/null; then fail "engine accepted a traversal out of RUNDIR"; fi
 [ -d "$outside_rundir" ] || fail "engine deleted a traversal target outside RUNDIR"
+
+# Only a pool configured with the kvm label receives the device and its numeric
+# group. Device changes recycle those slots, not ordinary build slots.
+github_kvm_gid() { printf '108\n'; }
+github_build_args 1 ci-runner-1 || fail "ordinary GitHub runner argv generation failed"
+github_args="$(printf '%s\n' "${ARGS[@]}")"
+if printf '%s\n' "$github_args" | grep -qFx -- '--device'; then fail "ordinary runner received KVM"; fi
+if printf '%s\n' "$github_args" | grep -qF 'KVM_GID='; then fail "ordinary runner received KVM group"; fi
+clear_args_tmpdir || fail "engine could not retire the ordinary runner token dir"
+RUNNER_LABELS='self-hosted,unraid,build,kvm'
+github_build_args 1 ci-runner-1 || fail "GitHub KVM runner argv generation failed"
+github_args="$(printf '%s\n' "${ARGS[@]}")"
+printf '%s\n' "$github_args" | grep -qx 'LABELS=self-hosted,unraid,build,kvm' || fail "KVM label missing"
+printf '%s\n' "$github_args" | grep -A1 -Fx -- '--device' | tail -1 | grep -qx '/dev/kvm' || fail "KVM device missing"
+printf '%s\n' "$github_args" | grep -A1 -Fx -- '--group-add' | tail -1 | grep -qx '108' || fail "KVM group missing"
+printf '%s\n' "$github_args" | grep -qx 'KVM_GID=108' || fail "KVM group was not sent to the runner entrypoint"
+[ "$(crf_confgen)" != "$legacy_confgen" ] || fail "KVM availability did not change the runner fingerprint"
+clear_args_tmpdir || fail "engine could not retire the KVM runner token dir"
+github_kvm_gid() { return 1; }
+RUNNER_LABELS='self-hosted,unraid,build,kvm'
+if github_build_args 1 ci-runner-1 >/dev/null 2>&1; then fail "KVM label was advertised without a device"; fi
+RUNNER_LABELS='self-hosted,unraid,build'
 
 GH_SCOPE=org
 github_build_args 1 ci-runner-1 || fail "GitHub org argv generation failed"
