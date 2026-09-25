@@ -1,8 +1,8 @@
 name: Nightly Plugin
 
-# Mainline nightlies are built on the farm itself. This exercises the exact
-# self-hosted path that the plugin manages while keeping stable release assets
-# owned by release-please.
+# Mainline nightlies use a hosted runner so publication still works when the
+# farm is stopped for maintenance. Stable release assets remain owned by
+# release-please.
 on:
   push:
     branches:
@@ -22,12 +22,7 @@ jobs:
   publish-nightly:
     if: ${{ github.repository == 'unraid/ci-runner-farm' }}
     name: Build and publish nightly plugin
-    # The repository is public, while the Default/Titan groups intentionally
-    # reject public repositories. This dedicated group is limited to this
-    # workflow and one farm runner; do not broaden it to the general farm.
-    runs-on:
-      group: ci-runner-farm-public-build
-      labels: [self-hosted, unraid, build]
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout mainline
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
