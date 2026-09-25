@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.11.0](https://github.com/unraid/ci-runner-farm/compare/v1.10.3...v1.11.0) (2026-09-25)
+
+
+### Features
+
+* enforce runner job lifecycle cleanup ([#122](https://github.com/unraid/ci-runner-farm/issues/122)) ([57f2a7a](https://github.com/unraid/ci-runner-farm/commit/57f2a7ad621d3a52134bb4df44a8f56d57c28873))
+* publish CI Runner Farm nightly plugin ([5de8d4e](https://github.com/unraid/ci-runner-farm/commit/5de8d4e4dc95059bc8a00ebd2fc7e30b90edb5e3))
+* **recommendations:** add historical job-weight tracking ([#121](https://github.com/unraid/ci-runner-farm/issues/121)) ([df73a68](https://github.com/unraid/ci-runner-farm/commit/df73a68f19f7d8cf23bc66e47ff83b8654d13c3d))
+
+
+### Bug Fixes
+
+* **github:** opt in runner pools to KVM ([#126](https://github.com/unraid/ci-runner-farm/issues/126)) ([ca8e184](https://github.com/unraid/ci-runner-farm/commit/ca8e1848320e75bbbca99c9e111867dcb302fbe9))
+* **image-update:** roll when runners are on a superseded image ([#119](https://github.com/unraid/ci-runner-farm/issues/119)) ([535a0b3](https://github.com/unraid/ci-runner-farm/commit/535a0b31dbda21c3941f5ef20ee1b3e64c671a51))
+* target dedicated public nightly runner group ([8ad6e67](https://github.com/unraid/ci-runner-farm/commit/8ad6e67f81500209ac1519ebe20ea331ee7737d8))
+* use Unraid plugin installer command ([5dc1c3c](https://github.com/unraid/ci-runner-farm/commit/5dc1c3c7125ddc1a88c2b5e207b1eb51e445482a))
+
 ## [1.10.3](https://github.com/unraid/ci-runner-farm/compare/v1.10.2...v1.10.3) (2026-09-14)
 
 
