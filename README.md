@@ -70,6 +70,17 @@ that runner in GitLab with tags matching the pool's labels, then save the token
 with the pool ID in Settings. This keeps GitLab's server-owned tag routing
 authoritative instead of pretending local `config.toml` can change it.
 
+KVM is opt in per GitHub runner pool. Add `kvm` to a pool's labels only when its
+jobs need hardware virtualization. The farm then requires group-writable
+`/dev/kvm` on the host and passes the device and numeric group to that pool's
+containers. A missing device prevents those runners from starting; ordinary
+build pools do not receive it. VM workflows require `kvm` in `runs-on`.
+A change in device availability or group triggers recycling for the KVM pool.
+The built-in runner image adds that group to the non-root `runner` user before
+registration. Custom images must honor `KVM_GID` the same way when they use
+`RUN_AS_ROOT=false`; Docker's `--group-add` alone does not survive the base
+entrypoint's `gosu runner` switch.
+
 The V3 record format is:
 
 ```text

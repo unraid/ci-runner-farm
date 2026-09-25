@@ -39,6 +39,12 @@ RUN printf '%s\n' \
 RUN printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -Eeuo pipefail' \
+  'if [ -n "${KVM_GID:-}" ]; then' \
+  '  [ -c /dev/kvm ] && [ "$(stat -c %g /dev/kvm)" = "$KVM_GID" ] || exit 1' \
+  '  group_name="$(getent group "$KVM_GID" | cut -d: -f1 || true)"' \
+  '  if [ -z "$group_name" ]; then group_name=host-kvm; groupadd -g "$KVM_GID" "$group_name"; fi' \
+  '  usermod -aG "$group_name" runner' \
+  'fi' \
   'if [ "${START_DOCKER_SERVICE:-false}" = true ]; then /usr/local/bin/unraid-cgroup-bootstrap.sh; fi' \
   'exec /entrypoint.sh "$@"' \
   > /usr/local/bin/unraid-runner-entrypoint.sh \

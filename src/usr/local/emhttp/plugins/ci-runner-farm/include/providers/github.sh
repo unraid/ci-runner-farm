@@ -15,12 +15,27 @@ github_stop_cleanup() { return 0; }
 github_docker_stopping_timeout() { echo 0; }
 github_docker_stopping() { return 0; }
 
+github_kvm_gid() {
+  local mode
+  [ -c /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ] || return 1
+  mode="$(stat -c '%a' /dev/kvm)" || return 1
+  [[ "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  (( (8#$mode & 0060) == 0060 )) || return 1
+  stat -c '%g' /dev/kvm
+}
+
 github_confgen() {
   # Include the DinD runtime contract in the fingerprint. Changing Docker's
   # cgroup namespace for existing slots must drain and recreate them; otherwise
   # an old container can remain online with the broken hierarchy.
-  local runtime_salt=''
+  local runtime_salt='' kvm_gid
   [ "$DIND" = true ] && runtime_salt='github-dind-cgroupns-v1'
+  case ",$RUNNER_LABELS," in
+    *,kvm,*)
+      kvm_gid="$(github_kvm_gid 2>/dev/null || true)"
+      runtime_salt="${runtime_salt}-kvm-${kvm_gid:-missing}"
+      ;;
+  esac
   printf '%s\0' "$runtime_salt" "$GH_SCOPE" "$GH_OWNER" "$GH_REPOS" "$RUNNER_GROUP" "$RUNNER_LABELS" \
     "$EPHEMERAL" "$RUNNER_CPUS" "$RUNNER_MEMORY" "$WORK_TMPFS_SIZE" "$CACHE_MOUNTS" \
     "$DIND" "$SHARE_DOCKER_SOCK" "$RUN_AS_ROOT" "$IMAGE_SOURCE" "$IMAGE" \
@@ -454,10 +469,16 @@ github_registry_credentials() {
 
 github_build_args() {
   local idx="$1"
-  local name="${2:-${NAME_PREFIX}-${idx}}" role="${CRF_CONTAINER_ROLE:-runner}" host_service_ip image
+  local name="${2:-${NAME_PREFIX}-${idx}}" role="${CRF_CONTAINER_ROLE:-runner}" host_service_ip image kvm_gid=''
   image="$(effective_image)" || return 1
   host_service_ip="$(runner_host_service_ipv4)" \
     || { err "could not resolve this farm host's local service address"; return 1; }
+  case ",$RUNNER_LABELS," in
+    *,kvm,*)
+      kvm_gid="$(github_kvm_gid 2>/dev/null)" \
+        || { err "runner label kvm requires group-writable /dev/kvm"; return 1; }
+      ;;
+  esac
   ARGS_TMPDIR=""
   ARGS=(
     -d --restart=no
@@ -480,6 +501,7 @@ github_build_args() {
     -e RUNNER_WORKDIR="/_work"
     -e npm_config_cache="/home/runner/.npm"
   )
+  [ -z "$kvm_gid" ] || ARGS+=( --device /dev/kvm --group-add "$kvm_gid" -e "KVM_GID=$kvm_gid" )
   [ "$EPHEMERAL" = "true" ] && ARGS+=( -e EPHEMERAL="true" )
   local m hostdir
   for m in $CACHE_MOUNTS; do
