@@ -39,8 +39,7 @@ PY
   grep -q "<!ENTITY packageMD5[[:space:]]*\"$plg_md5\">" ci-runner-farm-nightly.plg
 )
 
-grep -qF 'group: ci-runner-farm-public-build' .github/workflows/nightly.yml
-grep -qF 'labels: [self-hosted, unraid, build]' .github/workflows/nightly.yml
+grep -qF 'runs-on: ubuntu-24.04' .github/workflows/nightly.yml
 grep -qF 'CHANNEL: nightly' .github/workflows/nightly.yml
 grep -qF 'refs/tags/nightly' .github/workflows/nightly.yml
 grep -qF 'ci-runner-farm-nightly.plg' .github/workflows/nightly.yml
