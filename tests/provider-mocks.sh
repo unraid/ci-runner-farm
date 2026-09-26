@@ -38,6 +38,7 @@ runner_host_service_ipv4() { printf '192.0.2.10\n'; }
 github_kvm_gid() { return 1; }
 legacy_confgen="$(printf '%s\0' github-dind-cgroupns-v1 "$GH_SCOPE" "$GH_OWNER" "$GH_REPOS" "$RUNNER_GROUP" "$RUNNER_LABELS" \
   "$EPHEMERAL" "$RUNNER_CPUS" "$RUNNER_MEMORY" "$WORK_TMPFS_SIZE" "$CACHE_MOUNTS" \
+  "$OS_ARTIFACT_SHARE_HOST_PATH" \
   "$DIND" "$SHARE_DOCKER_SOCK" "$RUN_AS_ROOT" "$IMAGE_SOURCE" "$IMAGE" \
   "$REGISTRY_SERVER" "$REGISTRY_USERNAME" "$SHARED_IMAGE_CACHE" "$MIRROR_PORT" \
   "$NETWORK_ISOLATION" "$RUNNER_NETWORK" "$CACHE_ROOT" | sha256sum | cut -c1-12)"
@@ -92,6 +93,33 @@ printf '%s\n' "$github_args" | grep -qx -- '--privileged' || fail "GitHub DinD p
 printf '%s\n' "$github_args" | grep -qx -- '--cgroupns=private' || fail "GitHub DinD cgroup namespace flag missing"
 printf '%s\n' "$github_args" | grep -qx 'START_DOCKER_SERVICE=true' || fail "GitHub DinD environment missing"
 printf '%s\n' "$github_args" | grep -qx '/_work:rw,exec,size=2g' || fail "GitHub workspace tmpfs changed"
+
+# The user-share artifact mount is limited to the private OS runner group and
+# remains separate from CACHE_ROOT, which backs Docker-in-Docker storage.
+clear_args_tmpdir || fail "engine could not retire the first GitHub registration-token dir"
+GH_SCOPE=org; GH_OWNER=unraid; RUNNER_GROUP=os-build; CACHE_MOUNTS=''
+OS_ARTIFACT_SHARE_HOST_PATH=/mnt/user/ci-runner/os-artifact-share
+crf_os_artifact_share_config_problem || fail "valid OS user-share policy was rejected"
+crf_os_artifact_share_path() { printf '%s' "$OS_ARTIFACT_SHARE_HOST_PATH"; }
+NO_REGISTER=1
+github_build_args 1 ci-runner-os-share || fail "OS user-share runner argv generation failed"
+unset NO_REGISTER
+github_args="$(printf '%s\n' "${ARGS[@]}")"
+printf '%s\n' "$github_args" | grep -qx -- '--mount' || fail "OS user-share mount flag missing"
+printf '%s\n' "$github_args" | grep -qx 'type=bind,src=/mnt/user/ci-runner/os-artifact-share,dst=/mnt/os-artifact-share' \
+  || fail "OS user-share mount source or destination changed"
+RUNNER_GROUP=qa-vm
+if crf_os_artifact_share_config_problem >/dev/null 2>&1; then fail "OS user-share accepted outside the os-build group"; fi
+RUNNER_GROUP=os-build; GH_SCOPE=repo
+if crf_os_artifact_share_config_problem >/dev/null 2>&1; then fail "OS user-share accepted for repository-scoped runners"; fi
+GH_SCOPE=org; OS_ARTIFACT_SHARE_HOST_PATH=/mnt/cache/ci-runner/os-artifact-share
+if crf_os_artifact_share_config_problem >/dev/null 2>&1; then fail "pool path accepted as a user-share path"; fi
+OS_ARTIFACT_SHARE_HOST_PATH=/mnt/user/ci-runner/os-artifact-share
+CACHE_MOUNTS='os-artifact-share:/mnt/os-artifact-share'
+if crf_os_artifact_share_config_problem >/dev/null 2>&1; then fail "duplicate artifact-share destination was accepted"; fi
+unset -f crf_os_artifact_share_path
+OS_ARTIFACT_SHARE_HOST_PATH=''; CACHE_MOUNTS=''
+GH_SCOPE=org; GH_OWNER='example-owner'; RUNNER_GROUP='secure-group'
 
 # The engine owns that staged directory's lifetime, and its removal must refuse
 # any target that is empty or resolves outside RUNDIR.

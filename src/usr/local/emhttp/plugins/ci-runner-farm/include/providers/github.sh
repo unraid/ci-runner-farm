@@ -5,7 +5,11 @@
 github_token_ready() { [ -n "$ACCESS_TOKEN" ]; }
 github_token_name()  { echo "GitHub token"; }
 github_builtin_image() { echo "$BUILTIN_IMAGE"; }
-github_validate_settings() { return 0; }
+github_validate_settings() {
+  crf_os_artifact_share_config_problem || return 1
+  [ -z "$OS_ARTIFACT_SHARE_HOST_PATH" ] && return 0
+  crf_os_artifact_share_path >/dev/null
+}
 github_strict_endpoint() { return 0; }
 github_imageupdate_pull() { return 1; }
 github_remote_image_host_pull_required() { return 0; }
@@ -38,6 +42,7 @@ github_confgen() {
   esac
   printf '%s\0' "$runtime_salt" "$GH_SCOPE" "$GH_OWNER" "$GH_REPOS" "$RUNNER_GROUP" "$RUNNER_LABELS" \
     "$EPHEMERAL" "$RUNNER_CPUS" "$RUNNER_MEMORY" "$WORK_TMPFS_SIZE" "$CACHE_MOUNTS" \
+    "$OS_ARTIFACT_SHARE_HOST_PATH" \
     "$DIND" "$SHARE_DOCKER_SOCK" "$RUN_AS_ROOT" "$IMAGE_SOURCE" "$IMAGE" \
     "$REGISTRY_SERVER" "$REGISTRY_USERNAME" "$SHARED_IMAGE_CACHE" "$MIRROR_PORT" \
     "$NETWORK_ISOLATION" "$RUNNER_NETWORK" "$CACHE_ROOT" \
@@ -469,7 +474,7 @@ github_registry_credentials() {
 
 github_build_args() {
   local idx="$1"
-  local name="${2:-${NAME_PREFIX}-${idx}}" role="${CRF_CONTAINER_ROLE:-runner}" host_service_ip image kvm_gid=''
+  local name="${2:-${NAME_PREFIX}-${idx}}" role="${CRF_CONTAINER_ROLE:-runner}" host_service_ip image kvm_gid='' artifact_share_host=''
   image="$(effective_image)" || return 1
   host_service_ip="$(runner_host_service_ipv4)" \
     || { err "could not resolve this farm host's local service address"; return 1; }
@@ -509,6 +514,10 @@ github_build_args() {
     hostdir="$(crf_safe_mount_subdir "${m%%:*}")" || { err "skipping unsafe cache mount '${m%%:*}'"; continue; }
     ARGS+=( -v "$hostdir:${m#*:}" )
   done
+  if [ -n "$OS_ARTIFACT_SHARE_HOST_PATH" ]; then
+    artifact_share_host="$(crf_os_artifact_share_path)" || return 1
+    ARGS+=( --mount "type=bind,src=${artifact_share_host},dst=/mnt/os-artifact-share" )
+  fi
   [ -n "$RUNNER_CPUS" ]   && ARGS+=( --cpus="$RUNNER_CPUS" )
   [ -n "$RUNNER_MEMORY" ] && ARGS+=( --memory="$RUNNER_MEMORY" )
   [ "$NETWORK_ISOLATION" != "off" ] && ARGS+=( --network "$RUNNER_NETWORK" )
@@ -662,7 +671,7 @@ github_validate() {
   check_cache_root || return 1
   ensure_dirs || return 1
   registry_login || return 1
-  local suffix name snapshot validation_id="" root
+  local suffix name snapshot validation_id="" root share_access_ok=1 share_user='0:0'
   suffix="$(od -An -N6 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
   printf '%s' "$suffix" | grep -qE '^[0-9a-f]{12}$' \
     || { err "validate: could not create a random validation-container name"; return 1; }
@@ -694,6 +703,13 @@ github_validate() {
   docker inspect -f 'cpus={{.HostConfig.NanoCpus}} mem={{.HostConfig.Memory}} pids={{.HostConfig.PidsLimit}}' "$validation_id"
   echo "--- mounts ---"
   docker inspect -f '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}' "$validation_id"
+  if [ -n "$OS_ARTIFACT_SHARE_HOST_PATH" ]; then
+    [ "$RUN_AS_ROOT" = true ] || share_user="$RUNNER_UID:$RUNNER_GID"
+    if ! docker exec --user "$share_user" "$validation_id" sh -c \
+      'probe="/mnt/os-artifact-share/.ci-runner-farm-write-test-$$"; umask 077; : > "$probe" && rm -f "$probe"'; then
+      share_access_ok=0
+    fi
+  fi
   echo "--- tmpfs ---"
   docker inspect -f '{{json .HostConfig.Tmpfs}}' "$validation_id"
   echo "--- docker.sock reachable inside container ---"
@@ -702,5 +718,9 @@ github_validate() {
     || { err "validate: could not remove owned validation container $name"; return 1; }
   root="$(crf_safe_cache_root)" || { err "validate: refusing cleanup under unsafe CACHE_ROOT"; return 1; }
   rm -rf "$root/docker/$name" 2>/dev/null || true
+  if [ "$share_access_ok" -ne 1 ]; then
+    err "validate: OS artifact user-share mount is not writable by runner UID:GID $share_user"
+    return 1
+  fi
   log "validate: OK (container removed). Provisioning mechanics verified on this host."
 }

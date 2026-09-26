@@ -376,6 +376,19 @@ directories yourself. The plugin does not currently emit GitLab's distributed
 S3 cache configuration, so an external MinIO/S3 backend is not yet a supported
 configuration key.
 
+## Same-host OS migration QA artifacts
+
+Set `OS_ARTIFACT_SHARE_HOST_PATH` to a dedicated Unraid user-share directory,
+such as `/mnt/user/ci-runner/os-artifact-share`. The path must already exist.
+The farm mounts it read-write at `/mnt/os-artifact-share` only when GitHub
+organization runners use owner `unraid` and runner group `os-build`. Restrict
+that GitHub group to `unraid/os`; jobs in the group can write to this share.
+Keep `CACHE_ROOT` on a pool so Docker-in-Docker storage does not use FUSE.
+
+Configure the QA VM provider with the same host path. It mounts the directory
+read-only into QA runners. Do not also add `/mnt/os-artifact-share` to
+`CACHE_MOUNTS`.
+
 ## Docker and security
 
 Self-hosted runners execute repository-controlled code on your hardware. Use

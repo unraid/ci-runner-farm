@@ -59,6 +59,7 @@ RUNNER_CPUS=""                        # per-runner CPU cap; empty = uncapped (CF
 RUNNER_MEMORY="16g"                   # per-runner memory cap (kept: memory isn't time-shared like CPU)
 CACHE_ROOT="/mnt/cache/github-runner" # must be a dedicated SUBDIR under a pool/disk, never a bare mount root (see crf_safe_cache_root)
 WORK_TMPFS_SIZE="8g"                  # empty => bind workdir to pool instead of RAM
+OS_ARTIFACT_SHARE_HOST_PATH=""         # optional dedicated Unraid user-share path for unraid/os QA artifacts
 IMAGE_SOURCE="builtin"                # builtin = run the locally-built image; remote = pull IMAGE from a registry
 BUILTIN_IMAGE="ci-runner-farm-runner:latest"  # legacy/GitHub tag produced by build-image
 GITLAB_BUILTIN_IMAGE="ci-runner-farm-gitlab-job:latest" # GitLab default job-image tag
@@ -146,7 +147,7 @@ HISTORY_FILE="${CRF_HISTORY_FILE:-${CFGDIR}/recommendations.history}"
 CFG_KEYS="CI_PROVIDER GH_SCOPE GH_OWNER GH_REPOS RUNNER_GROUP GITLAB_URL GITLAB_RUNNER_IMAGE GITLAB_PROJECTS GITLAB_SHUTDOWN_TIMEOUT \
 GITLAB_ALLOWED_IMAGES GITLAB_ALLOWED_SERVICES GITLAB_PULL_POLICY GITLAB_SHM_SIZE \
 RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS \
-RUNNER_CPUS RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE IMAGE_SOURCE IMAGE EPHEMERAL \
+RUNNER_CPUS RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE OS_ARTIFACT_SHARE_HOST_PATH IMAGE_SOURCE IMAGE EPHEMERAL \
 RUN_AS_ROOT REGISTRY_SERVER REGISTRY_USERNAME CACHE_MOUNTS SHARE_DOCKER_SOCK DIND \
 SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
 AUTOSCALE_MAX AUTOSCALE_MIN_IDLE AUTOSCALE_STEP AUTOSCALE_INTERVAL \
@@ -2956,6 +2957,45 @@ crf_safe_mount_subdir() {
   root="$(realpath -m -- "$CACHE_ROOT" 2>/dev/null)" || return 1
   real="$(realpath -m -- "$CACHE_ROOT/$1" 2>/dev/null)" || return 1
   case "$real" in "$root"/*) printf '%s' "$real"; return 0 ;; *) return 1 ;; esac
+}
+
+# Validate the optional OS migration artifact share independently from CACHE_ROOT.
+# DinD storage must stay on a pool; this one narrow bind mount may use Unraid's
+# FUSE-backed user share because it contains files only, not Docker layers.
+crf_os_artifact_share_config_problem() {
+  [ -z "$OS_ARTIFACT_SHARE_HOST_PATH" ] && return 0
+  [[ "$OS_ARTIFACT_SHARE_HOST_PATH" =~ ^/mnt/user/[A-Za-z0-9._-]+/os-artifact-share$ ]] \
+    || { echo "OS_ARTIFACT_SHARE_HOST_PATH must be /mnt/user/<share>/os-artifact-share"; return 1; }
+  if [ "$CI_PROVIDER" != github ] || [ "$GH_SCOPE" != org ] || [ "$GH_OWNER" != unraid ] || [ "$RUNNER_GROUP" != os-build ]; then
+    echo "OS artifact share requires GitHub org runners in the unraid os-build group"; return 1
+  fi
+  local mount
+  for mount in $CACHE_MOUNTS; do
+    if [ "${mount#*:}" = /mnt/os-artifact-share ]; then
+      echo "Remove /mnt/os-artifact-share from CACHE_MOUNTS when OS_ARTIFACT_SHARE_HOST_PATH is set"
+      return 1
+    fi
+  done
+  return 0
+}
+
+crf_os_artifact_share_path() {
+  [ -z "$OS_ARTIFACT_SHARE_HOST_PATH" ] && return 0
+  crf_os_artifact_share_config_problem || return 1
+  local filesystem resolved
+  filesystem="$(findmnt --noheadings --output FSTYPE --target /mnt/user 2>/dev/null)" \
+    || { err "OS artifact share requires mounted /mnt/user"; return 1; }
+  case "$filesystem" in
+    fuse*) ;;
+    *) err "OS artifact share path is not on Unraid's /mnt/user filesystem"; return 1 ;;
+  esac
+  [ -d "$OS_ARTIFACT_SHARE_HOST_PATH" ] && [ ! -L "$OS_ARTIFACT_SHARE_HOST_PATH" ] \
+    || { err "OS artifact share directory must already exist and must not be a symlink"; return 1; }
+  resolved="$(realpath -e -- "$OS_ARTIFACT_SHARE_HOST_PATH" 2>/dev/null)" \
+    || { err "OS artifact share directory is not canonical"; return 1; }
+  [ "$resolved" = "$OS_ARTIFACT_SHARE_HOST_PATH" ] \
+    || { err "OS artifact share directory resolves outside its configured user-share path"; return 1; }
+  printf '%s' "$resolved"
 }
 
 cmd_cache_usage_refresh() {
