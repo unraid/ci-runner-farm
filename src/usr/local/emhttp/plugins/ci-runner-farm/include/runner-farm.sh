@@ -59,6 +59,7 @@ RUNNER_CPUS=""                        # per-runner CPU cap; empty = uncapped (CF
 RUNNER_MEMORY="16g"                   # per-runner memory cap (kept: memory isn't time-shared like CPU)
 CACHE_ROOT="/mnt/cache/github-runner" # must be a dedicated SUBDIR under a pool/disk, never a bare mount root (see crf_safe_cache_root)
 WORK_TMPFS_SIZE="8g"                  # empty => bind workdir to pool instead of RAM
+USER_SHARE_MOUNTS=""                  # optional user-share bind mounts exposed to jobs: host-path:container-path:ro|rw
 IMAGE_SOURCE="builtin"                # builtin = run the locally-built image; remote = pull IMAGE from a registry
 BUILTIN_IMAGE="ci-runner-farm-runner:latest"  # legacy/GitHub tag produced by build-image
 GITLAB_BUILTIN_IMAGE="ci-runner-farm-gitlab-job:latest" # GitLab default job-image tag
@@ -146,7 +147,7 @@ HISTORY_FILE="${CRF_HISTORY_FILE:-${CFGDIR}/recommendations.history}"
 CFG_KEYS="CI_PROVIDER GH_SCOPE GH_OWNER GH_REPOS RUNNER_GROUP GITLAB_URL GITLAB_RUNNER_IMAGE GITLAB_PROJECTS GITLAB_SHUTDOWN_TIMEOUT \
 GITLAB_ALLOWED_IMAGES GITLAB_ALLOWED_SERVICES GITLAB_PULL_POLICY GITLAB_SHM_SIZE \
 RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS \
-RUNNER_CPUS RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE IMAGE_SOURCE IMAGE EPHEMERAL \
+RUNNER_CPUS RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE USER_SHARE_MOUNTS IMAGE_SOURCE IMAGE EPHEMERAL \
 RUN_AS_ROOT REGISTRY_SERVER REGISTRY_USERNAME CACHE_MOUNTS SHARE_DOCKER_SOCK DIND \
 SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
 AUTOSCALE_MAX AUTOSCALE_MIN_IDLE AUTOSCALE_STEP AUTOSCALE_INTERVAL \
@@ -2956,6 +2957,85 @@ crf_safe_mount_subdir() {
   root="$(realpath -m -- "$CACHE_ROOT" 2>/dev/null)" || return 1
   real="$(realpath -m -- "$CACHE_ROOT/$1" 2>/dev/null)" || return 1
   case "$real" in "$root"/*) printf '%s' "$real"; return 0 ;; *) return 1 ;; esac
+}
+
+# Validate optional user-share bind mounts independently from CACHE_ROOT. Cache,
+# workspace, and Docker-in-Docker data must stay on a pool; these mounts expose
+# files only to jobs explicitly routed to this farm.
+crf_mount_destinations_overlap() {
+  local left="$1" right="$2"
+  case "$left" in "$right"|"$right"/*) return 0 ;; esac
+  case "$right" in "$left"|"$left"/*) return 0 ;; esac
+  return 1
+}
+
+crf_user_share_mount_config_problem() {
+  local spec source rest dest mode cache_spec cache_dest seen_dest
+  local -a share_specs=() cache_specs=() seen_destinations=()
+  case "$USER_SHARE_MOUNTS" in *$'\n'*|*$'\r'*|*$'\t'*)
+    echo "USER_SHARE_MOUNTS must be a space-separated, single-line list"; return 1 ;;
+  esac
+  read -r -a share_specs <<< "$USER_SHARE_MOUNTS"
+  read -r -a cache_specs <<< "$CACHE_MOUNTS"
+  for spec in "${share_specs[@]}"; do
+    case "$spec" in *:*:*) ;; *) echo "USER_SHARE_MOUNTS entry '$spec' must use host-path:container-path:ro|rw"; return 1 ;; esac
+    source="${spec%%:*}"; rest="${spec#*:}"; dest="${rest%:*}"; mode="${rest##*:}"
+    case "$rest" in *:*:*) echo "USER_SHARE_MOUNTS entry '$spec' contains an unsupported extra colon"; return 1 ;; esac
+    printf '%s' "$source" | grep -qE '^/mnt/user/[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)+$' \
+      || { echo "USER_SHARE_MOUNTS source must be /mnt/user/<share>/<subdirectory>"; return 1; }
+    printf '%s' "$dest" | grep -qE '^/mnt/[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*$' \
+      || { echo "USER_SHARE_MOUNTS destination must be a safe path under /mnt in the job container"; return 1; }
+    case "$source" in *//*|*/../*|*/./*|*/..|*/.)
+      echo "USER_SHARE_MOUNTS source must be lexically canonical"; return 1 ;;
+    esac
+    case "$dest" in *//*|*/../*|*/./*|*/..|*/.)
+      echo "USER_SHARE_MOUNTS destination must be lexically canonical"; return 1 ;;
+    esac
+    case "$mode" in ro|rw) ;; *) echo "USER_SHARE_MOUNTS mode must be ro or rw"; return 1 ;; esac
+    for seen_dest in "${seen_destinations[@]}"; do
+      if crf_mount_destinations_overlap "$dest" "$seen_dest"; then
+        echo "USER_SHARE_MOUNTS destinations '$dest' and '$seen_dest' overlap"; return 1
+      fi
+    done
+    for cache_spec in "${cache_specs[@]}"; do
+      cache_dest="${cache_spec#*:}"
+      if crf_mount_destinations_overlap "$dest" "$cache_dest"; then
+        echo "USER_SHARE_MOUNTS destination '$dest' overlaps CACHE_MOUNTS destination '$cache_dest'"; return 1
+      fi
+    done
+    seen_destinations+=( "$dest" )
+  done
+  return 0
+}
+
+crf_user_share_mount_source() {
+  local source="$1" filesystem resolved
+  printf '%s' "$source" | grep -qE '^/mnt/user/[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)+$' \
+    || { err "user-share mount source must be /mnt/user/<share>/<subdirectory>"; return 1; }
+  filesystem="$(findmnt --noheadings --output FSTYPE --target /mnt/user 2>/dev/null)" \
+    || { err "user-share mounts require mounted /mnt/user"; return 1; }
+  case "$filesystem" in
+    fuse*) ;;
+    *) err "user-share mount source is not on the /mnt/user filesystem"; return 1 ;;
+  esac
+  [ -d "$source" ] && [ ! -L "$source" ] \
+    || { err "user-share mount source must be an existing directory, not a symlink"; return 1; }
+  resolved="$(realpath -e -- "$source" 2>/dev/null)" \
+    || { err "user-share mount source cannot be resolved"; return 1; }
+  [ "$resolved" = "$source" ] \
+    || { err "user-share mount source must resolve to its configured path"; return 1; }
+  printf '%s' "$resolved"
+}
+
+crf_validate_user_share_mounts() {
+  local spec source
+  local -a share_specs=()
+  crf_user_share_mount_config_problem || return 1
+  read -r -a share_specs <<< "$USER_SHARE_MOUNTS"
+  for spec in "${share_specs[@]}"; do
+    source="${spec%%:*}"
+    crf_user_share_mount_source "$source" >/dev/null || return 1
+  done
 }
 
 cmd_cache_usage_refresh() {

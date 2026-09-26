@@ -74,7 +74,7 @@ gitlab_confgen() {
   # changes also retire sidecars created by an older plugin build.
   printf '%s\0' gitlab-dind-cgroupns-v1 "$GITLAB_URL" "$GITLAB_RUNNER_IMAGE" "$GITLAB_DIND_IMAGE" \
     "$GITLAB_RUNNER_TOKEN" "$GITLAB_CA_FINGERPRINT" "$REGISTRY_TOKEN" \
-    "$RUNNER_CPUS" "$RUNNER_MEMORY" "$CACHE_MOUNTS" "$GITLAB_SHUTDOWN_TIMEOUT" \
+    "$RUNNER_CPUS" "$RUNNER_MEMORY" "$CACHE_MOUNTS" "$USER_SHARE_MOUNTS" "$GITLAB_SHUTDOWN_TIMEOUT" \
     "$GITLAB_ALLOWED_IMAGES" "$GITLAB_ALLOWED_SERVICES" "$GITLAB_PULL_POLICY" "$GITLAB_SHM_SIZE" \
     "$DIND" "$SHARE_DOCKER_SOCK" "$IMAGE_SOURCE" "$IMAGE" \
     "$REGISTRY_SERVER" "$REGISTRY_USERNAME" "$SHARED_IMAGE_CACHE" "$MIRROR_PORT" \
@@ -150,6 +150,7 @@ gitlab_effective_pull_policy() {
 }
 
 gitlab_validate_settings() {
+  crf_validate_user_share_mounts || return 1
   gitlab_validate_url || return 1
   printf '%s' "$GITLAB_RUNNER_IMAGE" | grep -qE '^[A-Za-z0-9][A-Za-z0-9_./:@-]*$' \
     || { err "GITLAB_RUNNER_IMAGE is not a safe Docker image reference"; return 1; }
@@ -719,6 +720,7 @@ gitlab_registry_authority() {
 
 gitlab_write_config() {
   local idx="$1" name="$2" dir tmp url token job_image socket_source executor_host pull_policy slot_ca
+  crf_user_share_mount_config_problem || return 1
   dir="$(gitlab_slot_config_dir "$name")"; tmp="$dir/config.toml.tmp"
   slot_ca="$dir/certs/gitlab-ca.crt"
   url="$(gitlab_url)"; token="$GITLAB_RUNNER_TOKEN"; job_image="$(effective_image)"
@@ -734,7 +736,9 @@ gitlab_write_config() {
   chmod 700 "$dir" "$dir/certs" 2>/dev/null || true
   gitlab_ensure_system_id "$dir" || return 1
   gitlab_snapshot_ca "$dir" || return 1
-  local vols=() m hostdir dest i
+  local vols=() m hostdir dest i share_spec share_source share_rest share_mode
+  local -a share_specs=()
+  read -r -a share_specs <<< "$USER_SHARE_MOUNTS"
   mkdir -p "$CACHE_ROOT/gitlab-cache/$name" || return 1
   vols+=( "$socket_source:/var/run/docker.sock" "$CACHE_ROOT/gitlab-cache/$name:/cache" )
   # The helper image automatically installs a CA mounted at this documented
@@ -748,6 +752,12 @@ gitlab_write_config() {
       || { err "refusing unsafe GitLab cache mount '${m%%:*}'"; return 1; }
     dest="$(gitlab_job_cache_destination "${m#*:}")"
     vols+=( "$hostdir:$dest" )
+  done
+  for share_spec in "${share_specs[@]}"; do
+    share_source="${share_spec%%:*}"; share_rest="${share_spec#*:}"
+    dest="${share_rest%:*}"; share_mode="${share_rest##*:}"
+    hostdir="$(crf_user_share_mount_source "$share_source")" || return 1
+    vols+=( "$hostdir:$dest:$share_mode" )
   done
   ( umask 077
     {
@@ -850,7 +860,10 @@ gitlab_build_manager_args() {
 gitlab_build_args() { gitlab_build_manager_args "$@"; }
 
 gitlab_start_sidecar() {
-  local idx="$1" name="$2" side sockdir sock data m hostdir registry_authority slot_ca
+  local idx="$1" name="$2" side sockdir sock data m hostdir registry_authority slot_ca share_spec share_rest share_mode
+  local -a share_specs=()
+  crf_user_share_mount_config_problem || return 1
+  read -r -a share_specs <<< "$USER_SHARE_MOUNTS"
   side="$(gitlab_sidecar_name "$name")"
   if [ "$DIND" != "true" ]; then
     if docker inspect "$side" >/dev/null 2>&1; then
@@ -920,6 +933,15 @@ gitlab_start_sidecar() {
     [ -n "$m" ] || continue
     hostdir="$(crf_safe_mount_subdir "${m%%:*}")" || continue
     sargs+=( -v "$hostdir:$hostdir" )
+  done
+  for share_spec in "${share_specs[@]}"; do
+    share_rest="${share_spec#*:}"; share_mode="${share_rest##*:}"
+    hostdir="$(crf_user_share_mount_source "${share_spec%%:*}")" || return 1
+    if [ "$share_mode" = ro ]; then
+      sargs+=( --mount "type=bind,src=$hostdir,dst=$hostdir,readonly" )
+    else
+      sargs+=( --mount "type=bind,src=$hostdir,dst=$hostdir" )
+    fi
   done
   [ -n "$RUNNER_CPUS" ]   && sargs+=( --cpus="$RUNNER_CPUS" )
   [ -n "$RUNNER_MEMORY" ] && sargs+=( --memory="$RUNNER_MEMORY" )
@@ -1681,6 +1703,9 @@ gitlab_validate() {
     provision_preflight || return 1
   fi
   local suffix name idx=99 dir sock image side manager_ca=() job_args=() slot_ca validation_cfgroot
+  local share_spec share_rest share_source share_dest share_mode share_check_script share_check_args=()
+  local -a share_specs=()
+  read -r -a share_specs <<< "$USER_SHARE_MOUNTS"
   suffix="$(od -An -N6 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
   printf '%s' "$suffix" | grep -qE '^[a-f0-9]{12}$' \
     || { err "validate: could not allocate a unique validation name"; return 1; }
@@ -1751,7 +1776,20 @@ gitlab_validate() {
     --label "net.unraid.ci-runner-farm.role=validate-job" )
   [ -n "$RUNNER_CPUS" ] && job_args+=( --cpus="$RUNNER_CPUS" )
   [ -n "$RUNNER_MEMORY" ] && job_args+=( --memory="$RUNNER_MEMORY" )
-  job_args+=( -v "$CACHE_ROOT/gitlab-cache/$name:/cache" "$image" /bin/sh -c 'test -d /cache && printf "GitLab Docker-executor job image OK\n"' )
+  job_args+=( -v "$CACHE_ROOT/gitlab-cache/$name:/cache" )
+  share_check_script='test -d /cache || exit 1; while [ "$#" -gt 0 ]; do dest="$1"; mode="$2"; shift 2; if [ "$mode" = rw ]; then probe="$dest/.ci-runner-farm-write-test-$$"; umask 077; : > "$probe" && rm -f "$probe" || exit 1; else [ -r "$dest" ] && [ -x "$dest" ] || exit 1; fi; done; printf "GitLab Docker-executor job image OK\n"'
+  for share_spec in "${share_specs[@]}"; do
+    share_source="${share_spec%%:*}"; share_rest="${share_spec#*:}"
+    share_dest="${share_rest%:*}"; share_mode="${share_rest##*:}"
+    share_source="$(crf_user_share_mount_source "$share_source")" || return 1
+    if [ "$share_mode" = ro ]; then
+      job_args+=( --mount "type=bind,src=$share_source,dst=$share_dest,readonly" )
+    else
+      job_args+=( --mount "type=bind,src=$share_source,dst=$share_dest" )
+    fi
+    share_check_args+=( "$share_dest" "$share_mode" )
+  done
+  job_args+=( "$image" /bin/sh -c "$share_check_script" sh "${share_check_args[@]}" )
   log "validate: parsing generated GitLab TOML and launching an inert Docker-executor job container..."
   if ! docker "${job_args[@]}"; then
     err "validate: the GitLab job image could not run through the selected Docker endpoint"
