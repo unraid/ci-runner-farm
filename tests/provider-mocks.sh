@@ -18,6 +18,7 @@ eval "$(declare -f cmd_stop | sed '1s/^cmd_stop /engine_cmd_stop /')"
 
 fail() { printf 'PROVIDER MOCK FAIL: %s\n' "$*" >&2; exit 1; }
 mode_of() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null; }
+crf_user_share_mount_source() { printf '%s' "$1"; }
 
 # Upgrade/default contract and supported runner-auth token variants.
 [ "$CI_PROVIDER" = github ] || fail "GitHub is not the source-only default"
@@ -38,7 +39,7 @@ runner_host_service_ipv4() { printf '192.0.2.10\n'; }
 github_kvm_gid() { return 1; }
 legacy_confgen="$(printf '%s\0' github-dind-cgroupns-v1 "$GH_SCOPE" "$GH_OWNER" "$GH_REPOS" "$RUNNER_GROUP" "$RUNNER_LABELS" \
   "$EPHEMERAL" "$RUNNER_CPUS" "$RUNNER_MEMORY" "$WORK_TMPFS_SIZE" "$CACHE_MOUNTS" \
-  "$OS_ARTIFACT_SHARE_HOST_PATH" \
+  "$USER_SHARE_MOUNTS" \
   "$DIND" "$SHARE_DOCKER_SOCK" "$RUN_AS_ROOT" "$IMAGE_SOURCE" "$IMAGE" \
   "$REGISTRY_SERVER" "$REGISTRY_USERNAME" "$SHARED_IMAGE_CACHE" "$MIRROR_PORT" \
   "$NETWORK_ISOLATION" "$RUNNER_NETWORK" "$CACHE_ROOT" | sha256sum | cut -c1-12)"
@@ -94,31 +95,39 @@ printf '%s\n' "$github_args" | grep -qx -- '--cgroupns=private' || fail "GitHub 
 printf '%s\n' "$github_args" | grep -qx 'START_DOCKER_SERVICE=true' || fail "GitHub DinD environment missing"
 printf '%s\n' "$github_args" | grep -qx '/_work:rw,exec,size=2g' || fail "GitHub workspace tmpfs changed"
 
-# The user-share artifact mount is limited to the private OS runner group and
-# remains separate from CACHE_ROOT, which backs Docker-in-Docker storage.
+# Generic user-share mounts work across repository/org runners, owners, and
+# runner groups; CACHE_ROOT remains separate for Docker-in-Docker data.
 clear_args_tmpdir || fail "engine could not retire the first GitHub registration-token dir"
-GH_SCOPE=org; GH_OWNER=unraid; RUNNER_GROUP=os-build; CACHE_MOUNTS=''
-OS_ARTIFACT_SHARE_HOST_PATH=/mnt/user/ci-runner/os-artifact-share
-crf_os_artifact_share_config_problem || fail "valid OS user-share policy was rejected"
-crf_os_artifact_share_path() { printf '%s' "$OS_ARTIFACT_SHARE_HOST_PATH"; }
+GH_SCOPE=repo; GH_OWNER=example-owner; RUNNER_GROUP=''; CACHE_MOUNTS=''
+USER_SHARE_MOUNTS='/mnt/user/ci-runner/os-artifact-share:/mnt/os-artifact-share:rw /mnt/user/ci-runner/qa-fixtures:/mnt/qa-fixtures:ro'
+crf_user_share_mount_config_problem || fail "valid generic user-share mounts were rejected"
 NO_REGISTER=1
-github_build_args 1 ci-runner-os-share || fail "OS user-share runner argv generation failed"
+github_build_args 1 ci-runner-shares || fail "generic user-share runner argv generation failed"
 unset NO_REGISTER
 github_args="$(printf '%s\n' "${ARGS[@]}")"
-printf '%s\n' "$github_args" | grep -qx -- '--mount' || fail "OS user-share mount flag missing"
-printf '%s\n' "$github_args" | grep -qx 'type=bind,src=/mnt/user/ci-runner/os-artifact-share,dst=/mnt/os-artifact-share' \
-  || fail "OS user-share mount source or destination changed"
-RUNNER_GROUP=qa-vm
-if crf_os_artifact_share_config_problem >/dev/null 2>&1; then fail "OS user-share accepted outside the os-build group"; fi
-RUNNER_GROUP=os-build; GH_SCOPE=repo
-if crf_os_artifact_share_config_problem >/dev/null 2>&1; then fail "OS user-share accepted for repository-scoped runners"; fi
-GH_SCOPE=org; OS_ARTIFACT_SHARE_HOST_PATH=/mnt/cache/ci-runner/os-artifact-share
-if crf_os_artifact_share_config_problem >/dev/null 2>&1; then fail "pool path accepted as a user-share path"; fi
-OS_ARTIFACT_SHARE_HOST_PATH=/mnt/user/ci-runner/os-artifact-share
-CACHE_MOUNTS='os-artifact-share:/mnt/os-artifact-share'
-if crf_os_artifact_share_config_problem >/dev/null 2>&1; then fail "duplicate artifact-share destination was accepted"; fi
-unset -f crf_os_artifact_share_path
-OS_ARTIFACT_SHARE_HOST_PATH=''; CACHE_MOUNTS=''
+grep -qx 'type=bind,src=/mnt/user/ci-runner/os-artifact-share,dst=/mnt/os-artifact-share' <<< "$github_args" \
+  || fail "generic read-write user-share mount is missing"
+grep -qx 'type=bind,src=/mnt/user/ci-runner/qa-fixtures,dst=/mnt/qa-fixtures,readonly' <<< "$github_args" \
+  || fail "generic read-only user-share mount is missing"
+for invalid_share_mount in \
+  '/mnt/cache/share:/mnt/shared:rw' \
+  '/mnt/user/share/*:/mnt/shared:rw' \
+  '/mnt/user/share/../escape:/mnt/shared:rw' \
+  '/mnt/user/share/data:/tmp/shared:rw' \
+  '/mnt/user/share/data:/mnt/shared:bad' \
+  '/mnt/user/share/data:/mnt/shared'; do
+  USER_SHARE_MOUNTS="$invalid_share_mount"
+  if crf_user_share_mount_config_problem >/dev/null 2>&1; then
+    fail "unsafe user-share mount was accepted: $invalid_share_mount"
+  fi
+done
+USER_SHARE_MOUNTS='/mnt/user/ci-runner/os-artifact-share:/mnt/os-artifact-share:rw'
+CACHE_MOUNTS='cache:/mnt/os-artifact-share/subdir'
+if crf_user_share_mount_config_problem >/dev/null 2>&1; then fail "overlapping cache destination was accepted"; fi
+USER_SHARE_MOUNTS='/mnt/user/ci-runner/os-artifact-share:/mnt/os-artifact-share:rw /mnt/user/qa/data:/mnt/os-artifact-share/subdir:ro'
+CACHE_MOUNTS=''
+if crf_user_share_mount_config_problem >/dev/null 2>&1; then fail "overlapping user-share destinations were accepted"; fi
+USER_SHARE_MOUNTS=''; CACHE_MOUNTS=''
 GH_SCOPE=org; GH_OWNER='example-owner'; RUNNER_GROUP='secure-group'
 
 # The engine owns that staged directory's lifetime, and its removal must refuse
@@ -358,6 +367,7 @@ GITLAB_SHUTDOWN_TIMEOUT=7200
 # only in the protected TOML—not manager argv—and system IDs must survive writes.
 CACHE_ROOT="$tmp/cache"
 CACHE_MOUNTS=''
+USER_SHARE_MOUNTS='/mnt/user/ci-runner/os-artifact-share:/mnt/os-artifact-share:rw /mnt/user/ci-runner/qa-fixtures:/mnt/qa-fixtures:ro'
 IMAGE_SOURCE=builtin
 mkdir -p "$CACHE_ROOT"
 gitlab_write_config 1 ci-runner-1 || fail "GitLab TOML generation failed"
@@ -374,6 +384,10 @@ grep -q 'host = "unix:///runner-services/docker.sock"' "$cfg" \
   || fail "GitLab DinD manager does not use the restart-safe socket-directory path"
 grep -q 'net.unraid.ci-runner-farm.slot' "$cfg" || fail "per-slot executor label missing"
 grep -qF "$GITLAB_RUNNER_TOKEN" "$cfg" || fail "runner token not written to protected manager config"
+grep -qF '/mnt/user/ci-runner/os-artifact-share:/mnt/os-artifact-share:rw' "$cfg" \
+  || fail "GitLab runner config omitted read-write user-share mount"
+grep -qF '/mnt/user/ci-runner/qa-fixtures:/mnt/qa-fixtures:ro' "$cfg" \
+  || fail "GitLab runner config omitted read-only user-share mount"
 [ "$(mode_of "$CRF_CFGDIR/gitlab-runners/ci-runner-1/.runner_system_id")" = 600 ] \
   || fail "generated system ID is not mode 0600"
 first_system_id="$(cat "$CRF_CFGDIR/gitlab-runners/ci-runner-1/.runner_system_id")"
@@ -606,6 +620,11 @@ grep -qx "type=bind,src=$slot_ca,dst=$slot_ca,readonly" "$SIDECAR_ARGS" \
   || fail "DinD cannot resolve the executor's custom-CA bind source"
 grep -qx "type=bind,src=$slot_ca,dst=/etc/docker/certs.d/registry.gitlab.example.test:5443/ca.crt,readonly" "$SIDECAR_ARGS" \
   || fail "custom CA is absent from the configured DinD registry trust path"
+grep -qx 'type=bind,src=/mnt/user/ci-runner/os-artifact-share,dst=/mnt/user/ci-runner/os-artifact-share' "$SIDECAR_ARGS" \
+  || fail "GitLab DinD sidecar cannot resolve a read-write user-share source"
+grep -qx 'type=bind,src=/mnt/user/ci-runner/qa-fixtures,dst=/mnt/user/ci-runner/qa-fixtures,readonly' "$SIDECAR_ARGS" \
+  || fail "GitLab DinD sidecar cannot resolve a read-only user-share source"
+USER_SHARE_MOUNTS=''
 grep -qx 'host.docker.internal:host-gateway' "$SIDECAR_ARGS" \
   || fail "GitLab DinD cannot resolve the shared mirror through the default host-gateway endpoint"
 
@@ -792,6 +811,9 @@ GITLAB_RUNNER_TOKEN="$ROUTABLE_GITLAB_RUNNER_TOKEN"
 gitlab_gen_before="$(crf_confgen)"; REGISTRY_TOKEN='registry-memory-snapshot-changed'
 [ "$(crf_confgen)" != "$gitlab_gen_before" ] || fail "GitLab confgen ignores the in-memory registry token"
 REGISTRY_TOKEN=''
+gitlab_gen_before="$(crf_confgen)"; USER_SHARE_MOUNTS='/mnt/user/ci-runner/share:/mnt/shared:ro'
+[ "$(crf_confgen)" != "$gitlab_gen_before" ] || fail "GitLab confgen ignores configured user-share mounts"
+USER_SHARE_MOUNTS=''
 
 # Mock GitLab API pagination and a Jobs response containing nested pipeline and
 # runner status fields. Tokens arrive through curl config stdin and must never

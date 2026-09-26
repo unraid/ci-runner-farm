@@ -17,6 +17,7 @@ provider's credentials and runtime.
 | Concurrent runner slots | Each slot accepts one job at a time and can have CPU and memory limits, keeping CI from starving the rest of the host. |
 | GitHub and GitLab providers | Keep the existing GitHub Actions integration or select GitLab.com/self-managed GitLab. |
 | Warm shared caches | Reuse npm, yarn, pnpm, Playwright, Cargo, sccache, or custom cache directories across jobs. |
+| User-share mounts | Expose selected Unraid user-share directories to trusted GitHub Actions or GitLab CI jobs with read-only or read-write access. |
 | Slot-scoped Docker-in-Docker | Give each runner slot a private privileged Docker daemon without exposing Unraid's existing Docker socket by default; privileged DinD is still capable of host compromise. |
 | Bring your own job image | Pull a remote image or edit and build a provider-specific starter image in the plugin. |
 | Named runner pools | Route jobs to purpose-built pools with independent fixed capacity, labels/tags, CPU, memory, and images. |
@@ -376,18 +377,28 @@ directories yourself. The plugin does not currently emit GitLab's distributed
 S3 cache configuration, so an external MinIO/S3 backend is not yet a supported
 configuration key.
 
-## Same-host OS migration QA artifacts
+## User-share mounts
 
-Set `OS_ARTIFACT_SHARE_HOST_PATH` to a dedicated Unraid user-share directory,
-such as `/mnt/user/ci-runner/os-artifact-share`. The path must already exist.
-The farm mounts it read-write at `/mnt/os-artifact-share` only when GitHub
-organization runners use owner `unraid` and runner group `os-build`. Restrict
-that GitHub group to `unraid/os`; jobs in the group can write to this share.
-Keep `CACHE_ROOT` on a pool so Docker-in-Docker storage does not use FUSE.
+Set `USER_SHARE_MOUNTS` to a space-separated list of
+`host-path:container-path:ro|rw` entries. For example:
 
-Configure the QA VM provider with the same host path. It mounts the directory
-read-only into QA runners. Do not also add `/mnt/os-artifact-share` to
-`CACHE_MOUNTS`.
+```text
+/mnt/user/ci-runner/shared:/mnt/shared:rw
+```
+
+Each source must be an existing canonical directory below
+`/mnt/user/<share>/`; the destination must be a safe path below `/mnt` inside
+the job container. `ro` makes the mount read-only; `rw` permits writes. The
+setting works with GitHub Actions runner containers and GitLab Docker-executor
+jobs. It is separate from `CACHE_MOUNTS`, which creates cache directories under
+`CACHE_ROOT`.
+
+Every job routed to a runner with these mounts can access the configured files.
+Restrict runner routing to trusted repositories and use a dedicated subdirectory
+for each purpose. Keep `CACHE_ROOT`, Docker data, and workspace storage on a
+pool; Docker-in-Docker overlay storage does not work on the FUSE user-share
+filesystem. A QA provider can mount the same host path read-only to consume
+artifacts without copying them through GitHub Actions.
 
 ## Docker and security
 

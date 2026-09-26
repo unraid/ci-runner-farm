@@ -6,9 +6,7 @@ github_token_ready() { [ -n "$ACCESS_TOKEN" ]; }
 github_token_name()  { echo "GitHub token"; }
 github_builtin_image() { echo "$BUILTIN_IMAGE"; }
 github_validate_settings() {
-  crf_os_artifact_share_config_problem || return 1
-  [ -z "$OS_ARTIFACT_SHARE_HOST_PATH" ] && return 0
-  crf_os_artifact_share_path >/dev/null
+  crf_validate_user_share_mounts
 }
 github_strict_endpoint() { return 0; }
 github_imageupdate_pull() { return 1; }
@@ -42,7 +40,7 @@ github_confgen() {
   esac
   printf '%s\0' "$runtime_salt" "$GH_SCOPE" "$GH_OWNER" "$GH_REPOS" "$RUNNER_GROUP" "$RUNNER_LABELS" \
     "$EPHEMERAL" "$RUNNER_CPUS" "$RUNNER_MEMORY" "$WORK_TMPFS_SIZE" "$CACHE_MOUNTS" \
-    "$OS_ARTIFACT_SHARE_HOST_PATH" \
+    "$USER_SHARE_MOUNTS" \
     "$DIND" "$SHARE_DOCKER_SOCK" "$RUN_AS_ROOT" "$IMAGE_SOURCE" "$IMAGE" \
     "$REGISTRY_SERVER" "$REGISTRY_USERNAME" "$SHARED_IMAGE_CACHE" "$MIRROR_PORT" \
     "$NETWORK_ISOLATION" "$RUNNER_NETWORK" "$CACHE_ROOT" \
@@ -474,7 +472,8 @@ github_registry_credentials() {
 
 github_build_args() {
   local idx="$1"
-  local name="${2:-${NAME_PREFIX}-${idx}}" role="${CRF_CONTAINER_ROLE:-runner}" host_service_ip image kvm_gid='' artifact_share_host=''
+  local name="${2:-${NAME_PREFIX}-${idx}}" role="${CRF_CONTAINER_ROLE:-runner}" host_service_ip image kvm_gid=''
+  crf_user_share_mount_config_problem || return 1
   image="$(effective_image)" || return 1
   host_service_ip="$(runner_host_service_ipv4)" \
     || { err "could not resolve this farm host's local service address"; return 1; }
@@ -514,10 +513,17 @@ github_build_args() {
     hostdir="$(crf_safe_mount_subdir "${m%%:*}")" || { err "skipping unsafe cache mount '${m%%:*}'"; continue; }
     ARGS+=( -v "$hostdir:${m#*:}" )
   done
-  if [ -n "$OS_ARTIFACT_SHARE_HOST_PATH" ]; then
-    artifact_share_host="$(crf_os_artifact_share_path)" || return 1
-    ARGS+=( --mount "type=bind,src=${artifact_share_host},dst=/mnt/os-artifact-share" )
-  fi
+  local share_spec share_source share_rest share_dest share_mode share_mount
+  local -a share_specs=()
+  read -r -a share_specs <<< "$USER_SHARE_MOUNTS"
+  for share_spec in "${share_specs[@]}"; do
+    share_source="${share_spec%%:*}"; share_rest="${share_spec#*:}"
+    share_dest="${share_rest%:*}"; share_mode="${share_rest##*:}"
+    share_source="$(crf_user_share_mount_source "$share_source")" || return 1
+    share_mount="type=bind,src=${share_source},dst=${share_dest}"
+    [ "$share_mode" = ro ] && share_mount+=",readonly"
+    ARGS+=( --mount "$share_mount" )
+  done
   [ -n "$RUNNER_CPUS" ]   && ARGS+=( --cpus="$RUNNER_CPUS" )
   [ -n "$RUNNER_MEMORY" ] && ARGS+=( --memory="$RUNNER_MEMORY" )
   [ "$NETWORK_ISOLATION" != "off" ] && ARGS+=( --network "$RUNNER_NETWORK" )
@@ -671,7 +677,8 @@ github_validate() {
   check_cache_root || return 1
   ensure_dirs || return 1
   registry_login || return 1
-  local suffix name snapshot validation_id="" root share_access_ok=1 share_user='0:0'
+  local suffix name snapshot validation_id="" root share_access_ok=1 share_user='0:0' share_spec share_rest share_dest share_mode
+  local -a share_specs=()
   suffix="$(od -An -N6 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
   printf '%s' "$suffix" | grep -qE '^[0-9a-f]{12}$' \
     || { err "validate: could not create a random validation-container name"; return 1; }
@@ -703,12 +710,18 @@ github_validate() {
   docker inspect -f 'cpus={{.HostConfig.NanoCpus}} mem={{.HostConfig.Memory}} pids={{.HostConfig.PidsLimit}}' "$validation_id"
   echo "--- mounts ---"
   docker inspect -f '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}' "$validation_id"
-  if [ -n "$OS_ARTIFACT_SHARE_HOST_PATH" ]; then
+  if [ -n "$USER_SHARE_MOUNTS" ]; then
+    read -r -a share_specs <<< "$USER_SHARE_MOUNTS"
     [ "$RUN_AS_ROOT" = true ] || share_user="$RUNNER_UID:$RUNNER_GID"
-    if ! docker exec --user "$share_user" "$validation_id" sh -c \
-      'probe="/mnt/os-artifact-share/.ci-runner-farm-write-test-$$"; umask 077; : > "$probe" && rm -f "$probe"'; then
-      share_access_ok=0
-    fi
+    for share_spec in "${share_specs[@]}"; do
+      share_rest="${share_spec#*:}"; share_dest="${share_rest%:*}"; share_mode="${share_rest##*:}"
+      if ! docker exec --user "$share_user" "$validation_id" sh -c \
+        'if [ "$2" = rw ]; then probe="$1/.ci-runner-farm-write-test-$$"; umask 077; : > "$probe" && rm -f "$probe"; else [ -r "$1" ] && [ -x "$1" ]; fi' \
+        sh "$share_dest" "$share_mode"; then
+        share_access_ok=0
+        break
+      fi
+    done
   fi
   echo "--- tmpfs ---"
   docker inspect -f '{{json .HostConfig.Tmpfs}}' "$validation_id"
@@ -719,7 +732,7 @@ github_validate() {
   root="$(crf_safe_cache_root)" || { err "validate: refusing cleanup under unsafe CACHE_ROOT"; return 1; }
   rm -rf "$root/docker/$name" 2>/dev/null || true
   if [ "$share_access_ok" -ne 1 ]; then
-    err "validate: OS artifact user-share mount is not writable by runner UID:GID $share_user"
+    err "validate: user-share mount is not accessible with configured mode by runner UID:GID $share_user"
     return 1
   fi
   log "validate: OK (container removed). Provisioning mechanics verified on this host."
