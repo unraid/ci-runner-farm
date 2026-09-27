@@ -33,6 +33,7 @@ $defaults = [
   'RUNNER_CPUS'=>'', 'RUNNER_MEMORY'=>'16g', 'EPHEMERAL'=>'false', 'RUN_AS_ROOT'=>'false',
   'IMAGE_SOURCE'=>'builtin', 'IMAGE'=>'', 'REGISTRY_SERVER'=>'', 'REGISTRY_USERNAME'=>'',
   'CACHE_ROOT'=>'/mnt/cache/github-runner', 'WORK_TMPFS_SIZE'=>'8g',
+  'USER_SHARE_MOUNTS'=>'',
   'CACHE_MOUNTS'=>'pnpm-store:/home/runner/.local/share/pnpm/store npm:/home/runner/.npm yarn:/home/runner/.cache/yarn ms-playwright:/home/runner/.cache/ms-playwright',
   'DIND'=>'true', 'SHARE_DOCKER_SOCK'=>'false', 'SHARED_IMAGE_CACHE'=>'true', 'NETWORK_ISOLATION'=>'off',
   'IMAGE_AUTOUPDATE'=>'false', 'IMAGE_AUTOUPDATE_INTERVAL'=>'1800', 'IMAGE_DRAIN_TIMEOUT'=>'3600',
@@ -391,6 +392,12 @@ _(Cache mounts)_:
 
 :crf_cache_mounts_plug:
 > Space-separated `host-subdir:container-path` warm caches mounted into every runner (created under the cache root). Defaults cover pnpm/npm/yarn/Playwright — edit for your stack. These named directories are shared concurrently by all slots, so use only caches whose tools tolerate multi-process access. GitLab requires unique absolute destinations and rejects its reserved <code>/cache</code>, Docker-socket, and helper-CA paths. GitLab's native <code>/cache</code> directory is separate per slot; the plugin does not currently configure a shared S3/MinIO cache backend.
+:end
+
+_(User-share mounts)_:
+: <input type="text" name="USER_SHARE_MOUNTS" value="<?=crf_g($cfg,'USER_SHARE_MOUNTS','')?>" placeholder="/mnt/user/ci-runner/shared:/mnt/shared:rw">
+
+> Optional space-separated <code>host-path:container-path:ro|rw</code> mounts for CI jobs. Example: <code>/mnt/user/ci-runner/shared:/mnt/shared:rw</code>. Each source must be an existing directory under an Unraid user share. Destinations must be safe paths under <code>/mnt</code> in the job container. GitHub and GitLab jobs receive these mounts; the selected mode controls write access. Every job routed to this farm can access each configured mount, so route only trusted repositories to it. Keep <code>CACHE_ROOT</code> and Docker data on a pool, not a FUSE user share. Leave blank when no job needs a host share.
 :end
 
 ### Docker
