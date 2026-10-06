@@ -52,6 +52,7 @@ bash tests/secret-write.sh
 bash tests/utf8-safety.sh
 bash tests/log-redaction.sh
 bash tests/provider-mocks.sh
+bash tests/pnpm-cache.sh
 bash tests/lease-selfheal.sh
 bash tests/ownership-safety.sh
 bash tests/temp-safety.sh
