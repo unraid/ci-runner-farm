@@ -377,6 +377,22 @@ directories yourself. The plugin does not currently emit GitLab's distributed
 S3 cache configuration, so an external MinIO/S3 backend is not yet a supported
 configuration key.
 
+For GitHub runners, the `pnpm-store:<container-path>` cache entry also sets
+`PNPM_CONFIG_STORE_DIR` (pnpm 11) and `npm_config_store_dir` (pnpm 10) to that
+exact bind destination. This prevents pnpm from selecting `/_work/.pnpm-store`
+when the workspace is on tmpfs. Custom destinations work the same way; duplicate,
+relative, noncanonical, read-only, or workspace-root destinations are rejected.
+Without a `pnpm-store` entry, pnpm keeps its normal configuration. The existing
+configuration-drift lifecycle drains and replaces runners that need the new
+store environment after an upgrade.
+
+Packages copy from the pool-backed store into a workspace on another filesystem
+because hard links cannot cross filesystems. This keeps the package store out of
+workspace RAM; project `node_modules` and Actions archive downloads still consume
+workspace space. Shared stores are for mutually trusted jobs. A raw Actions cache
+archive restore is not pnpm's coordinated install protocol; do not restore such
+an archive into a store being used by another job.
+
 ## User-share mounts
 
 Set `USER_SHARE_MOUNTS` to a space-separated list of

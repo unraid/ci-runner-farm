@@ -30,8 +30,15 @@ github_confgen() {
   # Include the DinD runtime contract in the fingerprint. Changing Docker's
   # cgroup namespace for existing slots must drain and recreate them; otherwise
   # an old container can remain online with the broken hierarchy.
-  local runtime_salt='' kvm_gid
+  local runtime_salt='' kvm_gid cache_spec
   [ "$DIND" = true ] && runtime_salt='github-dind-cgroupns-v1'
+  # The explicit store contract must replace existing slots through the normal
+  # drain lifecycle. Farms without a pnpm-store mount keep their fingerprint.
+  for cache_spec in $CACHE_MOUNTS; do
+    case "$cache_spec" in
+      pnpm-store:*) runtime_salt="${runtime_salt}-pnpm-store-v1"; break ;;
+    esac
+  done
   case ",$RUNNER_LABELS," in
     *,kvm,*)
       kvm_gid="$(github_kvm_gid 2>/dev/null || true)"
@@ -474,6 +481,22 @@ github_build_args() {
   local idx="$1"
   local name="${2:-${NAME_PREFIX}-${idx}}" role="${CRF_CONTAINER_ROLE:-runner}" host_service_ip image kvm_gid=''
   crf_user_share_mount_config_problem || return 1
+  local pnpm_store_dest='' cache_spec cache_dest
+  for cache_spec in $CACHE_MOUNTS; do
+    case "$cache_spec" in
+      pnpm-store|pnpm-store:*)
+        cache_dest="${cache_spec#*:}"
+        [ -z "$pnpm_store_dest" ] \
+          || { err "pnpm-store must have exactly one cache destination"; return 1; }
+        printf '%s' "$cache_dest" | grep -qE '^/[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*$' \
+          || { err "pnpm-store requires an absolute writable cache destination"; return 1; }
+        case "$cache_dest" in *//*|*/../*|*/./*|*/..|*/.|/_work)
+          err "pnpm-store destination must be canonical and distinct from the workspace mount"; return 1 ;;
+        esac
+        pnpm_store_dest="$cache_dest"
+        ;;
+    esac
+  done
   image="$(effective_image)" || return 1
   host_service_ip="$(runner_host_service_ipv4)" \
     || { err "could not resolve this farm host's local service address"; return 1; }
@@ -512,6 +535,12 @@ github_build_args() {
     [ -n "$m" ] || continue
     hostdir="$(crf_safe_mount_subdir "${m%%:*}")" || { err "skipping unsafe cache mount '${m%%:*}'"; continue; }
     ARGS+=( -v "$hostdir:${m#*:}" )
+    if [ "${m%%:*}" = pnpm-store ]; then
+      # pnpm otherwise chooses a store on the project's filesystem, which is
+      # workspace RAM when WORK_TMPFS_SIZE is set. Configure the admitted bind
+      # before any job or setup-node cache restore; support pnpm 11 and 10.
+      ARGS+=( -e "PNPM_CONFIG_STORE_DIR=$pnpm_store_dest" -e "npm_config_store_dir=$pnpm_store_dest" )
+    fi
   done
   local share_spec share_source share_rest share_dest share_mode share_mount
   local -a share_specs=()

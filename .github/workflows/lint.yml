@@ -33,3 +33,6 @@ jobs:
 
       - name: Lint generated GitLab Runner configuration
         run: bash tests/gitlab-runner-lint.sh
+
+      - name: Verify pnpm disk store with a RAM workspace
+        run: bash tests/pnpm-store-runtime.sh
