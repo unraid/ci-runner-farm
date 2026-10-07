@@ -78,3 +78,11 @@ Unknown identity or a busy remote registration keeps the allocation. The build
 floor remains reserved for a fresh replacement even during maintenance. Shared
 hosts disable legacy log-derived reaping and config migration so these paths
 cannot remove a worker outside the native ownership protocol.
+
+New shared builders register with `NO_DEFAULT_LABELS=true` and only
+`crf-shared-awaiting-identity`. Their immutable Docker routing-label metadata
+retains the configured build labels. The provider must record the exact public
+registration and allocation fence before replacing the inert label with those
+routing labels. Publication failures remain charged and recover under the native
+fleet lock. The installed image must honor `NO_DEFAULT_LABELS`; existing running
+builders keep their routing during adoption.
