@@ -1,6 +1,8 @@
 import json
 import os
-import subprocess  # nosec B404: executes repository fixtures without a shell.
+
+# Executes only repository fixtures without a shell.
+import subprocess  # nosec B404
 import tempfile
 import unittest
 from pathlib import Path
@@ -66,15 +68,13 @@ class NativeNightlyMigrationTests(unittest.TestCase):
                     "CANONICAL": str(canonical),
                     "INSTALL_FAILURE": "yes" if mode == "install-failure" else "no",
                 }
-                result = (
-                    subprocess.run(  # nosec B603,B607: fixed test executables/fixtures.
-                        ["bash", "-s", "--", str(incoming)],
-                        input=script,
-                        text=True,
-                        capture_output=True,
-                        env=env,
-                        timeout=10,
-                    )
+                result = subprocess.run(  # nosec
+                    ["bash", "-s", "--", str(incoming)],
+                    input=script,
+                    text=True,
+                    capture_output=True,
+                    env=env,
+                    timeout=10,
                 )
                 if mode.startswith("unknown"):
                     self.assertNotEqual(result.returncode, 0)
@@ -122,10 +122,11 @@ class NativeNightlyMigrationTests(unittest.TestCase):
                     file = root / name
                     file.write_text(json.dumps(document))
                     file.chmod(0o600)
-                result = (
-                    subprocess.run(  # nosec B603,B607: fixed test executables/fixtures.
-                        ["php", "-r", script], capture_output=True, text=True, timeout=5
-                    )
+                result = subprocess.run(  # nosec
+                    ["php", "-r", script],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
                 )
                 self.assertEqual(result.returncode == 0, valid, result.stderr)
 
