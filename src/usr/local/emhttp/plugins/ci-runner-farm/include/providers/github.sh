@@ -506,6 +506,10 @@ github_build_args() {
         || { err "runner label kvm requires group-writable /dev/kvm"; return 1; }
       ;;
   esac
+  local registration_labels="$RUNNER_LABELS"
+  if shared_capacity_enabled; then
+    registration_labels=crf-shared-awaiting-identity
+  fi
   ARGS_TMPDIR=""
   ARGS=(
     -d --restart=no
@@ -520,7 +524,7 @@ github_build_args() {
     --add-host "host.docker.internal:host-gateway"
     --add-host "runner-farm.host:${host_service_ip}"
     -e RUNNER_NAME="$(host)-${name}"
-    -e LABELS="$RUNNER_LABELS"
+    -e LABELS="$registration_labels"
     -e DISABLE_AUTO_UPDATE="true"
     -e DISABLE_AUTOMATIC_DEREGISTRATION="true"
     -e RUN_AS_ROOT="$RUN_AS_ROOT"
@@ -528,6 +532,10 @@ github_build_args() {
     -e RUNNER_WORKDIR="/_work"
     -e npm_config_cache="/home/runner/.npm"
   )
+  if shared_capacity_enabled; then
+    ARGS+=( -e NO_DEFAULT_LABELS=true
+      --label "net.unraid.ci-runner-farm.routing-labels=$RUNNER_LABELS" )
+  fi
   [ -z "$kvm_gid" ] || ARGS+=( --device /dev/kvm --group-add "$kvm_gid" -e "KVM_GID=$kvm_gid" )
   [ "$EPHEMERAL" = "true" ] && ARGS+=( -e EPHEMERAL="true" )
   local m hostdir
