@@ -26,9 +26,15 @@ RUN printf '%s\n' \
   '[ "$(cat "$root/cgroup.type")" = domain ] || fail "cgroup v2 root is not a domain"' \
   'mkdir -p "$child"' \
   'mapfile -t pids < "$root/cgroup.procs"' \
-  'for pid in "${pids[@]}"; do case "$pid" in ""|*[!0-9]*) continue;; esac; printf "%s\\n" "$pid" > "$child/cgroup.procs" 2>/dev/null || true; done' \
-  'mapfile -t remaining < "$root/cgroup.procs"' \
-  '(( ${#remaining[@]} == 0 )) || fail "could not move every namespace process below the cgroup domain root"' \
+  'for preferred in 1 "$$"; do for pid in "${pids[@]}"; do [ "$pid" = "$preferred" ] || continue; printf "%s\\n" "$pid" > "$child/cgroup.procs" 2>/dev/null || true; done; done' \
+  'for ((attempt=0; attempt<50; attempt++)); do' \
+  '  mapfile -t pids < "$root/cgroup.procs"' \
+  '  for pid in "${pids[@]}"; do case "$pid" in ""|*[!0-9]*) continue;; esac; printf "%s\\n" "$pid" > "$child/cgroup.procs" 2>/dev/null || true; done' \
+  '  mapfile -t remaining < "$root/cgroup.procs"' \
+  '  (( ${#remaining[@]} == 0 )) && break' \
+  '  sleep 0.02' \
+  'done' \
+  '(( ${#remaining[@]} == 0 )) || fail "could not empty the cgroup namespace root before delegation"' \
   'read -r -a controllers < "$root/cgroup.controllers"' \
   '(( ${#controllers[@]} > 0 )) || fail "the cgroup v2 root exposes no controllers"' \
   'printf "+%s " "${controllers[@]}" > "$root/cgroup.subtree_control"' \

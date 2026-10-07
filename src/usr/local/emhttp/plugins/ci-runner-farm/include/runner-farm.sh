@@ -976,8 +976,12 @@ lifecycle_tick() {
     || { err "lifecycle: recycle target is not an owned managed runner"; return 1; }
   IFS='|' read -r _ provider role index gen <<< "$snapshot"
   [ "$role" = runner ] || { err "lifecycle: recycle target is not a runner slot"; return 1; }
-  [ "$(runner_state "$candidate")" = idle ] || return 0
-  log "lifecycle: recycling $candidate after repeated idle job-scope cleanup failures"
+  if [ "$provider" = github ]; then
+    github_runner_exited "${snapshot%%|*}" || return 0
+  else
+    [ "$(runner_state "$candidate")" = idle ] || return 0
+  fi
+  log "lifecycle: replacing positively exited $candidate"
   cmd_recycle "$candidate" >/dev/null \
     || { err "lifecycle: could not recycle $candidate; will retry"; return 1; }
 }

@@ -22,6 +22,7 @@ RUN sed -Ei \
       gzip=1.12-1ubuntu3.2 \
       php-cli=2:8.3+93ubuntu2 \
       python3=3.12.3-0ubuntu2.1 \
+      ripgrep=14.1.0-1 \
       sed=4.9-2ubuntu0.24.04.1 \
       tar=1.35+dfsg-3ubuntu0.4 \
  && rm -rf /var/lib/apt/lists/*

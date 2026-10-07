@@ -1,89 +1,61 @@
 #!/usr/bin/env bash
-# Verify idle GitHub DinD cleanup, confirmation, PID pressure, and recycle flow.
+# Legacy recovery must replace dead slots without using logs to infer idle.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 export CRF_CFGDIR="$tmp/config" CRF_RUNDIR="$tmp/run" CRF_SOURCE_ONLY=1
 mkdir -p "$CRF_CFGDIR" "$CRF_RUNDIR"
 # shellcheck source=/dev/null
 source src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-farm.sh
-
 fail() { printf 'LIFECYCLE ENFORCEMENT FAIL: %s\n' "$*" >&2; exit 1; }
-
 CI_PROVIDER=github
 DIND=true
 LIFECYCLE_CONFIRMATIONS=2
-LIFECYCLE_PID_PRESSURE_PERCENT=75
-RUNNER_PHASE=idle
-CLEAN_RESULT=0
-PID_CURRENT=100
-
+OWNER_ID=owner-1
+NATIVE_STATE='running|true|false|false|123'
+INSPECT_RESULT=0
 managed_names() { printf 'ci-runner-1\n'; }
-managed_runner_snapshot() { printf '%064d|github|runner|1|test-generation\n' 1; }
-runner_state() { printf '%s\n' "$RUNNER_PHASE"; }
-
-# Lifecycle code uses timeout around Docker calls. Function keeps test mocks in
-# the current shell, where provider functions can observe exact command shape.
-timeout() { shift; "$@"; }
+managed_runner_snapshot() { printf '%s|github|runner|1|test-generation\n' "$OWNER_ID"; }
+# Old logs/native heuristics report idle even when inspection is unavailable.
+runner_state() { echo idle; }
+github_runner_state() { echo idle; }
 docker() {
   case "${1:-}" in
-    exec)
-      if printf '%s' "$*" | grep -q 'echo busy'; then
-        printf '%s\n' "$RUNNER_PHASE"
-        return 0
-      fi
-      if printf '%s' "$*" | grep -q 'pids.current'; then
-        printf '%s\n' "$PID_CURRENT"
-        return 0
-      fi
-      return "$CLEAN_RESULT"
-      ;;
-    inspect)
-      printf '4096\n'
-      ;;
-    logs)
-      return 0
-      ;;
-    *)
-      return 0
-      ;;
+    inspect) [ "$INSPECT_RESULT" -eq 0 ] || return 1; printf '%s\n' "$NATIVE_STATE" ;;
+    *) fail 'watchdog attempted live process inspection or cleanup' ;;
   esac
 }
-
 marker="$CRF_RUNDIR/github-lifecycle.ci-runner-1"
-rm -f "$marker"
-[ -z "$(github_lifecycle_candidate 2>/dev/null)" ] || fail "clean runner became candidate"
-
-CLEAN_RESULT=1
-[ -z "$(github_lifecycle_candidate 2>/dev/null)" ] || fail "first failed check recycled runner"
-[ "$(github_lifecycle_candidate 2>/dev/null)" = ci-runner-1 ] \
-  || fail "second failed check did not select runner"
-
-RUNNER_PHASE=busy
-[ -z "$(github_lifecycle_candidate 2>/dev/null)" ] || fail "busy runner became candidate"
-RUNNER_PHASE=idle
-
-CLEAN_RESULT=0
-PID_CURRENT=3900
-rm -f "$marker"
-[ -z "$(github_lifecycle_candidate 2>/dev/null)" ] || fail "first PID pressure check recycled runner"
-[ "$(github_lifecycle_candidate 2>/dev/null)" = ci-runner-1 ] \
-  || fail "second PID pressure check did not select runner"
-
-CLEAN_RESULT=1
-PID_CURRENT=100
-rm -f "$marker"
+for NATIVE_STATE in 'running|true|false|false|123' 'running|true|true|false|123' 'restarting|false|false|true|0' 'exited|false|false|false|123' ''; do
+  printf '%s 9\n' "$OWNER_ID" > "$marker"
+  [ -z "$(github_lifecycle_candidate)" ] || fail "unsafe native state became candidate: $NATIVE_STATE"
+  [ ! -e "$marker" ] || fail 'unknown/live state retained confirmation'
+done
+INSPECT_RESULT=1
+[ -z "$(github_lifecycle_candidate)" ] || fail 'failed inspection became candidate'
+INSPECT_RESULT=0
+NATIVE_STATE='exited|false|false|false|0'
+[ -z "$(github_lifecycle_candidate)" ] || fail 'first exit check recycled runner'
+OWNER_ID=owner-2
+[ -z "$(github_lifecycle_candidate)" ] || fail 'replacement inherited old confirmation'
+[ "$(github_lifecycle_candidate)" = ci-runner-1 ] || fail 'confirmed dead slot was not recovered'
 recycle_log="$tmp/recycle.log"
 cmd_recycle() { printf '%s\n' "$1" >> "$recycle_log"; }
-lifecycle_tick || fail "first lifecycle tick failed"
-[ ! -s "$recycle_log" ] || fail "first lifecycle tick recycled runner"
-lifecycle_tick || fail "second lifecycle tick failed"
-[ "$(cat "$recycle_log")" = ci-runner-1 ] || fail "lifecycle tick did not recycle selected runner"
-
-DIND=false
 rm -f "$marker"
-[ -z "$(github_lifecycle_candidate)" ] || fail "non-DinD runner became candidate"
-
-echo 'lifecycle-enforcement: OK — idle DinD cleanup confirms before recycle'
+lifecycle_tick
+[ ! -s "$recycle_log" ] || fail 'first lifecycle tick recycled runner'
+lifecycle_tick
+[ "$(cat "$recycle_log")" = ci-runner-1 ] || fail 'confirmed exit was not replaced'
+# Recheck the exact owner immediately before native replacement.
+provider_call() { echo ci-runner-1; }
+NATIVE_STATE='running|true|false|false|123'
+: > "$recycle_log"
+lifecycle_tick
+[ ! -s "$recycle_log" ] || fail 'owner restarted after selection was recycled'
+DIND=false
+NATIVE_STATE='exited|false|false|false|0'
+rm -f "$marker"
+[ -z "$(github_lifecycle_candidate)" ] || fail 'first non-DinD exit check recycled runner'
+[ "$(github_lifecycle_candidate)" = ci-runner-1 ] || fail 'non-DinD dead slot was not recovered'
+echo 'lifecycle-enforcement: OK — positively exited immutable owners only'
