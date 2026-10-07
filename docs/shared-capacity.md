@@ -7,8 +7,10 @@ initialized ledger containing the complete inventory of existing workloads.
 
 The deployment-owned `shared-capacity.enabled` marker selects this contract.
 Do not install the marker until all owner start paths are closed, their lifecycle
-locks are held, and complete workload adoption has succeeded. This branch does
-not yet implement the complete deployment and owner adoption procedure.
+locks are held, and complete workload adoption has succeeded.
+The compatible provider coordinates complete adoption through `shared-adopt`
+and locked activation through `shared-activate`. The integration remains a draft
+until its deployment and live acceptance have passed.
 
 The `admission-close` command persists a private `shared-capacity.closed` marker
 under the native fleet lock. Every build start and recovery path checks this
@@ -51,3 +53,28 @@ container, then releases its fenced grant only after both its ID and stable name
 are absent. Restart recovery uses durable effect boundaries; it never thaws a
 withdrawn identity. A settling withdrawal prevents selecting another subset for
 the same pressure on every tick.
+
+
+The native `shared-prepare` command applies the signed provider policy through
+its supported MCP capability while all owner starts are closed. It does not
+bootstrap guest capacity or initialize an empty ledger over existing workloads. Adoption
+holds every owner lock, inventories native identities and hard limits, persists
+all fences, and retains starts closed on an unknown or partial result. Activation
+repeats this proof before enabling admission and reopening the owner paths.
+
+Queued containers carry a public registration-issued timestamp. Before granting
+a never-started owner, the provider requires a token younger than 45 minutes.
+Exit 76 asks the native owner to run `refresh-queued NAME ID`, which durably
+prepares exact inert removal, verifies that neither a grant nor prior execution
+exists, and preserves the same pending request and queue age. Fresh creation
+binds the new immutable ID before admission. Unknown removal retains its intent;
+no running or charged container can use this refresh path.
+
+Native maintenance records each attested registration before the ephemeral
+runner exits. A positively exited PID-zero owner cannot restart its consumed
+credentials. The provider settles its exact remote registration, waits for
+pickup settlement, removes that closed native identity, and releases its fence.
+Unknown identity or a busy remote registration keeps the allocation. The build
+floor remains reserved for a fresh replacement even during maintenance. Shared
+hosts disable legacy log-derived reaping and config migration so these paths
+cannot remove a worker outside the native ownership protocol.

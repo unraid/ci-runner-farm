@@ -25,6 +25,18 @@ if grep -qE '^docker (run|start)' "$logfile"; then fail 'queued create bypassed 
 grep -qF -- '--memory 12g --cpus 1 --env-file' "$logfile" || fail 'hard limits or private credential file changed'
 if grep -qF 'create -d' "$logfile"; then fail 'detached run flag reached create'; fi
 
+# An expired inert token must use the supported refresh before a fresh create.
+shared_capacity_call() {
+ printf 'gate %s\n' "$*" >> "$logfile"
+ case "$1" in start) return 76 ;; refresh-queued) return 0 ;; *) return 1 ;; esac
+}
+github_start_one() { printf 'fresh-create %s %s\n' "$1" "$2" >> "$logfile"; return 75; }
+: > "$logfile"
+if shared_capacity_start ci-runner-build-1 "$docker_id"; then fail 'fresh queued owner reported running'; else [ "$?" -eq 75 ] || fail 'refreshed queue exit lost'; fi
+grep -qF "gate refresh-queued ci-runner-build-1 $docker_id" "$logfile" || fail 'expired credential bypassed inert owner proof'
+grep -qF 'fresh-create 1 ci-runner-build-1' "$logfile" || fail 'expired credential did not mint a fresh container'
+shared_capacity_call() { printf 'gate %s\n' "$*" >> "$logfile"; return "$decision"; }
+
 RUNNER_MODE=pools RUNNER_POOLS='v3|build|general-build|unraid,build|4|4|8|0|1|12g|builtin'
 GH_SCOPE=org AUTOSCALE=true IMAGE_AUTOUPDATE=false
 validate_runner_mode || fail 'shared named pool rejected autoscale'

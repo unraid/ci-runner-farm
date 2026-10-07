@@ -19,7 +19,13 @@ shared_capacity_start() {
   local name="$1" id="$2"
   [ "$CI_PROVIDER" = github ] && [ "${CRF_POOL_ID:-default}" = build ] \
     || { err "shared capacity only supports the owned GitHub build pool"; return 1; }
-  shared_capacity_call start "$name" "$id"
+  local rc
+  if shared_capacity_call start "$name" "$id"; then return 0; else rc=$?; fi
+  [ "$rc" -eq 76 ] || return "$rc"
+  # Only the provider may authorize removal of an uncharged, never-started
+  # owner. Its stable pending request survives removal and fresh creation.
+  shared_capacity_call refresh-queued "$name" "$id" || return 1
+  github_start_one "${name##*-}" "$name"
 }
 
 shared_capacity_release() {
@@ -61,5 +67,12 @@ cmd_admission_close() {
   temporary="$(mktemp "$CFGDIR/.shared-capacity.closed.XXXXXX")" || return 1
   chmod 600 "$temporary" || { rm -f "$temporary"; return 1; }
   printf '%s\n' 'closed for shared capacity adoption' > "$temporary" || { rm -f "$temporary"; return 1; }
-  mv -f "$temporary" "$CFGDIR/shared-capacity.closed"
+  mv -f "$temporary" "$CFGDIR/shared-capacity.closed" || return 1
+  sync -f "$CFGDIR"
 }
+
+# Provider coordinator verifies all owners and persists fences before opening.
+cmd_shared_adopt() { shared_capacity_call adopt; }
+cmd_shared_activate() { shared_capacity_call activate; }
+
+cmd_shared_prepare() { shared_capacity_call prepare; }

@@ -602,6 +602,9 @@ github_build_args() {
     chmod 600 "$envf" 2>/dev/null \
       || { rm -rf "$envdir"; err "could not protect the registration-token file for $name"; return 1; }
     ARGS+=( --env-file "$envf" )
+    if shared_capacity_enabled; then
+      ARGS+=( --label "net.unraid.ci-runner-farm.registration-issued=$(date +%s)" )
+    fi
     ARGS_TMPDIR="$envdir"
   fi
   ARGS+=( "$image" )

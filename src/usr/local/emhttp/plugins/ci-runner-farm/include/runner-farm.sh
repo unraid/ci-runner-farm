@@ -617,6 +617,8 @@ scale_down_idle() {
 # empty => treated as fine, so this is a safe no-op until the new image ships).
 # Caches/DinD roots persist as bind mounts across the recycle.
 reap_dead_runners() {
+  shared_capacity_require_starts_open || return 0
+  shared_capacity_enabled && return 0
   local c st health provider sock side phase job_container failf failcount github_liveness_ready=true
   local names sidecars snapshot id role index gen failed=0
   names="$(managed_names)" || return 1
@@ -793,6 +795,7 @@ autoscale_queue_depth() {
 
 # one autoscaling evaluation: keep AUTOSCALE_MIN_IDLE warm runners, within [MIN,MAX]
 autoscale_tick() {
+  shared_capacity_require_starts_open || return 0
   [ "$AUTOSCALE" = "true" ] || return 0
   if pool_mode_enabled; then
     validate_runner_mode || return 1
@@ -959,6 +962,7 @@ autoscale_status() {
 # Run the provider lifecycle watchdog independently of autoscaling. A fixed-size
 # farm must receive the same cleanup and recycle protection as an autoscaled one.
 lifecycle_tick() {
+  shared_capacity_require_starts_open || return 0
   # Shared idle withdrawal owns local admission closure and exact worker proof.
   # Legacy log-derived idle recycling cannot race a frozen owner.
   shared_capacity_enabled && return 0
@@ -2091,6 +2095,8 @@ cmd_mirror_up() {
 # caller already locked). A failed recycle returns non-zero so a drain stops at
 # the first unsafe slot rather than walking through and quiescing the whole fleet.
 reconcile_stale_runners() {
+  shared_capacity_require_starts_open || return 0
+  shared_capacity_enabled && return 0
   # Re-read settings and secret files only after the caller holds fleet.lock.
   # Otherwise a drain waiting for the lock can recreate per-slot files from a
   # token that was cleared/rotated while it waited.
@@ -2221,6 +2227,8 @@ cmd_reconcile_config() {
 }
 
 reconcile_start() {
+  shared_capacity_require_starts_open || return 0
+  shared_capacity_enabled && return 0
   reconcile_stop || return 1
   nohup "$0" reconcile-drain >>"$RUNDIR/autoscale.log" 2>&1 &
   ( umask 077; printf '%s\n' "$!" > "$RECONCILE_PID" ) \
@@ -2232,6 +2240,14 @@ reconcile_stop() {
 }
 
 cmd_start() {
+  shared_capacity_require_starts_open || return 1
+  if shared_capacity_enabled; then
+    local shared_rc
+    if shared_capacity_call rebalance; then :; else
+      shared_rc=$?
+      [ "$shared_rc" -eq 75 ] || return "$shared_rc"
+    fi
+  fi
   validate_runner_mode || { err "$POOL_CONFIG_ERROR"; return 1; }
   local start_failed=0
   pool_tokens_ready || { err "one or more required $(provider_token_name) credentials are missing or invalid"; return 1; }
@@ -3971,6 +3987,9 @@ fi
 
 case "${1:-status}" in
   admission-close) with_fleet_lock wait cmd_admission_close ;;
+  shared-prepare) with_fleet_lock wait cmd_shared_prepare ;;
+  shared-adopt) with_fleet_lock wait cmd_shared_adopt ;;
+  shared-activate) with_fleet_lock wait cmd_shared_activate ;;
   start)        with_fleet_lock wait cmd_start ;;
   boot-autostart)   cmd_boot_autostart ;;
   docker-stopping)  cmd_docker_stopping ;;
