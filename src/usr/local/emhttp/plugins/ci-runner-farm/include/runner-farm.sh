@@ -134,6 +134,8 @@ DASHBOARD_WIDGET_ENABLE="true"       # show the Main->Dashboard status tile (rea
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-pools.sh
 . "$SCRIPT_DIR/runner-pools.sh"
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/shared-capacity.sh"
 # shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-recommendations.sh
 . "$SCRIPT_DIR/runner-recommendations.sh"
 # shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-history.sh
@@ -197,8 +199,15 @@ load_cfg
 validate_runner_mode() {
   pool_config_validate "$RUNNER_MODE" "$RUNNER_POOLS" "$GH_SCOPE" "$CI_PROVIDER" || return 1
   if pool_mode_enabled; then
-    [ "$AUTOSCALE" != true ] || { pool_error "Runner pools currently use each pool's fixed capacity; disable global autoscaling."; return 1; }
+    if [ "$AUTOSCALE" = true ] && ! shared_capacity_enabled; then
+      pool_error "Named-pool autoscaling requires shared host capacity admission."; return 1
+    fi
     [ "$IMAGE_AUTOUPDATE" != true ] || { pool_error "Runner pools require explicit image updates per pool; disable global image auto-update."; return 1; }
+  fi
+  if shared_capacity_enabled; then
+    [ "$RUNNER_MODE" = pools ] && [ "$CI_PROVIDER" = github ] \
+      && [ "$(pool_records | wc -l)" -eq 1 ] && pool_record build >/dev/null \
+      || { pool_error "Shared capacity requires one named GitHub build pool."; return 1; }
   fi
 }
 read_secret_file() {
@@ -750,7 +759,7 @@ heal_poisoned_runners() {
       err "selfheal: could not clear $root/docker/$c/buildkit; restarting $c unrepaired"
       failed=1
     fi
-    if docker start "$id" >/dev/null 2>&1; then
+    if start_owned_container "$c" "$id" >/dev/null 2>&1; then
       log "selfheal: $c restarted with fresh buildkit metadata (image/layer cache preserved)"
     else
       # A slot left stopped is not lost capacity for long: the reaper removes
@@ -785,6 +794,13 @@ autoscale_queue_depth() {
 # one autoscaling evaluation: keep AUTOSCALE_MIN_IDLE warm runners, within [MIN,MAX]
 autoscale_tick() {
   [ "$AUTOSCALE" = "true" ] || return 0
+  if pool_mode_enabled; then
+    validate_runner_mode || return 1
+    # The shared broker, rather than local count arithmetic, owns admission.
+    # Retrying every stable slot preserves queue age and repairs inert creates.
+    start_configured_capacity
+    return $?
+  fi
   reap_dead_runners || return 1  # drop dead containers first so idle accounting is real
   local cur=0 busy=0 idle=0 statef over target queue_target qdepth
   # GitHub retains its original cur-busy semantics; GitLab counts only explicit
@@ -1894,6 +1910,10 @@ start_one() {
   if docker inspect "$name" >/dev/null 2>&1; then
     snapshot="$(managed_runner_snapshot "$name")" \
       || { err "refusing fixed-name collision while starting $name"; return 1; }
+    if shared_capacity_enabled; then
+      shared_capacity_start "$name" "${snapshot%%|*}"
+      return $?
+    fi
     log "owned runner $name already exists; skipping"
     return 0
   fi
@@ -1901,18 +1921,29 @@ start_one() {
 }
 
 start_configured_capacity() {
-  local startn="$RUNNER_COUNT" i rec pool failed=0
+  local startn="$RUNNER_COUNT" i rec pool failed=0 rc
   if pool_mode_enabled; then
     while IFS= read -r rec; do
       pool="$(printf '%s' "$rec" | cut -d'|' -f2)"
       pool_activate "$pool" || { failed=1; continue; }
-      startn="$(pool_fixed "$pool")" || { failed=1; continue; }
+      if [ "$AUTOSCALE" = true ]; then
+        startn="$(pool_max "$pool")" || { failed=1; continue; }
+      else
+        startn="$(pool_fixed "$pool")" || { failed=1; continue; }
+      fi
       if [ "$IMAGE_SOURCE" = remote ] && provider_remote_image_host_pull_required; then
         registry_login || { failed=1; continue; }
         provider_prepare_remote_image "$(effective_image)" >/dev/null \
           || { err "could not prepare image $(effective_image) for pool $pool"; failed=1; continue; }
       fi
-      for i in $(seq 1 "$startn"); do start_one "$i" || failed=1; done
+      for i in $(seq 1 "$startn"); do
+        if start_one "$i"; then :; else
+          rc=$?
+          # Durable queued admission is healthy waiting demand, not a failed
+          # registration or permission to bypass the broker on the next tick.
+          if [ "$rc" -ne 75 ] || ! shared_capacity_enabled; then failed=1; fi
+        fi
+      done
     done < <(pool_records)
   else
     [ "$AUTOSCALE" = true ] && startn="$AUTOSCALE_MIN"
@@ -1951,6 +1982,13 @@ start_stopped_managed() {
     st="$(docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null)" \
       || { err "could not inspect stopped/running state for owned runner $c"; return 1; }
     [ "$st" = "true" ] && continue
+    if shared_capacity_enabled; then
+      pool_activate "$(runner_pool "$c")" || return 1
+      if shared_capacity_start "$c" "$id"; then :; else
+        [ "$?" -eq 75 ] || return 1
+      fi
+      continue
+    fi
     if [ "$provider" = gitlab ] && [ "$CI_PROVIDER" = gitlab ] \
       && [ "$gen" = "$(crf_confgen)" ]; then
       log "restarting stopped GitLab manager $c with its persisted system ID"
@@ -2324,7 +2362,8 @@ remove_runner() {
   CRF_REMOVE_SLOT="$c"
   CRF_REMOVE_ID="$immutable_id"
   CRF_REMOVE_PROVIDER="$provider"
-  "${provider}_remove_runner" "$c" "$purge"
+  "${provider}_remove_runner" "$c" "$purge" || return 1
+  shared_capacity_release "$c" "$immutable_id"
 }
 
 # Stop every running GitLab manager concurrently before a full fleet teardown.
@@ -3381,7 +3420,7 @@ cmd_recycle() {
     # replacement from being attempted at all. Docker diagnostics are untrusted,
     # so the detail is redacted on the way to the log.
     local rout
-    if ! rout="$(docker run "${ARGS[@]}" 2>&1 >/dev/null)"; then
+    if ! rout="$(run_owned_github_container "$idx" 2>&1 >/dev/null)"; then
       err "recycle: docker run failed:"
       printf '%s\n' "$rout" | redact_log_stream >&2
       clear_args_tmpdir

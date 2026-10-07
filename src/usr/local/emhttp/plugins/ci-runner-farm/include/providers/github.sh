@@ -611,7 +611,7 @@ github_start_one() {
   local idx="$1" name="$2" rc
   github_build_args "$idx" "$name" || { err "runner $name not started (registration-token error)"; return 1; }
   log "starting $name (pool=${CRF_POOL_ID:-default} cpus=$RUNNER_CPUS mem=$RUNNER_MEMORY scope=$GH_SCOPE image=$(effective_image))"
-  docker run "${ARGS[@]}" >/dev/null
+  run_owned_github_container "$idx" >/dev/null
   rc=$?
   clear_args_tmpdir
   return "$rc"
@@ -703,6 +703,10 @@ github_usage_context() {
 }
 
 github_validate() {
+  if shared_capacity_enabled; then
+    err "inert validation containers are disabled while shared host admission is active"
+    return 1
+  fi
   check_cache_root || return 1
   ensure_dirs || return 1
   registry_login || return 1

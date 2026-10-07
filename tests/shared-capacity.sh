@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+export CRF_CFGDIR="$tmp/config" CRF_RUNDIR="$tmp/run" CRF_SOURCE_ONLY=1
+mkdir -p "$CRF_CFGDIR" "$CRF_RUNDIR"
+# shellcheck source=/dev/null
+. src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-farm.sh
+fail() { printf 'SHARED CAPACITY FAIL: %s\n' "$*" >&2; exit 1; }
+logfile="$tmp/commands"
+docker_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+decision=75
+docker() {
+  printf 'docker %s\n' "$*" >> "$logfile"
+  case "$1" in create) printf '%s\n' "$docker_id" ;; run|start) return 0 ;; *) return 1 ;; esac
+}
+shared_capacity_call() { printf 'gate %s\n' "$*" >> "$logfile"; return "$decision"; }
+ARGS=(-d --name ci-runner-build-1 --memory 12g --cpus 1 --env-file "$tmp/token" image)
+CI_PROVIDER=github CRF_POOL_ID=build NAME_PREFIX=ci-runner-build
+touch "$CFGDIR/shared-capacity.enabled"
+if run_owned_github_container 1; then fail 'queued start reported running'; else [ "$?" -eq 75 ] || fail 'queue exit status lost'; fi
+grep -qF "gate start ci-runner-build-1 $docker_id" "$logfile" || fail 'immutable create did not reach gate'
+if grep -qE '^docker (run|start)' "$logfile"; then fail 'queued create bypassed admission'; fi
+grep -qF -- '--memory 12g --cpus 1 --env-file' "$logfile" || fail 'hard limits or private credential file changed'
+if grep -qF 'create -d' "$logfile"; then fail 'detached run flag reached create'; fi
+
+RUNNER_MODE=pools RUNNER_POOLS='v3|build|general-build|unraid,build|4|4|8|0|1|12g|builtin'
+GH_SCOPE=org AUTOSCALE=true IMAGE_AUTOUPDATE=false
+validate_runner_mode || fail 'shared named pool rejected autoscale'
+pool_base_refresh
+start_one() { printf 'slot %s\n' "$1" >> "$logfile"; return 75; }
+provider_remote_image_host_pull_required() { return 1; }
+: > "$logfile"
+autoscale_tick || fail 'queued slots failed whole fleet'
+[ "$(grep -c '^slot ' "$logfile")" -eq 8 ] || fail 'shared tick did not retry all eight stable slots'
+RUNNER_POOLS="$RUNNER_POOLS;v3|extra|extra-label||1|0|1|0|1|12g|builtin"
+if validate_runner_mode >/dev/null 2>&1; then fail 'unbudgeted extra pool accepted'; fi
+RUNNER_MODE=single
+if validate_runner_mode >/dev/null 2>&1; then fail 'legacy mode bypassed shared owner gate'; fi
+rm "$CFGDIR/shared-capacity.enabled"
+: > "$logfile"
+run_owned_github_container 1
+grep -q '^docker run -d ' "$logfile" || fail 'legacy run compatibility changed'
+printf 'shared-capacity: native admission, queued retries and mode restrictions passed\n'
