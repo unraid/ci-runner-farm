@@ -2,7 +2,23 @@
 # Native lifecycle bridge. Ansible installs this root-owned activation marker
 # only after the complete host inventory has been adopted by the shared broker.
 shared_capacity_enabled() { [ -e "$CFGDIR/shared-capacity.enabled" ] || [ -L "$CFGDIR/shared-capacity.enabled" ]; }
-shared_capacity_call() { /usr/local/sbin/qa-vm-service farm-capacity "$@"; }
+shared_capacity_call() {
+  local state_root
+  state_root="$(php -r '
+    $dir="/boot/config/plugins/qa-vm-service/";
+    foreach (["host-policy.json","host-plan.json"] as $name) {
+      $file=$dir.$name;
+      if (is_link($file) || !is_file($file) || fileowner($file)!==0 || (fileperms($file)&0022) || filesize($file)>16777216) exit(1);
+      $documents[$name]=json_decode(file_get_contents($file),true,512,JSON_THROW_ON_ERROR);
+    }
+    $root=$documents["host-policy.json"]["providerConfig"]["stateRoot"] ?? "";
+    $planned=$documents["host-plan.json"]["manifest"]["providerConfig"]["stateRoot"] ?? "";
+    if ($root!==$planned || !preg_match("~^/mnt/[A-Za-z0-9_./-]+$~",$root)) exit(1);
+    foreach (explode("/",$root) as $part) if ($part==="." || $part==="..") exit(1);
+    echo $root;
+  ')" || { err "shared capacity requires a matching protected provider policy and plan"; return 1; }
+  /usr/local/sbin/qa-vm-service --state-root "$state_root" farm-capacity "$@"
+}
 
 # Closing starts preserves running workers while adoption inventories every owner.
 # Broken symlinks also close starts; an incomplete closure must fail closed.

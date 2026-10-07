@@ -9,6 +9,18 @@ mkdir -p "$CRF_CFGDIR" "$CRF_RUNDIR"
 . src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-farm.sh
 fail() { printf 'SHARED CAPACITY FAIL: %s\n' "$*" >&2; exit 1; }
 logfile="$tmp/commands"
+# The general host has a different provider root from the OS host default.
+# A failed policy/plan read must never invoke the provider at that default.
+php() { printf '%s' '/mnt/cache/qa-vm-service-infra-01'; }
+function /usr/local/sbin/qa-vm-service() { printf 'provider %s\n' "$*" >> "$logfile"; }
+shared_capacity_call prepare
+grep -qx 'provider --state-root /mnt/cache/qa-vm-service-infra-01 farm-capacity prepare' "$logfile" \
+  || fail 'farm helper used the default provider root'
+: > "$logfile"
+php() { return 1; }
+if shared_capacity_call prepare >/dev/null 2>&1; then fail 'unreadable policy/plan invoked provider'; fi
+[ ! -s "$logfile" ] || fail 'failed root resolution invoked provider'
+unset -f php /usr/local/sbin/qa-vm-service
 docker_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 decision=75
 docker() {
