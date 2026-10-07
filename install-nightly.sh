@@ -76,13 +76,41 @@ for host in "$@"; do
   esac
   cleanup_stage() { ssh -- "$host" "rm -rf -- '$remote_stage'" >/dev/null 2>&1 || true; }
   trap cleanup_stage EXIT HUP INT TERM
-  scp -- "$plugin" "$host:$remote_stage/ci-runner-farm-nightly.plg"
-  ssh -- "$host" /bin/bash -s -- "$remote_stage/ci-runner-farm-nightly.plg" <<'REMOTE'
+  scp -- "$plugin" "$host:$remote_stage/ci-runner-farm.plg"
+  ssh -- "$host" /bin/bash -s -- "$remote_stage/ci-runner-farm.plg" <<'REMOTE'
 set -euo pipefail
 plugin="$1"
 [ "$(id -u)" = 0 ] || { echo "install-nightly: root SSH access is required" >&2; exit 1; }
 command -v plugin >/dev/null 2>&1 || { echo "install-nightly: Unraid plugin command is unavailable" >&2; exit 1; }
 plugin install "$plugin"
+# One plugin name must have one boot descriptor. Earlier installer versions
+# staged the channel filename, leaving a second descriptor able to replay an
+# older package at boot. Archive only a byte-identical duplicate after the
+# canonical install succeeds; unknown content requires operator diagnosis.
+canonical=/boot/config/plugins/ci-runner-farm.plg
+duplicate=/boot/config/plugins/ci-runner-farm-nightly.plg
+if [ -e "$duplicate" ]; then
+  [ ! -L "$canonical" ] && [ ! -L "$duplicate" ]
+  cmp -s "$canonical" "$duplicate" || {
+    echo "install-nightly: duplicate descriptor differs; refusing cleanup" >&2
+    exit 1
+  }
+  backup=/boot/config/plugins/ci-runner-farm/descriptor-backups
+  [ ! -L "$backup" ]
+  install -d -m 0700 "$backup"
+  digest="$(sha256sum "$duplicate" | cut -d' ' -f1)"
+  saved="$backup/$digest.nightly.plg"
+  [ ! -L "$saved" ]
+  if [ -e "$saved" ]; then cmp -s "$duplicate" "$saved"; else cp -p "$duplicate" "$saved"; fi
+  rm -- "$duplicate"
+  runtime=/var/log/plugins/ci-runner-farm-nightly.plg
+  if [ -L "$runtime" ]; then
+    rm -- "$runtime"
+  elif [ -f "$runtime" ]; then
+    cmp -s "$runtime" "$canonical"
+    mv -- "$runtime" "$backup/$digest.runtime.plg"
+  fi
+fi
 REMOTE
   trap - EXIT HUP INT TERM
   ssh -- "$host" "rm -rf -- '$remote_stage'"
