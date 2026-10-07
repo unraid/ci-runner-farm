@@ -82,35 +82,57 @@ set -euo pipefail
 plugin="$1"
 [ "$(id -u)" = 0 ] || { echo "install-nightly: root SSH access is required" >&2; exit 1; }
 command -v plugin >/dev/null 2>&1 || { echo "install-nightly: Unraid plugin command is unavailable" >&2; exit 1; }
-plugin install "$plugin"
-# One plugin name must have one boot descriptor. Earlier installer versions
-# staged the channel filename, leaving a second descriptor able to replay an
-# older package at boot. Archive only a byte-identical duplicate after the
-# canonical install succeeds; unknown content requires operator diagnosis.
+# Validate both legacy locations before changing the installed plugin. An older
+# descriptor is recognized only when it matches the installed canonical file.
 canonical=/boot/config/plugins/ci-runner-farm.plg
 duplicate=/boot/config/plugins/ci-runner-farm-nightly.plg
-if [ -e "$duplicate" ]; then
-  [ ! -L "$canonical" ] && [ ! -L "$duplicate" ]
-  cmp -s "$canonical" "$duplicate" || {
-    echo "install-nightly: duplicate descriptor differs; refusing cleanup" >&2
+runtime=/var/log/plugins/ci-runner-farm-nightly.plg
+backup=/boot/config/plugins/ci-runner-farm/descriptor-backups
+[ ! -L "$canonical" ] && [ ! -L "$backup" ]
+archive_descriptor() {
+  local file="$1" suffix="$2" digest saved
+  [ ! -L "$file" ] && [ -f "$file" ]
+  if ! cmp -s "$file" "$plugin" && ! { [ -f "$canonical" ] && cmp -s "$file" "$canonical"; }; then
+    echo "install-nightly: unrecognized legacy descriptor; refusing installation" >&2
     exit 1
-  }
-  backup=/boot/config/plugins/ci-runner-farm/descriptor-backups
-  [ ! -L "$backup" ]
-  install -d -m 0700 "$backup"
-  digest="$(sha256sum "$duplicate" | cut -d' ' -f1)"
-  saved="$backup/$digest.nightly.plg"
-  [ ! -L "$saved" ]
-  if [ -e "$saved" ]; then cmp -s "$duplicate" "$saved"; else cp -p "$duplicate" "$saved"; fi
-  rm -- "$duplicate"
-  runtime=/var/log/plugins/ci-runner-farm-nightly.plg
-  if [ -L "$runtime" ]; then
-    rm -- "$runtime"
-  elif [ -f "$runtime" ]; then
-    cmp -s "$runtime" "$canonical"
-    mv -- "$runtime" "$backup/$digest.runtime.plg"
   fi
+  install -d -m 0700 "$backup"
+  digest="$(sha256sum "$file" | cut -d' ' -f1)"
+  saved="$backup/$digest.$suffix.plg"
+  [ ! -L "$saved" ]
+  if [ -e "$saved" ]; then cmp -s "$file" "$saved"; else cp -p "$file" "$saved"; fi
+  chmod 0600 "$saved"
+  printf '%s' "$digest"
+}
+duplicate_digest=
+runtime_digest=
+runtime_target=
+if [ -e "$duplicate" ] || [ -L "$duplicate" ]; then
+  duplicate_digest="$(archive_descriptor "$duplicate" nightly)"
 fi
+if [ -L "$runtime" ]; then
+  runtime_target="$(readlink "$runtime")"
+  case "$runtime_target" in
+    /boot/config/plugins/ci-runner-farm.plg|/boot/config/plugins/ci-runner-farm-nightly.plg) ;;
+    *) echo "install-nightly: unrecognized runtime link; refusing installation" >&2; exit 1 ;;
+  esac
+elif [ -e "$runtime" ]; then
+  runtime_digest="$(archive_descriptor "$runtime" runtime)"
+fi
+plugin install "$plugin"
+cmp -s "$canonical" "$plugin"
+# Validate every retained identity before unlinking either legacy location.
+if [ -n "$duplicate_digest" ]; then
+  [ ! -L "$duplicate" ] && [ "$(sha256sum "$duplicate" | cut -d' ' -f1)" = "$duplicate_digest" ]
+fi
+if [ -n "$runtime_digest" ]; then
+  [ ! -L "$runtime" ] && [ "$(sha256sum "$runtime" | cut -d' ' -f1)" = "$runtime_digest" ]
+elif [ -n "$runtime_target" ]; then
+  [ -L "$runtime" ] && [ "$(readlink "$runtime")" = "$runtime_target" ]
+fi
+[ -z "$duplicate_digest" ] || rm -- "$duplicate"
+if [ -n "$runtime_digest" ] || [ -n "$runtime_target" ]; then rm -- "$runtime"; fi
+
 REMOTE
   trap - EXIT HUP INT TERM
   ssh -- "$host" "rm -rf -- '$remote_stage'"

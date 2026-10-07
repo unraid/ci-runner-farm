@@ -13,7 +13,7 @@ shared_capacity_call() {
     }
     $root=$documents["host-policy.json"]["providerConfig"]["stateRoot"] ?? "";
     $planned=$documents["host-plan.json"]["manifest"]["providerConfig"]["stateRoot"] ?? "";
-    if ($root!==$planned || !preg_match("~^/mnt/[A-Za-z0-9_./-]+$~",$root)) exit(1);
+    if ($root!==$planned || !preg_match("~\\A/mnt/[A-Za-z0-9_./-]+\\z~",$root)) exit(1);
     foreach (explode("/",$root) as $part) if ($part==="." || $part==="..") exit(1);
     echo $root;
   ')" || { err "shared capacity requires a matching protected provider policy and plan"; return 1; }
