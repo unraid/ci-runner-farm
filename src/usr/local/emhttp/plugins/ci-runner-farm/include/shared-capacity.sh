@@ -44,6 +44,11 @@ shared_capacity_start() {
   github_start_one "${name##*-}" "$name"
 }
 
+shared_capacity_prepare_release() {
+  shared_capacity_enabled || return 0
+  shared_capacity_call prepare-release "$1" "$2"
+}
+
 shared_capacity_release() {
   shared_capacity_enabled || return 0
   shared_capacity_call release "$1" "$2"

@@ -2394,6 +2394,7 @@ remove_runner() {
   CRF_REMOVE_SLOT="$c"
   CRF_REMOVE_ID="$immutable_id"
   CRF_REMOVE_PROVIDER="$provider"
+  shared_capacity_prepare_release "$c" "$immutable_id" || return 1
   "${provider}_remove_runner" "$c" "$purge" || return 1
   shared_capacity_release "$c" "$immutable_id"
 }
@@ -3452,8 +3453,14 @@ cmd_recycle() {
     # a variable rather than a temp file so a full RUNDIR cannot stop the
     # replacement from being attempted at all. Docker diagnostics are untrusted,
     # so the detail is redacted on the way to the log.
-    local rout
-    if ! rout="$(run_owned_github_container "$idx" 2>&1 >/dev/null)"; then
+    local rout recreate_rc
+    if rout="$(run_owned_github_container "$idx" 2>&1 >/dev/null)"; then :; else
+      recreate_rc=$?
+      if shared_capacity_enabled && [ "$recreate_rc" -eq 75 ]; then
+        clear_args_tmpdir
+        echo '{"ok":true,"queued":true}'
+        return 75
+      fi
       err "recycle: docker run failed:"
       printf '%s\n' "$rout" | redact_log_stream >&2
       clear_args_tmpdir
