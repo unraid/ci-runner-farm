@@ -5,6 +5,7 @@ cd "$(dirname "$0")/.."
 
 fail() { printf 'utf8-safety: FAIL: %s\n' "$*" >&2; exit 1; }
 command -v php >/dev/null 2>&1 || fail "php is required"
+command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 
 php -d display_errors=0 <<'PHP' || fail "encoding helpers did not handle invalid UTF-8 safely"
 <?php

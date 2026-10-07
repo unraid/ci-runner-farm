@@ -96,38 +96,30 @@ github_runner_pid_pressure() {
   [ "$((current * 100))" -ge "$((limit * LIFECYCLE_PID_PRESSURE_PERCENT))" ]
 }
 
-# Return one idle slot that needs a full recycle. The marker requires two
-# consecutive observations for the same immutable container ID. This prevents
-# one slow Docker response from stopping a healthy runner and lets a busy job
-# clear the marker before the next check.
+# Only a positively exited Docker owner may be recycled by the legacy watchdog.
+# A missing Worker or an old completion log cannot close GitHub job admission.
+# Job-boundary hooks own cleanup while a runner is live. Shared pools use their
+# fenced withdrawal protocol instead of this legacy watchdog.
+github_runner_exited() {
+  local state
+  state="$(docker inspect -f '{{.State.Status}}|{{.State.Running}}|{{.State.Paused}}|{{.State.Restarting}}|{{.State.Pid}}' "$1" 2>/dev/null)" || return 1
+  [ "$state" = 'exited|false|false|false|0' ]
+}
+
 github_lifecycle_candidate() {
-  [ "$DIND" = true ] || return 0
-  local names c snapshot id provider role index gen state marker marked_id count problem pressure_rc
+  local names c snapshot id provider role index gen marker marked_id count
   names="$(managed_names)" || return 1
   for c in $names; do
     [ -n "$c" ] || continue
     snapshot="$(managed_runner_snapshot "$c")" || return 1
     IFS='|' read -r id provider role index gen <<< "$snapshot"
     [ "$provider" = github ] && [ "$role" = runner ] || continue
-    state="$(github_runner_state "$c")"
-    if [ "$state" != idle ]; then
-      rm -f "$RUNDIR/github-lifecycle.$c" 2>/dev/null || true
+    marker="$RUNDIR/github-lifecycle.$c"
+    if ! github_runner_exited "$id"; then
+      rm -f "$marker" 2>/dev/null || true
       continue
     fi
-
-    problem=0
-    github_job_scope_clean "$c" || problem=1
-    if [ "$problem" -eq 0 ]; then
-      github_runner_pid_pressure "$c"
-      pressure_rc=$?
-      [ "$pressure_rc" -eq 0 ] && problem=1
-    fi
-    if [ "$problem" -eq 0 ]; then
-      rm -f "$RUNDIR/github-lifecycle.$c" 2>/dev/null || true
-      continue
-    fi
-
-    marker="$RUNDIR/github-lifecycle.$c"; marked_id=""; count=0
+    marked_id=""; count=0
     [ -f "$marker" ] && read -r marked_id count < "$marker"
     [ "$marked_id" = "$id" ] || count=0
     case "$count" in ''|*[!0-9]*) count=0 ;; esac
@@ -137,8 +129,6 @@ github_lifecycle_candidate() {
       printf '%s\n' "$c"
       return 0
     fi
-    printf '[ci-runner-farm] lifecycle: %s idle but job-scope cleanup or PID check failed (confirmation %s/%s)\n' \
-      "$c" "$count" "$LIFECYCLE_CONFIRMATIONS" >&2
   done
 }
 
