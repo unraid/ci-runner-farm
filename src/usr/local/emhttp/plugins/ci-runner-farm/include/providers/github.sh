@@ -703,6 +703,7 @@ github_usage_context() {
 }
 
 github_validate() {
+  shared_capacity_require_starts_open || return 1
   if shared_capacity_enabled; then
     err "inert validation containers are disabled while shared host admission is active"
     return 1

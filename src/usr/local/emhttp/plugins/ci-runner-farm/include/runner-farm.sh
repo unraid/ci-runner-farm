@@ -796,6 +796,9 @@ autoscale_tick() {
   [ "$AUTOSCALE" = "true" ] || return 0
   if pool_mode_enabled; then
     validate_runner_mode || return 1
+    if shared_capacity_call rebalance; then :; else
+      [ "$?" -eq 75 ] || return 1
+    fi
     # The shared broker, rather than local count arithmetic, owns admission.
     # Retrying every stable slot preserves queue age and repairs inert creates.
     start_configured_capacity
@@ -956,6 +959,9 @@ autoscale_status() {
 # Run the provider lifecycle watchdog independently of autoscaling. A fixed-size
 # farm must receive the same cleanup and recycle protection as an autoscaled one.
 lifecycle_tick() {
+  # Shared idle withdrawal owns local admission closure and exact worker proof.
+  # Legacy log-derived idle recycling cannot race a frozen owner.
+  shared_capacity_enabled && return 0
   local candidate snapshot provider role index gen
   candidate="$(provider_call lifecycle_candidate)" \
     || { err "lifecycle: provider could not inspect idle job scope"; return 1; }
@@ -1906,6 +1912,7 @@ clear_args_tmpdir() {
 }
 
 start_one() {
+  shared_capacity_require_starts_open || return 1
   local idx="$1" name="${NAME_PREFIX}-$1" snapshot
   if docker inspect "$name" >/dev/null 2>&1; then
     snapshot="$(managed_runner_snapshot "$name")" \
@@ -1973,6 +1980,7 @@ recreate_stopped_runner() {
 # routine outage would create needless remote churn and make recovery depend on
 # GitLab availability.
 start_stopped_managed() {
+  shared_capacity_require_starts_open || return 1
   local c st provider idx names snapshot id role gen
   names="$(managed_names)" || return 1
   for c in $names; do
@@ -3293,6 +3301,7 @@ cmd_recommendations_json() {
 }
 
 cmd_recycle() {
+  shared_capacity_require_starts_open || return 1
   # Replace one slot without purging its Docker/cache roots. The old provider
   # owns removal ordering; the selected provider owns replacement startup.
   local name="$1" idx old_provider old_gen cur_gen image pool
@@ -3961,6 +3970,7 @@ if [ "${CRF_SOURCE_ONLY:-0}" = 1 ]; then
 fi
 
 case "${1:-status}" in
+  admission-close) with_fleet_lock wait cmd_admission_close ;;
   start)        with_fleet_lock wait cmd_start ;;
   boot-autostart)   cmd_boot_autostart ;;
   docker-stopping)  cmd_docker_stopping ;;
