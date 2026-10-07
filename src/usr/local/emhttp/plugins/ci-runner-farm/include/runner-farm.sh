@@ -799,6 +799,8 @@ autoscale_tick() {
   [ "$AUTOSCALE" = "true" ] || return 0
   if pool_mode_enabled; then
     validate_runner_mode || return 1
+    pool_activate build || return 1
+    shared_capacity_poison_scan || err "shared capacity: poison scan unavailable; preserving existing owner intents"
     if shared_capacity_call rebalance; then :; else
       [ "$?" -eq 75 ] || return 1
     fi
@@ -2247,6 +2249,8 @@ cmd_start() {
   shared_capacity_require_starts_open || return 1
   if shared_capacity_enabled; then
     local shared_rc
+    pool_activate build || return 1
+    shared_capacity_poison_scan || err "shared capacity: poison scan unavailable; preserving existing owner intents"
     if shared_capacity_call rebalance; then :; else
       shared_rc=$?
       [ "$shared_rc" -eq 75 ] || return "$shared_rc"

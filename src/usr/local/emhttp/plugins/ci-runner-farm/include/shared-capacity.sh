@@ -76,3 +76,30 @@ cmd_shared_adopt() { shared_capacity_call adopt; }
 cmd_shared_activate() { shared_capacity_call activate; }
 
 cmd_shared_prepare() { shared_capacity_call prepare; }
+
+# The selected repository list is public routing data, never a credential. Org
+# farms normally leave GH_REPOS empty; use the reviewed paired-owner config so
+# poison detection does not silently scan zero repositories in shared mode.
+shared_capacity_poison_scan() {
+  local configured="$GH_REPOS" repositories
+  if [ -z "$configured" ]; then
+    repositories="$(php -r '
+      $file="/boot/config/plugins/qa-vm-service/runner-integration.json";
+      if (is_link($file) || !is_file($file)) exit(1);
+      $config=json_decode(file_get_contents($file),true,512,JSON_THROW_ON_ERROR);
+      if (($config["organization"] ?? "") !== $argv[1]) exit(1);
+      $repos=$config["runnerGroupRepositories"] ?? [];
+      if (!$repos) exit(1);
+      foreach ($repos as $repo) {
+        if (!preg_match("~^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$~",$repo)) exit(1);
+        if (explode("/",$repo)[0] !== $argv[1]) exit(1);
+      }
+      echo implode(" ",$repos);
+    ' "$GH_OWNER")" || return 1
+    GH_REPOS="$repositories"
+  fi
+  local rc=0
+  provider_build_poison_scan || rc=$?
+  GH_REPOS="$configured"
+  return "$rc"
+}

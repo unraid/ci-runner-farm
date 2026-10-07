@@ -43,9 +43,16 @@ validate_runner_mode || fail 'shared named pool rejected autoscale'
 pool_base_refresh
 start_one() { printf 'slot %s\n' "$1" >> "$logfile"; return 75; }
 provider_remote_image_host_pull_required() { return 1; }
+GH_REPOS=unraid/core
+provider_build_poison_scan() {
+  [ "$NAME_PREFIX" = ci-runner-build ] || fail 'poison scan lost named owner scope'
+  [ "$GH_REPOS" = unraid/core ] || fail 'poison scan lost repository scope'
+  printf 'poison-scan\n' >> "$logfile"
+}
 : > "$logfile"
 autoscale_tick || fail 'queued slots failed whole fleet'
 [ "$(grep -c '^slot ' "$logfile")" -eq 8 ] || fail 'shared tick did not retry all eight stable slots'
+grep -qx 'poison-scan' "$logfile" || fail 'shared tick bypassed poison detection'
 grep -qx 'gate rebalance' "$logfile" || fail 'shared tick did not evaluate priority pressure'
 RUNNER_POOLS="$RUNNER_POOLS;v3|extra|extra-label||1|0|1|0|1|12g|builtin"
 if validate_runner_mode >/dev/null 2>&1; then fail 'unbudgeted extra pool accepted'; fi
