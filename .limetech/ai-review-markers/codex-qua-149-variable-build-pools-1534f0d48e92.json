@@ -1,20 +1,8 @@
 {
+  "disposition": "PATCH",
+  "forecast_commit": "3ed39feeb9b3fe15a4a9560857acbd4d7af6980c",
+  "reviewed_sha": "aae24c38505fc1f5ea86cbe152f774e161fcc605",
   "schema": "limetech.ai-review-marker.v2",
-  "stage": "forecast",
-  "outcome": "Build jobs choose smaller or larger RAM/CPU through existing named pool routing; exact enforced sizes are charged to the same host budget before pickup, preserving live ownership and release fences.",
-  "minimum_design": "Extend existing build pool defaults with optional bounded request ceiling; attest Docker hard limits, preserve existing fixed grants, adopt/retry/release exact resource requests; permit reviewed build-* named pools within eight total native slots and unchanged four-builder default floor.",
-  "reuse_decisions": [
-    {
-      "name": "Existing V3 named pools and GitHub routing labels",
-      "decision": "extend",
-      "rationale": "Jobs already select named pools with matching hard limits; no new scheduler, workflow parser or container resizing is required."
-    },
-    {
-      "name": "Existing shared broker requests, fences and native owner lifecycle",
-      "decision": "extend",
-      "rationale": "Already owns atomic host accounting, idle withdrawal and recovery; extend resource attestation across classes instead of adding an allocation owner."
-    }
-  ],
-  "expected_structural_delta": "Zero new owners, services, dependencies or journals. One optional ceiling in existing Pool, small existing validation helpers, tests and documentation.",
-  "disposition": "PATCH"
+  "stage": "final",
+  "unresolved_proportionality_findings": []
 }
