@@ -905,16 +905,22 @@ autoscale_start() {
 # still uses the same usage cache, so this reduces duplicate Docker/provider
 # work instead of creating a second observation path.
 recommendation_history_daemon() {
+  local sleeper=""
   exec 8>&- 7>&- 9>&- 2>/dev/null || true
-  trap 'rm -f "$HISTORY_PID" 2>/dev/null || true' EXIT
-  trap 'rm -f "$HISTORY_PID" 2>/dev/null || true; exit 0' HUP INT TERM
+  trap 'if [ -n "$sleeper" ]; then if jobs -pr | grep -qx "$sleeper"; then kill "$sleeper" 2>/dev/null || true; fi; wait "$sleeper" 2>/dev/null || true; fi; rm -f "$HISTORY_PID" 2>/dev/null || true' EXIT
+  trap 'exit 0' HUP INT TERM
   log "recommendation history daemon up (every 30s)"
   while true; do
     load_cfg
     [ "$CI_PROVIDER" = gitlab ] || CI_PROVIDER=github
     reload_secret_files
     ( flock -n 9 || exit 0; "$0" usage-refresh ) 9>"$RUNDIR/usage.lock" >/dev/null 2>&1 &
-    sleep 30
+    # Waiting on a background child lets Bash run TERM immediately. A foreground
+    # sleep delays the trap beyond the native stop worker's two-second grace.
+    sleep 30 &
+    sleeper=$!
+    wait "$sleeper" || true
+    sleeper=""
   done
 }
 
