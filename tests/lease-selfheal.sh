@@ -154,6 +154,7 @@ CURL_LOG="$tmp/curl.log"; : > "$CURL_LOG"
 curl() {
   printf '%s\n' "$*" >> "$CURL_LOG"
   cat >/dev/null   # consume the stdin curl config carrying the PAT
+  [ "${CURL_FAIL:-false}" != true ] || return 22
   case "$*" in
     */jobs/700001/logs*)
       printf '2026-08-16T20:57:43.6390511Z #13 ERROR: lease "idf11ya2iiot5bqwvr7qojagq": not found\n'
@@ -163,6 +164,11 @@ curl() {
     *) printf 'ordinary failing job log without the signature\n' ;;
   esac
 }
+
+# A failed log request must not make any failed job permanently seen.
+CURL_FAIL=true github_build_poison_scan || fail "uncertain scan failed"
+[ ! -s "$CRF_RUNDIR/poison-scan.seen" ] || fail "failed log download entered seen cache"
+[ ! -e "$CRF_RUNDIR/poison-pending.ci-runner-2" ] || fail "failed log download flagged an owner"
 
 # ── Detection ────────────────────────────────────────────────────────────────
 github_build_poison_scan || fail "scan returned non-zero on the fixture"

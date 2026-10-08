@@ -415,20 +415,30 @@ github_failed_local_jobs() {
 # logs that matter are small. grep without -q reads to EOF, so pipefail cannot
 # turn an early-match SIGPIPE into a false negative.
 github_job_log_poisoned() {
-  local repo="$1" job_id="$2"
-  [ -n "$ACCESS_TOKEN" ] || return 1
-  printf 'header = "Authorization: Bearer %s"\n' "$ACCESS_TOKEN" \
-    | curl -fsSL -m 30 --max-filesize 8000000 --config - \
-      -H "Accept: application/vnd.github+json" \
-      "https://api.github.com/repos/${repo}/actions/jobs/${job_id}/logs" 2>/dev/null \
-    | grep -E "$GITHUB_POISON_SIGNATURE" >/dev/null 2>&1
+  local repo="$1" job_id="$2" status
+  [ -n "$ACCESS_TOKEN" ] || return 2
+  # Capture every pipe status, including transport failure. Only a complete
+  # download can become a durable seen job; uncertain downloads retry later.
+  local outcomes=()
+  {
+    printf 'header = "Authorization: Bearer %s"\n' "$ACCESS_TOKEN" \
+      | curl -fsSL -m 30 --max-filesize 8000000 --config - \
+        -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/repos/${repo}/actions/jobs/${job_id}/logs" 2>/dev/null \
+      | grep -E "$GITHUB_POISON_SIGNATURE" >/dev/null 2>&1
+    outcomes=("${PIPESTATUS[@]}")
+  } || true
+  [ "${outcomes[0]}" -eq 0 ] && [ "${outcomes[1]}" -eq 0 ] || return 2
+  status="${outcomes[2]}"
+  [ "$status" -le 1 ] || return 2
+  return "$status"
 }
 
 github_build_poison_scan() {
   [ "$DIND" = "true" ] || return 0     # no nested daemon, no buildkit store to poison
   [ -n "$ACCESS_TOKEN" ] || return 0
   local stampf="$RUNDIR/poison-scan.stamp" seenf="$RUNDIR/poison-scan.seen"
-  local now last=0 cutoff repo run_id line jid slot snapshot id provider role index gen
+  local now last=0 cutoff repo run_id line jid slot snapshot id provider role index gen log_status
   now="$(date +%s)"
   [ -f "$stampf" ] && read -r last < "$stampf"
   case "$last" in ''|*[!0-9]*) last=0 ;; esac
@@ -444,14 +454,17 @@ github_build_poison_scan() {
       for line in $(github_failed_local_jobs "$repo" "$run_id"); do
         jid="${line%%|*}"; slot="${line##*|}"
         grep -qx "$jid" "$seenf" 2>/dev/null && continue
-        echo "$jid" >> "$seenf"
-        github_job_log_poisoned "$repo" "$jid" || continue
+        log_status=0
+        github_job_log_poisoned "$repo" "$jid" || log_status=$?
+        [ "$log_status" -le 1 ] || continue
+        if [ "$log_status" -eq 1 ]; then echo "$jid" >> "$seenf"; continue; fi
         # Flag the slot with its current immutable container ID so the healer
         # can discard the flag if the slot is replaced before repair runs.
         snapshot="$(managed_runner_snapshot "$slot" 2>/dev/null)" || continue
         IFS='|' read -r id provider role index gen <<< "$snapshot"
         log "selfheal: job $jid on $slot failed with corrupt buildkit metadata -> flagging for repair"
-        echo "$id" > "$RUNDIR/poison-pending.$slot"
+        echo "$id" > "$RUNDIR/poison-pending.$slot" || continue
+        echo "$jid" >> "$seenf"
       done
     done
   done
@@ -496,6 +509,10 @@ github_build_args() {
         || { err "runner label kvm requires group-writable /dev/kvm"; return 1; }
       ;;
   esac
+  local registration_labels="$RUNNER_LABELS"
+  if shared_capacity_enabled; then
+    registration_labels=crf-shared-awaiting-identity
+  fi
   ARGS_TMPDIR=""
   ARGS=(
     -d --restart=no
@@ -510,7 +527,7 @@ github_build_args() {
     --add-host "host.docker.internal:host-gateway"
     --add-host "runner-farm.host:${host_service_ip}"
     -e RUNNER_NAME="$(host)-${name}"
-    -e LABELS="$RUNNER_LABELS"
+    -e LABELS="$registration_labels"
     -e DISABLE_AUTO_UPDATE="true"
     -e DISABLE_AUTOMATIC_DEREGISTRATION="true"
     -e RUN_AS_ROOT="$RUN_AS_ROOT"
@@ -518,6 +535,10 @@ github_build_args() {
     -e RUNNER_WORKDIR="/_work"
     -e npm_config_cache="/home/runner/.npm"
   )
+  if shared_capacity_enabled; then
+    ARGS+=( -e NO_DEFAULT_LABELS=true
+      --label "net.unraid.ci-runner-farm.routing-labels=$RUNNER_LABELS" )
+  fi
   [ -z "$kvm_gid" ] || ARGS+=( --device /dev/kvm --group-add "$kvm_gid" -e "KVM_GID=$kvm_gid" )
   [ "$EPHEMERAL" = "true" ] && ARGS+=( -e EPHEMERAL="true" )
   local m hostdir
@@ -592,6 +613,9 @@ github_build_args() {
     chmod 600 "$envf" 2>/dev/null \
       || { rm -rf "$envdir"; err "could not protect the registration-token file for $name"; return 1; }
     ARGS+=( --env-file "$envf" )
+    if shared_capacity_enabled; then
+      ARGS+=( --label "net.unraid.ci-runner-farm.registration-issued=$(date +%s)" )
+    fi
     ARGS_TMPDIR="$envdir"
   fi
   ARGS+=( "$image" )
@@ -601,7 +625,7 @@ github_start_one() {
   local idx="$1" name="$2" rc
   github_build_args "$idx" "$name" || { err "runner $name not started (registration-token error)"; return 1; }
   log "starting $name (pool=${CRF_POOL_ID:-default} cpus=$RUNNER_CPUS mem=$RUNNER_MEMORY scope=$GH_SCOPE image=$(effective_image))"
-  docker run "${ARGS[@]}" >/dev/null
+  run_owned_github_container "$idx" >/dev/null
   rc=$?
   clear_args_tmpdir
   return "$rc"
@@ -693,6 +717,11 @@ github_usage_context() {
 }
 
 github_validate() {
+  shared_capacity_require_starts_open || return 1
+  if shared_capacity_enabled; then
+    err "inert validation containers are disabled while shared host admission is active"
+    return 1
+  fi
   check_cache_root || return 1
   ensure_dirs || return 1
   registry_login || return 1

@@ -65,3 +65,40 @@ cmd_stop >/dev/null 2>&1 || true
 grep -qx 'history' "$stop_calls" || fail 'cmd_stop did not stop history daemon first'
 
 echo "recommendation-history-integration: OK"
+
+# Exercise the real wait/trap boundary: native stop allows only two seconds.
+worker="$tmp/history-worker.sh"
+cat > "$worker" <<'WORKER'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "${1:-}" != usage-refresh ] || exit 0
+source "$HISTORY_SOURCE"
+load_cfg() { :; }
+reload_secret_files() { :; }
+log() { :; }
+recommendation_history_daemon
+WORKER
+chmod +x "$worker"
+export HISTORY_SOURCE="$PWD/src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-farm.sh"
+"$worker" &
+worker_pid=$!
+sleeper_pid=""
+for _ in $(seq 1 20); do
+  sleeper_pid="$(ps -ax -o pid=,ppid=,comm= | awk -v parent="$worker_pid" '$2==parent && $3 ~ /(^|\/)sleep$/ {print $1}')"
+  [ -z "$sleeper_pid" ] || break
+  sleep 0.05
+done
+[ -n "$sleeper_pid" ] || fail 'history worker did not enter the real sleep boundary'
+kill -TERM "$worker_pid"
+for _ in $(seq 1 20); do
+  kill -0 "$worker_pid" 2>/dev/null || break
+  sleep 0.05
+done
+if kill -0 "$worker_pid" 2>/dev/null; then
+  kill -TERM "$sleeper_pid" 2>/dev/null || true
+  wait "$worker_pid" || true
+  fail 'history TERM waited for the thirty-second sleep'
+fi
+wait "$worker_pid"
+! kill -0 "$sleeper_pid" 2>/dev/null || fail 'history TERM left its sleep child running'
+echo 'recommendation-history-shutdown: OK'

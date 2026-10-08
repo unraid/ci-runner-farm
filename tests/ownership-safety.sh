@@ -147,6 +147,27 @@ run_recycle_tests() (
   # logs, so assert that position rather than mere presence anywhere in the stream.
   [ "$(tail -n 1 "$tmp/recycle-runfail.out")" = '{"ok":false,"error":"removed but not recreated"}' ] \
     || fail "recycle changed its final-line JSON verdict on a failed replacement"
+
+  # Shared recycling persists removal intent before the provider disappears,
+  # then preserves the broker's queued outcome instead of a Docker failure.
+  shared_capacity_enabled() { return 0; }
+  shared_capacity_prepare_release() { printf 'prepare-release %s %s\n' "$1" "$2" >> "$mutation_log"; }
+  shared_capacity_release() { printf 'release %s %s\n' "$1" "$2" >> "$mutation_log"; }
+  run_owned_github_container() { return 75; }
+  : > "$mutation_log"; REMOVED=0
+  if cmd_recycle ci-runner-1 >"$tmp/recycle-queued.out"; then
+    fail "queued recycle lost its queued exit status"
+  else
+    [ "$?" -eq 75 ] || fail "queued recycle reported creation failure"
+  fi
+  [ "$(tail -n 1 "$tmp/recycle-queued.out")" = '{"ok":true,"queued":true}' ] \
+    || fail "queued recycle returned a failed verdict"
+  prepare_line=$(grep -n '^prepare-release ' "$mutation_log" | cut -d: -f1)
+  remove_line=$(grep -n '^docker rm ' "$mutation_log" | cut -d: -f1)
+  release_line=$(grep -n '^release ' "$mutation_log" | cut -d: -f1)
+  [ "$prepare_line" -lt "$remove_line" ] && [ "$remove_line" -lt "$release_line" ] \
+    || fail "shared release effect ordering changed"
+
 )
 
 run_github_validate_test() (

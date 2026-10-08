@@ -95,6 +95,19 @@ printf '%s\n' "$github_args" | grep -qx -- '--cgroupns=private' || fail "GitHub 
 printf '%s\n' "$github_args" | grep -qx 'START_DOCKER_SERVICE=true' || fail "GitHub DinD environment missing"
 printf '%s\n' "$github_args" | grep -qx '/_work:rw,exec,size=2g' || fail "GitHub workspace tmpfs changed"
 
+# Shared registration must not accept jobs before durable identity binding.
+clear_args_tmpdir
+GH_SCOPE=org
+: > "$CFGDIR/shared-capacity.enabled"
+github_build_args 1 ci-runner-build-1 || fail "shared registration generation failed"
+shared_args="$(printf '%s\n' "${ARGS[@]}")"
+grep -qx 'LABELS=crf-shared-awaiting-identity' <<< "$shared_args" || fail "shared registration has job labels"
+grep -qx 'NO_DEFAULT_LABELS=true' <<< "$shared_args" || fail "default routing labels remain enabled"
+grep -qx 'net.unraid.ci-runner-farm.routing-labels=self-hosted,unraid,build' <<< "$shared_args" || fail "immutable desired routing missing"
+if grep -qx 'LABELS=self-hosted,unraid,build' <<< "$shared_args"; then fail "job routing published before durable registration"; fi
+clear_args_tmpdir
+rm "$CFGDIR/shared-capacity.enabled"
+
 # Generic user-share mounts work across repository/org runners, owners, and
 # runner groups; CACHE_ROOT remains separate for Docker-in-Docker data.
 clear_args_tmpdir || fail "engine could not retire the first GitHub registration-token dir"
