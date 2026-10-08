@@ -86,3 +86,28 @@ registration and allocation fence before replacing the inert label with those
 routing labels. Publication failures remain charged and recover under the native
 fleet lock. The installed image must honor `NO_DEFAULT_LABELS`; existing running
 builders keep their routing during adoption.
+
+## Per-job build sizes
+
+Compatible provider versions admit multiple existing V3 named pools: `build`
+and size classes named `build-*`. Every class maps to the same aggregate provider
+build pool and is charged at its actual Docker RAM and CPU limits before routing
+opens. Keep four default builders, zero class minima and no more than eight
+configured maximum slots across all classes. Default allocations remain 12–16
+GiB; the provider's optional `build.maxCost` permits larger reviewed requests
+without changing the floor reserve. Busy jobs are never resized or removed.
+
+For example, configure four default 12 GiB/one CPU slots, two `build-small`
+4 GiB/one CPU slots, and two `build-large` 16 GiB/four CPU slots. A job requests
+its configured size with `runs-on: [build-large]`. Use distinct routing
+labels and omit every default-pool label from size classes so unchanged jobs
+cannot land on a smaller runner. Include any additional workflow labels explicitly, because
+shared gated runners do not publish GitHub's default labels automatically.
+
+The broker determines current availability from durable allocations and the
+unchanged host budget. Requests wait under pressure. Aged class demand uses the
+same proven-idle withdrawal protocol; assigned or unknown workers and the
+aggregate four-builder floor remain protected. Credentials refreshed while
+queued retain the same exact size and queue age. Deploy both compatible artifacts
+and reviewed policy before activating classes; a configuration save alone does
+not establish actual job pickup.

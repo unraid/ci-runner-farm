@@ -126,3 +126,28 @@ ln -s "$tmp/missing" "$CFGDIR/shared-capacity.closed"
 if shared_capacity_require_starts_open; then fail 'broken closure marker allowed start'; fi
 rm "$CFGDIR/shared-capacity.closed"
 printf 'shared-capacity: native admission, queued retries, closure and mode restrictions passed\n'
+# Size classes reuse named routing and one aggregate eight-slot admission pool.
+touch "$CFGDIR/shared-capacity.enabled"
+RUNNER_MODE=pools RUNNER_POOLS='v3|build|general-build|unraid,build|4|4|4|0|1|12g|builtin;v3|build-small|build-small||1|0|2|0|1|4g|builtin;v3|build-large|build-large||1|0|2|0|4|16g|builtin'
+validate_runner_mode || fail 'bounded build size classes rejected'
+pool_activate build-large || fail 'large build class lost routing'
+[ "$RUNNER_MEMORY" = 16g ] && [ "$RUNNER_CPUS" = 4 ] && [ "$RUNNER_LABELS" = build-large ] || fail 'size class limits or routing differ'
+shared_capacity_start ci-runner-build-large-1 "$docker_id" || [ "$?" -eq 75 ] || fail 'class bypassed or failed native admission'
+
+for invalid in \
+ 'v3|build|general-build|unraid,build|4|4|8|0|1|12g|builtin;v3|build-large|build-large||1|0|1|0|4|16g|builtin' \
+ 'v3|build|general-build|unraid,build|4|4|4|0|1|12g|builtin;v3|build-large|build-large||1|1|2|0|4|16g|builtin' \
+ 'v3|build|general-build|unraid,build|4|4|4|0|1|12g|builtin;v3|other|other||1|0|2|0|1|4g|builtin' \
+ 'v3|build|general-build|unraid,build|4|4|4|0|1|12g|builtin;v3|build-small|build-small||1|0|2|0|0.5|4g|builtin'; do
+ RUNNER_POOLS="$invalid"
+ if validate_runner_mode >/dev/null 2>&1; then fail 'invalid aggregate classes accepted'; fi
+done
+printf 'shared-capacity: variable build classes preserve routing, hard limits, four-builder floor and aggregate eight-slot bound\n'
+
+RUNNER_POOLS='v3|build|general-build|unraid,build,build-large|4|4|4|0|1|12g|builtin;v3|build-large|build-large||1|0|2|0|4|16g|builtin'
+if validate_runner_mode >/dev/null 2>&1; then fail 'default runner advertised large-class routing'; fi
+RUNNER_POOLS='v3|build|general-build|unraid,build|4|4|4|0|1|12g|builtin;v3|build-small|build-small|unraid,build|1|0|2|0|1|4g|builtin'
+if validate_runner_mode >/dev/null 2>&1; then fail 'small runner advertised default build routing'; fi
+
+RUNNER_POOLS='v3|build|general-build|unraid,build|4|4|4|0|1|12g|builtin;v3|build-small|build-small|unraid|1|0|2|0|1|4g|builtin'
+if validate_runner_mode >/dev/null 2>&1; then fail 'size class advertised generic default-job routing'; fi
