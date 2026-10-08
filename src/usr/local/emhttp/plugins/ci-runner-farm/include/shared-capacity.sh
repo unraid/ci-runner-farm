@@ -159,10 +159,58 @@ shared_capacity_build_pool() {
   case "$1" in build) return 0 ;; build-*) pool_id_valid "$1" ;; *) return 1 ;; esac
 }
 
+# Floors and aggregate slot count belong to the protected host contract, not
+# this plugin version. All three documents must describe the same policy.
+shared_capacity_build_limits() {
+  php -r '
+    $dir="/boot/config/plugins/qa-vm-service/";
+    foreach (["host-policy.json","host-plan.json","runner-integration.json"] as $name) {
+      $file=$dir.$name;
+      if (is_link($file) || !is_file($file) || fileowner($file)!==0 || (fileperms($file)&0022) || filesize($file)>16777216) exit(1);
+      try { $documents[$name]=json_decode(file_get_contents($file),true,512,JSON_THROW_ON_ERROR); }
+      catch (Throwable $error) { exit(1); }
+    }
+    $active=$documents["host-policy.json"]["providerConfig"]["sharedCapacity"] ?? null;
+    $planned=$documents["host-plan.json"]["manifest"]["providerConfig"]["sharedCapacity"] ?? null;
+    $integration=$documents["runner-integration.json"];
+    if (!is_array($active) || $active!==$planned || !($integration["sharedAdmission"]["elastic"] ?? false) ||
+        ($integration["sharedAdmission"]["policy"] ?? null)!==$active["policy"] ||
+        ($integration["buildOnly"] ?? false)!==($active["buildOnly"] ?? false)) exit(1);
+    $root=$documents["host-policy.json"]["providerConfig"]["stateRoot"] ?? "";
+    if ($root!==($documents["host-plan.json"]["manifest"]["providerConfig"]["stateRoot"] ?? null) ||
+        ($integration["sharedAdmission"]["ledgerPath"] ?? null)!==$root."/shared-capacity.bolt" ||
+        !preg_match("~\\A/mnt/[A-Za-z0-9_./-]+\\z~",$root)) exit(1);
+    foreach (explode("/",$root) as $part) if ($part==="." || $part==="..") exit(1);
+    $pool=$active["policy"]["pools"]["build"] ?? [];
+    $values=[$pool["minimum"] ?? null,$pool["maximum"] ?? null,$pool["cost"]["memoryMiB"] ?? null,$pool["cost"]["vcpus"] ?? null];
+    foreach ($values as $value) if (!is_int($value) || $value<1) exit(1);
+    if ($values[0]>$values[1] || $values[1]>8 || $values[2]<12288 || $values[2]>16384 || $values[3]>64) exit(1);
+    echo implode("|",$values);
+  '
+}
+
+shared_capacity_memory_mib() {
+  local value="${1,,}"
+  case "$value" in
+    *gib) value="${value%gib}"; printf '%s' "$((value * 1024))" ;;
+    *gi) value="${value%gi}"; printf '%s' "$((value * 1024))" ;;
+    *gb) value="${value%gb}"; printf '%s' "$((value * 1024))" ;;
+    *g) value="${value%g}"; printf '%s' "$((value * 1024))" ;;
+    *mib) printf '%s' "${value%mib}" ;;
+    *mi) printf '%s' "${value%mi}" ;;
+    *mb) printf '%s' "${value%mb}" ;;
+    *m) printf '%s' "${value%m}" ;;
+    *) return 1 ;;
+  esac
+}
+
 shared_capacity_validate_pools() {
   local rec pool minimum maximum cpus memory total=0 other routing labels default_label
+  local limits floor slots default_memory default_cpus
+  limits="$(shared_capacity_build_limits)" || return 1
+  IFS='|' read -r floor slots default_memory default_cpus <<< "$limits"
   pool_record build >/dev/null || return 1
-  [ "$(pool_min build)" -eq 4 ] || return 1
+  [ "$(pool_min build)" -eq "$floor" ] || return 1
   while IFS= read -r rec; do
     IFS='|' read -r _ pool _ _ _ minimum maximum _ cpus memory _ <<< "$rec"
     shared_capacity_build_pool "$pool" || return 1
@@ -180,10 +228,13 @@ shared_capacity_validate_pools() {
     done < <(pool_records | cut -d'|' -f2)
     [ "$pool" = build ] || [ "$minimum" -eq 0 ] || return 1
     total=$((total + maximum))
-    [ "$total" -le 8 ] || return 1
+    [ "$total" -le "$slots" ] || return 1
     [ "$cpus" = inherit ] && cpus="$RUNNER_CPUS"
     printf '%s' "$cpus" | grep -qE '^[1-9][0-9]*$' || return 1
     [ "$memory" = inherit ] && memory="$RUNNER_MEMORY"
     [ -n "$memory" ] && pool_memory_valid "$memory" && [ "$memory" != inherit ] || return 1
+    if [ "$pool" = build ]; then
+      [ "$cpus" -eq "$default_cpus" ] && [ "$(shared_capacity_memory_mib "$memory")" -eq "$default_memory" ] || return 1
+    fi
   done < <(pool_records)
 }

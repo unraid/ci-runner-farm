@@ -74,6 +74,7 @@ grep -qF "gate refresh-queued ci-runner-build-1 $docker_id" "$logfile" || fail '
 grep -qF 'fresh-create 1 ci-runner-build-1' "$logfile" || fail 'expired credential did not mint a fresh container'
 shared_capacity_call() { printf 'gate %s\n' "$*" >> "$logfile"; return "$decision"; }
 
+shared_capacity_build_limits() { printf '%s' '4|8|12288|1'; }
 RUNNER_MODE=pools RUNNER_POOLS='v3|build|general-build|unraid,build|4|4|8|0|1|12g|builtin'
 GH_SCOPE=org AUTOSCALE=true IMAGE_AUTOUPDATE=false
 validate_runner_mode || fail 'shared named pool rejected autoscale'
@@ -151,3 +152,17 @@ if validate_runner_mode >/dev/null 2>&1; then fail 'small runner advertised defa
 
 RUNNER_POOLS='v3|build|general-build|unraid,build|4|4|4|0|1|12g|builtin;v3|build-small|build-small|unraid|1|0|2|0|1|4g|builtin'
 if validate_runner_mode >/dev/null 2>&1; then fail 'size class advertised generic default-job routing'; fi
+
+# A 64 GiB build-only host uses its reviewed floor and a smaller aggregate cap.
+shared_capacity_build_limits() { printf '%s' '1|3|12288|4'; }
+RUNNER_POOLS='v3|build|general-build|unraid,build|1|1|2|0|4|12g|builtin;v3|build-large|build-large||1|0|1|0|4|16g|builtin'
+validate_runner_mode || fail 'host-specific floor and maximum rejected'
+RUNNER_POOLS="${RUNNER_POOLS/|1|1|2|/|2|2|2|}"
+if validate_runner_mode; then fail 'farm floor drift accepted'; fi
+RUNNER_POOLS='v3|build|general-build|unraid,build|1|1|3|0|4|12g|builtin;v3|build-large|build-large||1|0|1|0|4|16g|builtin'
+if validate_runner_mode; then fail 'host-specific aggregate cap exceeded'; fi
+RUNNER_POOLS='v3|build|general-build|unraid,build|1|1|2|0|4|16g|builtin'
+if validate_runner_mode; then fail 'default hard limits drift accepted'; fi
+shared_capacity_build_limits() { return 1; }
+if validate_runner_mode; then fail 'untrusted host contract accepted'; fi
+printf 'shared-capacity: host-specific floor, maximum and default hard limits fail closed on drift\n'
