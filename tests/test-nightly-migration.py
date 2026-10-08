@@ -99,7 +99,8 @@ class NativeNightlyMigrationTests(unittest.TestCase):
         source = Path(
             "src/usr/local/emhttp/plugins/ci-runner-farm/include/shared-capacity.sh"
         ).read_text()
-        script = source.split("php -r '\n", 1)[1].split("\n  '", 1)[0]
+        script = source.split("shared_capacity_call() {", 1)[1]
+        script = script.split("php -r '\n", 1)[1].split("\n  '", 1)[0]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             script = script.replace(

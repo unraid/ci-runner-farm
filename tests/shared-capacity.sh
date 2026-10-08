@@ -21,6 +21,31 @@ php() { return 1; }
 if shared_capacity_call prepare >/dev/null 2>&1; then fail 'unreadable policy/plan invoked provider'; fi
 [ ! -s "$logfile" ] || fail 'failed root resolution invoked provider'
 unset -f php /usr/local/sbin/qa-vm-service
+# Run the actual protected metadata parser in Linux root package checks.
+if [ "$(id -u)" -eq 0 ]; then
+  mkdir -p "$tmp/provider"
+  php() {
+    local code="${2//\/boot\/config\/plugins\/qa-vm-service\//$tmp/provider/}"
+    command php -r "$code"
+  }
+  if shared_capacity_enabled; then fail 'missing legacy metadata enabled shared mode'; fi
+  printf '%s\n' '{"providerConfig":{"sharedCapacity":{"policy":{}}}}' > "$tmp/provider/host-policy.json"
+  chmod 600 "$tmp/provider/host-policy.json"
+  shared_capacity_enabled || fail 'durable shared policy ignored without marker'
+  printf '%s\n' '{"providerConfig":{"sharedCapacity":null}}' > "$tmp/provider/host-policy.json"
+  if shared_capacity_enabled; then fail 'null legacy policy enabled shared mode'; fi
+  printf '%s\n' '{"sharedAdmission":{"elastic":true}}' > "$tmp/provider/runner-integration.json"
+  chmod 600 "$tmp/provider/runner-integration.json"
+  shared_capacity_enabled || fail 'durable shared integration ignored without marker'
+  printf '%s\n' '{broken' > "$tmp/provider/runner-integration.json"
+  shared_capacity_enabled || fail 'malformed integration allowed legacy fallback'
+  rm "$tmp/provider/runner-integration.json"
+  ln -s "$tmp/missing" "$tmp/provider/runner-integration.json"
+  shared_capacity_enabled || fail 'broken integration symlink allowed legacy fallback'
+  unset -f php
+fi
+# Legacy test fixtures have no protected provider configuration.
+php() { return 1; }
 docker_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 decision=75
 docker() {
@@ -71,6 +96,22 @@ if validate_runner_mode >/dev/null 2>&1; then fail 'unbudgeted extra pool accept
 RUNNER_MODE=single
 if validate_runner_mode >/dev/null 2>&1; then fail 'legacy mode bypassed shared owner gate'; fi
 rm "$CFGDIR/shared-capacity.enabled"
+# Durable shared metadata keeps releases fenced after marker removal.
+php() { return 0; }
+decision=0
+: > "$logfile"
+shared_capacity_prepare_release ci-runner-build-1 "$docker_id"
+shared_capacity_release ci-runner-build-1 "$docker_id"
+grep -qF "gate prepare-release ci-runner-build-1 $docker_id" "$logfile" || fail 'marker removal skipped release preparation'
+grep -qF "gate release ci-runner-build-1 $docker_id" "$logfile" || fail 'marker removal skipped fenced release'
+: > "$logfile"
+run_owned_github_container 1
+if grep -qE '^docker (run|start)' "$logfile"; then fail 'marker removal bypassed durable admission'; fi
+# Corrupt metadata also retains the gate; only positive legacy status bypasses.
+php() { return 2; }
+shared_capacity_enabled || fail 'unknown metadata disabled shared admission'
+php() { return 1; }
+shared_capacity_enabled && fail 'positive legacy metadata enabled shared admission'
 : > "$logfile"
 run_owned_github_container 1
 grep -q '^docker run -d ' "$logfile" || fail 'legacy run compatibility changed'

@@ -1,7 +1,35 @@
 #!/bin/bash
 # Native lifecycle bridge. Ansible installs this root-owned activation marker
 # only after the complete host inventory has been adopted by the shared broker.
-shared_capacity_enabled() { [ -e "$CFGDIR/shared-capacity.enabled" ] || [ -L "$CFGDIR/shared-capacity.enabled" ]; }
+shared_capacity_enabled() {
+  [ -e "$CFGDIR/shared-capacity.enabled" ] || [ -L "$CFGDIR/shared-capacity.enabled" ] && return 0
+  local status=0
+  shared_capacity_config_required || status=$?
+  # Only positively legacy metadata may bypass admission or fenced release.
+  # Removing the activation marker never removes durable broker ownership.
+  [ "$status" -ne 1 ]
+}
+
+shared_capacity_config_required() {
+  php -r '
+    $dir="/boot/config/plugins/qa-vm-service/";
+    $required=false;
+    foreach (["host-policy.json","runner-integration.json"] as $name) {
+      $file=$dir.$name;
+      if (!file_exists($file) && !is_link($file)) continue;
+      if (is_link($file) || !is_file($file) || fileowner($file)!==0 || (fileperms($file)&0022) || filesize($file)>16777216) exit(2);
+      try { $document=json_decode(file_get_contents($file),true,512,JSON_THROW_ON_ERROR); }
+      catch (Throwable $error) { exit(2); }
+      if (!is_array($document)) exit(2);
+      if ($name==="host-policy.json") {
+        $required=$required || isset($document["providerConfig"]["sharedCapacity"]);
+      } else {
+        $required=$required || isset($document["sharedAdmission"]);
+      }
+    }
+    exit($required ? 0 : 1);
+  '
+}
 shared_capacity_call() {
   local state_root
   state_root="$(php -r '
