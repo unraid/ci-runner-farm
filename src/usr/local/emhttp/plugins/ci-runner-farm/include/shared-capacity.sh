@@ -249,6 +249,8 @@ shared_capacity_validate_pools() {
       esac
       while IFS= read -r default_label; do
         [ -z "$default_label" ] && continue
+        # Platform labels describe every class; scheduling labels stay isolated.
+        case "$default_label" in self-hosted|linux|x64) continue ;; esac
         if [ "$os_class" = true ]; then
           case "$default_label" in os-build|kvm|os-artifact-share) continue ;; esac
         fi

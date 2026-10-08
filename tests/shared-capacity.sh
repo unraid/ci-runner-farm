@@ -169,12 +169,12 @@ printf 'shared-capacity: host-specific floor, maximum and default hard limits fa
 
 # Only OS specialization labels may be shared with an equal-or-larger class.
 shared_capacity_build_limits() { printf '%s' '2|6|16384|3'; }
-RUNNER_POOLS='v3|build|os-build|unraid,build,kvm,os-artifact-share|2|2|4|0|3|16g|builtin;v3|build-large|os-build-large|os-build,kvm,os-artifact-share|1|0|2|0|4|16g|builtin'
+RUNNER_POOLS='v3|build|os-build|self-hosted,linux,x64,unraid,build,kvm,os-artifact-share|2|2|4|0|3|16g|builtin;v3|build-large|os-build-large|self-hosted,linux,x64,os-build,kvm,os-artifact-share|1|0|2|0|4|16g|builtin'
 validate_runner_mode || fail 'safe OS specialization lost role labels'
 RUNNER_POOLS="${RUNNER_POOLS/|4|16g|builtin/|2|16g|builtin}"
 if validate_runner_mode; then fail 'undersized OS CPU class accepted generic OS routing'; fi
-RUNNER_POOLS='v3|build|os-build|unraid,build,kvm,os-artifact-share|2|2|4|0|3|16g|builtin;v3|build-large|os-build-large|os-build,kvm,os-artifact-share|1|0|2|0|4|12g|builtin'
+RUNNER_POOLS='v3|build|os-build|self-hosted,linux,x64,unraid,build,kvm,os-artifact-share|2|2|4|0|3|16g|builtin;v3|build-large|os-build-large|self-hosted,linux,x64,os-build,kvm,os-artifact-share|1|0|2|0|4|12g|builtin'
 if validate_runner_mode; then fail 'undersized OS RAM class accepted generic OS routing'; fi
-RUNNER_POOLS='v3|build|os-build|unraid,build,kvm,os-artifact-share|2|2|4|0|3|16g|builtin;v3|build-large|os-build-large|os-build,os-artifact-share|1|0|2|0|4|16g|builtin'
+RUNNER_POOLS='v3|build|os-build|self-hosted,linux,x64,unraid,build,kvm,os-artifact-share|2|2|4|0|3|16g|builtin;v3|build-large|os-build-large|os-build,os-artifact-share|1|0|2|0|4|16g|builtin'
 if validate_runner_mode; then fail 'OS class lost required KVM specialization'; fi
 echo 'shared-capacity: OS specialization only shared above protected default limits'
