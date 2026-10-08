@@ -26,6 +26,19 @@ fixture() {
 }
 fixture
 [ "$(shared_capacity_build_limits)" = '1|3|12288|4' ] || fail 'protected build-only floor not read'
+# Replay differently serialized Go plan and policy documents. Object order is
+# not policy identity; strict scalar types and actual values remain mandatory.
+command php -r '
+  $p=$argv[1];$d=json_decode(file_get_contents($p),true);
+  unset($d["providerConfig"]["sharedCapacity"]["guestOverheadMiB"]);
+  $d["providerConfig"]["sharedCapacity"]["policy"]=array_reverse($d["providerConfig"]["sharedCapacity"]["policy"],true);
+  file_put_contents($p,json_encode($d));
+' "$tmp/provider/host-policy.json"
+[ "$(shared_capacity_build_limits)" = '1|3|12288|4' ] || fail 'Go serialized matching policy rejected'
+fixture
+command php -r '$p=$argv[1];$d=json_decode(file_get_contents($p),true);$d["sharedAdmission"]["policy"]["pools"]["build"]["maximum"]="3";file_put_contents($p,json_encode($d));' "$tmp/provider/runner-integration.json"
+if shared_capacity_build_limits; then fail 'scalar type drift accepted'; fi
+fixture
 RUNNER_MODE=pools GH_SCOPE=org CI_PROVIDER=github AUTOSCALE=true
 touch "$CFGDIR/shared-capacity.enabled"
 RUNNER_POOLS='v3|build|general-build|unraid,build|1|1|2|0|4|12g|builtin;v3|build-large|build-large||1|0|1|0|4|16g|builtin'

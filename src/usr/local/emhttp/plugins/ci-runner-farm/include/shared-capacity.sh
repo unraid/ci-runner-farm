@@ -170,11 +170,24 @@ shared_capacity_build_limits() {
       try { $documents[$name]=json_decode(file_get_contents($file),true,512,JSON_THROW_ON_ERROR); }
       catch (Throwable $error) { exit(1); }
     }
+    function canonical($value) {
+      if (!is_array($value)) return $value;
+      foreach ($value as $key=>$item) $value[$key]=canonical($item);
+      if (!array_is_list($value)) ksort($value);
+      return $value;
+    }
     $active=$documents["host-policy.json"]["providerConfig"]["sharedCapacity"] ?? null;
     $planned=$documents["host-plan.json"]["manifest"]["providerConfig"]["sharedCapacity"] ?? null;
     $integration=$documents["runner-integration.json"];
-    if (!is_array($active) || $active!==$planned || !($integration["sharedAdmission"]["elastic"] ?? false) ||
-        ($integration["sharedAdmission"]["policy"] ?? null)!==$active["policy"] ||
+    if (!is_array($active) || !is_array($planned)) exit(1);
+    // Go emits the optional zero overhead in signed plans. Omission has the
+    // same typed value; all other differences and scalar type drift reject.
+    foreach ([&$active,&$planned] as &$shared) {
+      if (!array_key_exists("guestOverheadMiB",$shared)) $shared["guestOverheadMiB"]=0;
+    }
+    unset($shared);
+    if (canonical($active)!==canonical($planned) || !($integration["sharedAdmission"]["elastic"] ?? false) ||
+        canonical($integration["sharedAdmission"]["policy"] ?? null)!==canonical($active["policy"]) ||
         ($integration["buildOnly"] ?? false)!==($active["buildOnly"] ?? false)) exit(1);
     $root=$documents["host-policy.json"]["providerConfig"]["stateRoot"] ?? "";
     if ($root!==($documents["host-plan.json"]["manifest"]["providerConfig"]["stateRoot"] ?? null) ||
