@@ -123,5 +123,13 @@ native slots). The broker separately admits actual CPU and memory requests.
 A 64 GiB build-only host can use a one-runner floor and three total slots;
 a 128 GiB QA host can retain a four-runner floor and eight total slots.
 Missing, malformed, symlinked, foreign-owned, or divergent documents reject
-starts. Size classes still omit every default routing label; OS specialization
-requires an image and routing contract that preserves KVM and artifact access.
+starts. Size classes omit default routing labels. An OS class may share exactly
+`os-build`, `kvm`, and `os-artifact-share` when it retains all three and its
+hard CPU/RAM limits equal or exceed the protected OS defaults. Unsized OS jobs
+can safely use those larger slots; class-specific jobs also require the unique
+class routing label. Generic `build`, `unraid`, or `self-hosted` labels remain
+isolated. Shared starts pass requested routing labels separately from inert
+registration labels so a compatible image derives its OS payload role without
+opening job routing before durable identity publication. Install that compatible
+image before activating shared OS classes; KVM device validation and existing
+artifact mounts still apply.

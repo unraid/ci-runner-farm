@@ -42,7 +42,7 @@ github_confgen() {
   case ",$RUNNER_LABELS," in
     *,kvm,*)
       kvm_gid="$(github_kvm_gid 2>/dev/null || true)"
-      runtime_salt="${runtime_salt}-kvm-${kvm_gid:-missing}"
+      runtime_salt="${runtime_salt}-kvm-routing-role-v1-${kvm_gid:-missing}"
       ;;
   esac
   printf '%s\0' "$runtime_salt" "$GH_SCOPE" "$GH_OWNER" "$GH_REPOS" "$RUNNER_GROUP" "$RUNNER_LABELS" \
@@ -537,6 +537,7 @@ github_build_args() {
   )
   if shared_capacity_enabled; then
     ARGS+=( -e NO_DEFAULT_LABELS=true
+      -e "UNRAID_RUNNER_ROUTING_LABELS=$RUNNER_LABELS"
       --label "net.unraid.ci-runner-farm.routing-labels=$RUNNER_LABELS" )
   fi
   [ -z "$kvm_gid" ] || ARGS+=( --device /dev/kvm --group-add "$kvm_gid" -e "KVM_GID=$kvm_gid" )

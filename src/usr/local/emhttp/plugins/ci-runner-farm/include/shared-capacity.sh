@@ -206,7 +206,7 @@ shared_capacity_memory_mib() {
 
 shared_capacity_validate_pools() {
   local rec pool minimum maximum cpus memory total=0 other routing labels default_label
-  local limits floor slots default_memory default_cpus
+  local limits floor slots default_memory default_cpus os_class
   limits="$(shared_capacity_build_limits)" || return 1
   IFS='|' read -r floor slots default_memory default_cpus <<< "$limits"
   pool_record build >/dev/null || return 1
@@ -215,24 +215,42 @@ shared_capacity_validate_pools() {
     IFS='|' read -r _ pool _ _ _ minimum maximum _ cpus memory _ <<< "$rec"
     shared_capacity_build_pool "$pool" || return 1
     labels="$(pool_effective_labels "$pool")" || return 1
+    [ "$cpus" = inherit ] && cpus="$RUNNER_CPUS"
+    [ "$memory" = inherit ] && memory="$RUNNER_MEMORY"
+    printf '%s' "$cpus" | grep -qE '^[1-9][0-9]*$' || return 1
+    [ -n "$memory" ] && pool_memory_valid "$memory" && [ "$memory" != inherit ] || return 1
+    os_class=false
     if [ "$pool" != build ]; then
+      # OS classes may share only the specialization labels, and only at or
+      # above the default OS hard limits. Unsized OS jobs remain safe on them.
+      case ",$(pool_effective_labels build)," in
+        *,os-build,*)
+          if [ "$cpus" -ge "$default_cpus" ] && [ "$(shared_capacity_memory_mib "$memory")" -ge "$default_memory" ]; then
+            case ",$labels," in *,os-build,*)
+              case ",$labels," in *,kvm,*)
+                case ",$labels," in *,os-artifact-share,*) os_class=true ;; esac
+              esac
+            esac
+          fi
+          ;;
+      esac
       while IFS= read -r default_label; do
         [ -z "$default_label" ] && continue
+        if [ "$os_class" = true ]; then
+          case "$default_label" in os-build|kvm|os-artifact-share) continue ;; esac
+        fi
         case ",$labels," in *",$default_label,"*) return 1 ;; esac
       done < <(pool_effective_labels build | tr ',' '\n')
     fi
     while IFS= read -r other; do
       [ "$other" = "$pool" ] && continue
       routing="$(pool_routing_label "$other")" || return 1
+      if [ "$os_class" = true ] && [ "$other" = build ] && [ "$routing" = os-build ]; then continue; fi
       case ",$labels," in *",$routing,"*) return 1 ;; esac
     done < <(pool_records | cut -d'|' -f2)
     [ "$pool" = build ] || [ "$minimum" -eq 0 ] || return 1
     total=$((total + maximum))
     [ "$total" -le "$slots" ] || return 1
-    [ "$cpus" = inherit ] && cpus="$RUNNER_CPUS"
-    printf '%s' "$cpus" | grep -qE '^[1-9][0-9]*$' || return 1
-    [ "$memory" = inherit ] && memory="$RUNNER_MEMORY"
-    [ -n "$memory" ] && pool_memory_valid "$memory" && [ "$memory" != inherit ] || return 1
     if [ "$pool" = build ]; then
       [ "$cpus" -eq "$default_cpus" ] && [ "$(shared_capacity_memory_mib "$memory")" -eq "$default_memory" ] || return 1
     fi
