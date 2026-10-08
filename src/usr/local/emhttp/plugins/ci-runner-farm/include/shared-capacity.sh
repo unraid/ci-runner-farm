@@ -178,7 +178,7 @@ shared_capacity_build_limits() {
         ($integration["buildOnly"] ?? false)!==($active["buildOnly"] ?? false)) exit(1);
     $root=$documents["host-policy.json"]["providerConfig"]["stateRoot"] ?? "";
     if ($root!==($documents["host-plan.json"]["manifest"]["providerConfig"]["stateRoot"] ?? null) ||
-        ($integration["sharedAdmission"]["ledgerPath"] ?? null)!==$root."/shared-capacity.bolt" ||
+        ($integration["sharedAdmission"]["ledgerPath"] ?? null)!==$root."/state/shared-capacity.bolt" ||
         !preg_match("~\\A/mnt/[A-Za-z0-9_./-]+\\z~",$root)) exit(1);
     foreach (explode("/",$root) as $part) if ($part==="." || $part==="..") exit(1);
     $pool=$active["policy"]["pools"]["build"] ?? [];

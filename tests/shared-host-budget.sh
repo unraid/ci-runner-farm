@@ -20,7 +20,7 @@ fixture() {
     $policy=["budget"=>["memoryMiB"=>48000,"vcpus"=>24],"pools"=>["build"=>["minimum"=>1,"maximum"=>3,"cost"=>["memoryMiB"=>12288,"vcpus"=>4]]],"agingSeconds"=>600];
     $shared=["buildOnly"=>true,"policy"=>$policy,"guestOverheadMiB"=>0];
     $config=["stateRoot"=>$root,"sharedCapacity"=>$shared];
-    $docs=["host-policy.json"=>["providerConfig"=>$config],"host-plan.json"=>["manifest"=>["providerConfig"=>$config]],"runner-integration.json"=>["buildOnly"=>true,"sharedAdmission"=>["elastic"=>true,"ledgerPath"=>$root."/shared-capacity.bolt","policy"=>$policy]]];
+    $docs=["host-policy.json"=>["providerConfig"=>$config],"host-plan.json"=>["manifest"=>["providerConfig"=>$config]],"runner-integration.json"=>["buildOnly"=>true,"sharedAdmission"=>["elastic"=>true,"ledgerPath"=>$root."/state/shared-capacity.bolt","policy"=>$policy]]];
     foreach ($docs as $name=>$data) { file_put_contents($argv[1]."/".$name,json_encode($data)); chmod($argv[1]."/".$name,0600); }
   ' "$tmp/provider"
 }
