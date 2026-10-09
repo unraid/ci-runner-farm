@@ -206,8 +206,8 @@ validate_runner_mode() {
   fi
   if shared_capacity_enabled; then
     [ "$RUNNER_MODE" = pools ] && [ "$CI_PROVIDER" = github ] \
-      && [ "$(pool_records | wc -l)" -eq 1 ] && pool_record build >/dev/null \
-      || { pool_error "Shared capacity requires one named GitHub build pool."; return 1; }
+      && shared_capacity_validate_pools \
+      || { pool_error "Shared capacity requires bounded named GitHub build size pools and four default builders."; return 1; }
   fi
 }
 read_secret_file() {

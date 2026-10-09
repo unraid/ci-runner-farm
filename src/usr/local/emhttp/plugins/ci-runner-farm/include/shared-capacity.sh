@@ -61,8 +61,8 @@ shared_capacity_require_starts_open() {
 shared_capacity_start() {
   shared_capacity_require_starts_open || return 1
   local name="$1" id="$2"
-  [ "$CI_PROVIDER" = github ] && [ "${CRF_POOL_ID:-default}" = build ] \
-    || { err "shared capacity only supports the owned GitHub build pool"; return 1; }
+  [ "$CI_PROVIDER" = github ] && shared_capacity_build_pool "${CRF_POOL_ID:-default}" \
+    || { err "shared capacity only supports owned GitHub build size pools"; return 1; }
   local rc
   if shared_capacity_call start "$name" "$id"; then return 0; else rc=$?; fi
   [ "$rc" -eq 76 ] || return "$rc"
@@ -151,4 +151,39 @@ shared_capacity_poison_scan() {
   provider_build_poison_scan || rc=$?
   GH_REPOS="$configured"
   return "$rc"
+}
+
+# Size classes use existing named-pool routing. The native provider attests and
+# charges exact Docker limits under the single aggregate build budget.
+shared_capacity_build_pool() {
+  case "$1" in build) return 0 ;; build-*) pool_id_valid "$1" ;; *) return 1 ;; esac
+}
+
+shared_capacity_validate_pools() {
+  local rec pool minimum maximum cpus memory total=0 other routing labels default_label
+  pool_record build >/dev/null || return 1
+  [ "$(pool_min build)" -eq 4 ] || return 1
+  while IFS= read -r rec; do
+    IFS='|' read -r _ pool _ _ _ minimum maximum _ cpus memory _ <<< "$rec"
+    shared_capacity_build_pool "$pool" || return 1
+    labels="$(pool_effective_labels "$pool")" || return 1
+    if [ "$pool" != build ]; then
+      while IFS= read -r default_label; do
+        [ -z "$default_label" ] && continue
+        case ",$labels," in *",$default_label,"*) return 1 ;; esac
+      done < <(pool_effective_labels build | tr ',' '\n')
+    fi
+    while IFS= read -r other; do
+      [ "$other" = "$pool" ] && continue
+      routing="$(pool_routing_label "$other")" || return 1
+      case ",$labels," in *",$routing,"*) return 1 ;; esac
+    done < <(pool_records | cut -d'|' -f2)
+    [ "$pool" = build ] || [ "$minimum" -eq 0 ] || return 1
+    total=$((total + maximum))
+    [ "$total" -le 8 ] || return 1
+    [ "$cpus" = inherit ] && cpus="$RUNNER_CPUS"
+    printf '%s' "$cpus" | grep -qE '^[1-9][0-9]*$' || return 1
+    [ "$memory" = inherit ] && memory="$RUNNER_MEMORY"
+    [ -n "$memory" ] && pool_memory_valid "$memory" && [ "$memory" != inherit ] || return 1
+  done < <(pool_records)
 }
