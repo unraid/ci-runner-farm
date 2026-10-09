@@ -55,6 +55,7 @@ RUNNER_COUNT=4
 RUNNER_LABELS="self-hosted,unraid,build"
 RUNNER_MODE="single"                  # single | pools (provider-neutral classic pools)
 RUNNER_POOLS=""                       # semicolon-separated validated V3 pool records
+QUEUED_POOLS="false"                  # native queued-job sizing and fenced idle retirement
 ELASTIC_POOLS="false"                 # shared GitHub pools grow from occupied slots plus warm headroom
 RUNNER_CPUS=""                        # per-runner CPU cap; empty = uncapped (CFS time-shares fairly)
 RUNNER_MEMORY="16g"                   # per-runner memory cap (kept: memory isn't time-shared like CPU)
@@ -149,7 +150,7 @@ HISTORY_FILE="${CRF_HISTORY_FILE:-${CFGDIR}/recommendations.history}"
 # Allowlist of keys the settings page may set. load_cfg only ever assigns these.
 CFG_KEYS="CI_PROVIDER GH_SCOPE GH_OWNER GH_REPOS RUNNER_GROUP GITLAB_URL GITLAB_RUNNER_IMAGE GITLAB_PROJECTS GITLAB_SHUTDOWN_TIMEOUT \
 GITLAB_ALLOWED_IMAGES GITLAB_ALLOWED_SERVICES GITLAB_PULL_POLICY GITLAB_SHM_SIZE \
-RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS \
+RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS QUEUED_POOLS \
 RUNNER_CPUS RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE USER_SHARE_MOUNTS IMAGE_SOURCE IMAGE EPHEMERAL \
 RUN_AS_ROOT REGISTRY_SERVER REGISTRY_USERNAME CACHE_MOUNTS SHARE_DOCKER_SOCK DIND \
 SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
@@ -198,6 +199,10 @@ load_cfg
 [ "$CI_PROVIDER" = "gitlab" ] || CI_PROVIDER="github"
 
 validate_runner_mode() {
+  case "$QUEUED_POOLS" in true|false) ;; *) pool_error "Invalid queued pool mode."; return 1 ;; esac
+  if [ "$QUEUED_POOLS" = true ]; then
+    [ "$ELASTIC_POOLS" = true ] || { pool_error "Queued pools require elastic admission."; return 1; }
+  fi
   case "$ELASTIC_POOLS" in true|false) ;; *) pool_error "Invalid elastic pool mode."; return 1 ;; esac
   if [ "$ELASTIC_POOLS" = true ]; then
     [ "$AUTOSCALE" = true ] && [ "$RUNNER_MODE" = pools ] && [ "$CI_PROVIDER" = github ] && shared_capacity_enabled \
@@ -1998,7 +2003,26 @@ pool_start_target() {
   printf '%s\n' "$target"
 }
 
+# One complete native plan owns both idle retirement and selected sparse starts.
+# Failure returns before creating any new runner; stale plans are never cached.
+start_queued_capacity() {
+  local plan pool idx failed=0 rc
+  plan="$(shared_capacity_call scale "$RUNNER_POOLS")" || { err "queued capacity unavailable; preserving owners"; return 1; }
+  while IFS='|' read -r pool idx; do
+    [ -n "$pool" ] || continue
+    case "$pool" in build|build-small|build-large) ;; *) return 1 ;; esac
+    case "$idx" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$idx" -gt 0 ] && [ "$idx" -le "$(pool_max "$pool")" ] || return 1
+    pool_activate "$pool" || return 1
+    if start_one "$idx"; then :; else
+      rc=$?; [ "$rc" -eq 75 ] || failed=1
+    fi
+  done <<< "$plan"
+  return "$failed"
+}
+
 start_configured_capacity() {
+  if [ "$QUEUED_POOLS" = true ]; then start_queued_capacity; return $?; fi
   local startn="$RUNNER_COUNT" i rec pool failed=0 rc
   if pool_mode_enabled; then
     while IFS= read -r rec; do
@@ -2055,6 +2079,8 @@ recreate_stopped_runner() {
 # routine outage would create needless remote churn and make recovery depend on
 # GitLab availability.
 start_stopped_managed() {
+  # The native demand owner decides whether an inert/stopped slot is still needed.
+  [ "$QUEUED_POOLS" != true ] || return 0
   shared_capacity_require_starts_open || return 1
   local c st provider idx names snapshot id role gen
   names="$(managed_names)" || return 1

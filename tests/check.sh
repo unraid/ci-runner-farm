@@ -47,6 +47,7 @@ python3 tests/test-nightly-migration.py
 bash tests/pool-runtime.sh
 bash tests/shared-capacity.sh
 bash tests/elastic-pools.sh
+bash tests/queued-pools.sh
 bash tests/shared-host-budget.sh
 bash tests/numeric-config.sh
 bash tests/safe-paths.sh

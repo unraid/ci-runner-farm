@@ -592,3 +592,12 @@ that class and retain their exact slots. Queued starts keep their durable
 requests. This growth path never deletes an idle owner; native frozen
 withdrawal and fenced release remain responsible for priority reclamation.
 Existing fixed pool behavior remains the default.
+
+Queued native pools may opt into `QUEUED_POOLS="true"` together with
+`ELASTIC_POOLS="true"` and shared named-pool admission. A compatible
+qa-vm-service native capacity owner is required. It returns exact sparse slots
+from a fresh complete job snapshot and retires idle excess through fenced
+withdrawal. No successful snapshot means no demand-based starts or retirement.
+The standard floor stays warm; zero minimum/headroom lets other classes stop.
+GitHub omits requested groups from queued jobs, so uncertain label demand adds
+at most one spare per class per tick; successful pickups drive further growth.
