@@ -18,7 +18,7 @@ marker, including legacy mode, while existing workers continue. A broken marker
 symlink also closes starts. Keep starts closed through complete owner adoption;
 activation must prove the full owner inventory before reopening them.
 
-The supported farm layout is one GitHub pool named `build`, with eight stable
+The supported farm layout is one GitHub pool named `build`, with host-budgeted stable
 slots at most. Docker enforces each policy allocation's CPU and memory limits;
 the provider rejects unlimited or mismatched containers. The provider defaults
 to 12 GiB builders and supports a reviewed policy using 12–16 GiB builders.
@@ -39,7 +39,7 @@ under the same name and stale owner receipts. Capacity never expires on a timer.
 Legacy hosts without the marker retain their existing lifecycle behavior.
 
 Each shared autoscale tick first runs `farm-capacity rebalance`. It selects only
-positively idle extra builders above the four-builder floor when higher-priority
+positively idle extra builders above the protected host-specific builder floor when higher-priority
 QA demand is queued. The provider persists withdrawal intent, freezes the exact
 container, proves one native `Runner.Listener` and no `Runner.Worker`, and checks
 the exact remote registration before deleting it. A pickup race resumes the
@@ -92,7 +92,8 @@ builders keep their routing during adoption.
 Compatible provider versions admit multiple existing V3 named pools: `build`
 and size classes named `build-*`. Every class maps to the same aggregate provider
 build pool and is charged at its actual Docker RAM and CPU limits before routing
-opens. Keep four default builders, zero class minima and no more than eight
+opens. Keep the default builder floor and aggregate slot cap from the protected host
+policy, with zero class minima. The native slot identity supports at most eight
 configured maximum slots across all classes. Default allocations remain 12–16
 GiB; the provider's optional `build.maxCost` permits larger reviewed requests
 without changing the floor reserve. Busy jobs are never resized or removed.
@@ -107,7 +108,28 @@ shared gated runners do not publish GitHub's default labels automatically.
 The broker determines current availability from durable allocations and the
 unchanged host budget. Requests wait under pressure. Aged class demand uses the
 same proven-idle withdrawal protocol; assigned or unknown workers and the
-aggregate four-builder floor remain protected. Credentials refreshed while
+aggregate host-specific builder floor remain protected. Credentials refreshed while
 queued retain the same exact size and queue age. Deploy both compatible artifacts
 and reviewed policy before activating classes; a configuration save alone does
 not establish actual job pickup.
+
+### Host-specific floors
+
+The farm requires matching root-owned, non-writable `host-policy.json`,
+`host-plan.json`, and `runner-integration.json` before accepting shared pools.
+The default pool minimum and hard limits must match the protected build cost.
+The sum of all named-pool maxima must fit its protected maximum (at most eight
+native slots). The broker separately admits actual CPU and memory requests.
+A 64 GiB build-only host can use a one-runner floor and three total slots;
+a 128 GiB QA host can retain a four-runner floor and eight total slots.
+Missing, malformed, symlinked, foreign-owned, or divergent documents reject
+starts. Size classes omit default routing labels. An OS class may share exactly
+`os-build`, `kvm`, and `os-artifact-share` when it retains all three and its
+hard CPU/RAM limits equal or exceed the protected OS defaults. Unsized OS jobs
+can safely use those larger slots; class-specific jobs also require the unique
+class routing label. Generic `build`, `unraid`, or `self-hosted` labels remain
+isolated. Shared starts pass requested routing labels separately from inert
+registration labels so a compatible image derives its OS payload role without
+opening job routing before durable identity publication. Install that compatible
+image before activating shared OS classes; KVM device validation and existing
+artifact mounts still apply.

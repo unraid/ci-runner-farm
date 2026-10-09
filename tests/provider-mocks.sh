@@ -103,6 +103,7 @@ github_build_args 1 ci-runner-build-1 || fail "shared registration generation fa
 shared_args="$(printf '%s\n' "${ARGS[@]}")"
 grep -qx 'LABELS=crf-shared-awaiting-identity' <<< "$shared_args" || fail "shared registration has job labels"
 grep -qx 'NO_DEFAULT_LABELS=true' <<< "$shared_args" || fail "default routing labels remain enabled"
+grep -qx 'UNRAID_RUNNER_ROUTING_LABELS=self-hosted,unraid,build' <<< "$shared_args" || fail "inert registration lost runtime role inputs"
 grep -qx 'net.unraid.ci-runner-farm.routing-labels=self-hosted,unraid,build' <<< "$shared_args" || fail "immutable desired routing missing"
 if grep -qx 'LABELS=self-hosted,unraid,build' <<< "$shared_args"; then fail "job routing published before durable registration"; fi
 clear_args_tmpdir
