@@ -1,0 +1,15 @@
+{
+  "disposition": "NOT_REQUIRED",
+  "expected_structural_delta": "No new modules, owners, policy, APIs or dependencies; two existing shell call sites and focused shell regression cases, under 20 production lines.",
+  "minimum_design": "Continue past rebalance errors in existing autoscale and explicit Start paths, retaining charged owners and all per-start broker gates.",
+  "outcome": "Independent native builders retry authoritative admission even when another owner cannot be recovered.",
+  "reuse_decisions": [
+    {
+      "decision": "reuse",
+      "name": "Native shared admission and fenced owner recovery",
+      "rationale": "Rebalance errors retain unknown allocations; existing gated start remains the authority for every independent container."
+    }
+  ],
+  "schema": "limetech.ai-review-marker.v2",
+  "stage": "forecast"
+}

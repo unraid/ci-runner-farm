@@ -92,6 +92,31 @@ autoscale_tick || fail 'queued slots failed whole fleet'
 [ "$(grep -c '^slot ' "$logfile")" -eq 8 ] || fail 'shared tick did not retry all eight stable slots'
 grep -qx 'poison-scan' "$logfile" || fail 'shared tick bypassed poison detection'
 grep -qx 'gate rebalance' "$logfile" || fail 'shared tick did not evaluate priority pressure'
+# Failed recovery must retain the unknown owner while independent slots retry
+# the same authoritative gate. No queued or failed grant may start Docker.
+shared_capacity_call() {
+  printf 'gate %s\n' "$*" >> "$logfile"
+  case "$1" in rebalance) return 1 ;; start) return 75 ;; *) fail 'unexpected recovery effect' ;; esac
+}
+start_one() { shared_capacity_start "ci-runner-build-$1" "$docker_id"; }
+: > "$logfile"
+autoscale_tick || fail 'one unproved owner blocked independent admissions'
+[ "$(grep -c '^gate start ' "$logfile")" -eq 8 ] || fail 'unproved owner suppressed independent admission retries'
+if grep -qE '^docker (run|start|rm|stop)' "$logfile"; then fail 'unproved recovery bypassed the gate or removed an owner'; fi
+# Explicit Start reaches its normal validation after the same failed recovery.
+# Stop at that boundary rather than mock the rest of the provisioning workflow.
+(
+  validate_runner_mode() { printf 'start-validation\n' >> "$logfile"; return 1; }
+  POOL_CONFIG_ERROR='expected test boundary'
+  if cmd_start; then fail 'invalid mode bypassed explicit Start validation'; fi
+)
+grep -qx 'start-validation' "$logfile" || fail 'unproved owner blocked explicit Start validation'
+# The actual run adapter must also retain a failed create without starting it.
+shared_capacity_call() { printf 'gate %s\n' "$*" >> "$logfile"; return 1; }
+: > "$logfile"
+if run_owned_github_container 1; then fail 'failed admission reported a running container'; fi
+if grep -qE '^docker (run|start|rm|stop)' "$logfile"; then fail 'failed admission changed an owned workload'; fi
+shared_capacity_call() { printf 'gate %s\n' "$*" >> "$logfile"; return "$decision"; }
 RUNNER_POOLS="$RUNNER_POOLS;v3|extra|extra-label||1|0|1|0|1|12g|builtin"
 if validate_runner_mode >/dev/null 2>&1; then fail 'unbudgeted extra pool accepted'; fi
 RUNNER_MODE=single

@@ -808,7 +808,9 @@ autoscale_tick() {
     pool_activate build || return 1
     shared_capacity_poison_scan || err "shared capacity: poison scan unavailable; preserving existing owner intents"
     if shared_capacity_call rebalance; then :; else
-      [ "$?" -eq 75 ] || return 1
+      # Unknown recovery retains its charged grant. Independent starts still
+      # require the broker, so one unproved owner must not stall the fleet.
+      [ "$?" -eq 75 ] || err "shared capacity: rebalance incomplete; retaining allocations and retrying gated starts"
     fi
     # The shared broker, rather than local count arithmetic, owns admission.
     # Retrying every stable slot preserves queue age and repairs inert creates.
@@ -2311,12 +2313,10 @@ reconcile_stop() {
 cmd_start() {
   shared_capacity_require_starts_open || return 1
   if shared_capacity_enabled; then
-    local shared_rc
     pool_activate build || return 1
     shared_capacity_poison_scan || err "shared capacity: poison scan unavailable; preserving existing owner intents"
     if shared_capacity_call rebalance; then :; else
-      shared_rc=$?
-      [ "$shared_rc" -eq 75 ] || return "$shared_rc"
+      [ "$?" -eq 75 ] || err "shared capacity: rebalance incomplete; retaining allocations and retrying gated starts"
     fi
   fi
   validate_runner_mode || { err "$POOL_CONFIG_ERROR"; return 1; }
