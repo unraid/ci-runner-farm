@@ -576,3 +576,19 @@ runtime provider.
 
 Canonical releases use release-please and GitHub Release assets. Questions and
 bug reports: <https://github.com/unraid/ci-runner-farm/issues>
+
+### Elastic general build classes
+
+For shared GitHub pools, `ELASTIC_POOLS="true"` makes each class ceiling a
+limit rather than a startup target. The standard pool keeps its protected
+minimum. Each class keeps `idle` warm slots (at least one) and grows when
+current owned `Runner.Worker` processes occupy those slots. Class ceilings
+may overlap, but each must fit the protected aggregate builder maximum.
+Native shared admission still charges the actual class RAM/CPU and gates
+every container start against the aggregate maximum and host budget.
+
+Unreadable, paused, starting or queued owners suppress further growth in
+that class and retain their exact slots. Queued starts keep their durable
+requests. This growth path never deletes an idle owner; native frozen
+withdrawal and fenced release remain responsible for priority reclamation.
+Existing fixed pool behavior remains the default.

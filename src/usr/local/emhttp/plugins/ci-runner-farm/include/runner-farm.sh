@@ -55,6 +55,7 @@ RUNNER_COUNT=4
 RUNNER_LABELS="self-hosted,unraid,build"
 RUNNER_MODE="single"                  # single | pools (provider-neutral classic pools)
 RUNNER_POOLS=""                       # semicolon-separated validated V3 pool records
+ELASTIC_POOLS="false"                 # shared GitHub pools grow from occupied slots plus warm headroom
 RUNNER_CPUS=""                        # per-runner CPU cap; empty = uncapped (CFS time-shares fairly)
 RUNNER_MEMORY="16g"                   # per-runner memory cap (kept: memory isn't time-shared like CPU)
 CACHE_ROOT="/mnt/cache/github-runner" # must be a dedicated SUBDIR under a pool/disk, never a bare mount root (see crf_safe_cache_root)
@@ -148,7 +149,7 @@ HISTORY_FILE="${CRF_HISTORY_FILE:-${CFGDIR}/recommendations.history}"
 # Allowlist of keys the settings page may set. load_cfg only ever assigns these.
 CFG_KEYS="CI_PROVIDER GH_SCOPE GH_OWNER GH_REPOS RUNNER_GROUP GITLAB_URL GITLAB_RUNNER_IMAGE GITLAB_PROJECTS GITLAB_SHUTDOWN_TIMEOUT \
 GITLAB_ALLOWED_IMAGES GITLAB_ALLOWED_SERVICES GITLAB_PULL_POLICY GITLAB_SHM_SIZE \
-RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS \
+RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS \
 RUNNER_CPUS RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE USER_SHARE_MOUNTS IMAGE_SOURCE IMAGE EPHEMERAL \
 RUN_AS_ROOT REGISTRY_SERVER REGISTRY_USERNAME CACHE_MOUNTS SHARE_DOCKER_SOCK DIND \
 SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
@@ -197,6 +198,11 @@ load_cfg
 [ "$CI_PROVIDER" = "gitlab" ] || CI_PROVIDER="github"
 
 validate_runner_mode() {
+  case "$ELASTIC_POOLS" in true|false) ;; *) pool_error "Invalid elastic pool mode."; return 1 ;; esac
+  if [ "$ELASTIC_POOLS" = true ]; then
+    [ "$AUTOSCALE" = true ] && [ "$RUNNER_MODE" = pools ] && [ "$CI_PROVIDER" = github ] && shared_capacity_enabled \
+      || { pool_error "Elastic pools require shared GitHub named-pool autoscaling."; return 1; }
+  fi
   pool_config_validate "$RUNNER_MODE" "$RUNNER_POOLS" "$GH_SCOPE" "$CI_PROVIDER" || return 1
   if pool_mode_enabled; then
     if [ "$AUTOSCALE" = true ] && ! shared_capacity_enabled; then
@@ -1943,6 +1949,53 @@ start_one() {
   provider_call start_one "$idx" "$name"
 }
 
+# Growth uses only current native process evidence on immutable owned IDs.
+# Logs cannot prove idle. Unknown/paused/starting owners retain their exact slots
+# and suppress growth; queued owners are retried without replacing their intent.
+# This never removes an owner. Shrink/priority withdrawal remains provider-owned.
+pool_start_target() {
+  local pool="$1" maximum minimum warm names c observed_pool snapshot id idx state processes counts listeners workers
+  local busy=0 highest=0 unknown=false target
+  maximum="$(pool_max "$pool")" || return 1
+  minimum="$(pool_min "$pool")" || return 1
+  warm="$(pool_idle "$pool")" || return 1
+  [ "$warm" -gt 0 ] || warm=1
+  names="$(managed_names)" || return 1
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    observed_pool="$(runner_pool "$c")" || return 1
+    [ "$observed_pool" = "$pool" ] || continue
+    snapshot="$(managed_runner_snapshot "$c")" || return 1
+    IFS='|' read -r id _ _ idx _ <<< "$snapshot"
+    [ "$idx" -le "$maximum" ] || return 1
+    [ "$idx" -le "$highest" ] || highest="$idx"
+    state="$(docker inspect --format '{{.State.Status}}|{{.State.Paused}}' "$id")" || return 1
+    case "$state" in
+      exited\|false) continue ;;
+      running\|false) ;;
+      *) unknown=true; continue ;;
+    esac
+    processes="$(docker top "$id" -eo pid,comm)" || { unknown=true; continue; }
+    counts="$(printf '%s\n' "$processes" | awk '
+      NR==1 { if ($1 != "PID" || $2 != "COMMAND") bad=1; next }
+      NF!=2 || $1 !~ /^[0-9]+$/ { bad=1 }
+      $2=="Runner.Listener" { listeners++ }
+      $2=="Runner.Worker" { workers++ }
+      END { if (bad) exit 1; print listeners+0 "|" workers+0 }')" || { unknown=true; continue; }
+    IFS='|' read -r listeners workers <<< "$counts"
+    if [ "$listeners" -ne 1 ] || [ "$workers" -gt 1 ]; then
+      unknown=true
+    elif [ "$workers" -eq 1 ]; then
+      busy=$((busy + 1))
+    fi
+  done <<< "$names"
+  target="$highest"
+  if [ "$unknown" = false ] && [ "$target" -lt $((busy + warm)) ]; then target=$((busy + warm)); fi
+  [ "$target" -ge "$minimum" ] || target="$minimum"
+  [ "$target" -le "$maximum" ] || target="$maximum"
+  printf '%s\n' "$target"
+}
+
 start_configured_capacity() {
   local startn="$RUNNER_COUNT" i rec pool failed=0 rc
   if pool_mode_enabled; then
@@ -1950,7 +2003,11 @@ start_configured_capacity() {
       pool="$(printf '%s' "$rec" | cut -d'|' -f2)"
       pool_activate "$pool" || { failed=1; continue; }
       if [ "$AUTOSCALE" = true ]; then
-        startn="$(pool_max "$pool")" || { failed=1; continue; }
+        if [ "$ELASTIC_POOLS" = true ]; then
+          startn="$(pool_start_target "$pool")" || { failed=1; continue; }
+        else
+          startn="$(pool_max "$pool")" || { failed=1; continue; }
+        fi
       else
         startn="$(pool_fixed "$pool")" || { failed=1; continue; }
       fi
