@@ -25,6 +25,22 @@ fixture() {
   ' "$tmp/provider"
 }
 fixture
+for maximum in 24 64 65; do
+  fixture
+  command php -r '
+    foreach (["host-policy.json","host-plan.json","runner-integration.json"] as $name) {
+      $p=$argv[1]."/".$name;$d=json_decode(file_get_contents($p),true);
+      if ($name==="host-policy.json") $d["providerConfig"]["sharedCapacity"]["policy"]["pools"]["build"]["maximum"]=(int)$argv[2];
+      elseif ($name==="host-plan.json") $d["manifest"]["providerConfig"]["sharedCapacity"]["policy"]["pools"]["build"]["maximum"]=(int)$argv[2];
+      else $d["sharedAdmission"]["policy"]["pools"]["build"]["maximum"]=(int)$argv[2];
+      file_put_contents($p,json_encode($d));
+    }
+  ' "$tmp/provider" "$maximum"
+  if [ "$maximum" -le 64 ]; then
+    [ "$(shared_capacity_build_limits)" = "1|$maximum|12288|4" ] || fail 'supported aggregate expansion rejected'
+  elif shared_capacity_build_limits; then fail 'maximum beyond provider cap accepted'; fi
+done
+fixture
 [ "$(shared_capacity_build_limits)" = '1|3|12288|4' ] || fail 'protected build-only floor not read'
 # Replay differently serialized Go plan and policy documents. Object order is
 # not policy identity; strict scalar types and actual values remain mandatory.

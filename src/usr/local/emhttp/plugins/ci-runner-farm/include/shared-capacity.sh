@@ -197,7 +197,7 @@ shared_capacity_build_limits() {
     $pool=$active["policy"]["pools"]["build"] ?? [];
     $values=[$pool["minimum"] ?? null,$pool["maximum"] ?? null,$pool["cost"]["memoryMiB"] ?? null,$pool["cost"]["vcpus"] ?? null];
     foreach ($values as $value) if (!is_int($value) || $value<1) exit(1);
-    if ($values[0]>$values[1] || $values[1]>8 || $values[2]<12288 || $values[2]>16384 || $values[3]>64) exit(1);
+    if ($values[0]>$values[1] || $values[1]>64 || $values[2]<12288 || $values[2]>16384 || $values[3]>64) exit(1);
     echo implode("|",$values);
   '
 }
@@ -264,8 +264,15 @@ shared_capacity_validate_pools() {
       case ",$labels," in *",$routing,"*) return 1 ;; esac
     done < <(pool_records | cut -d'|' -f2)
     [ "$pool" = build ] || [ "$minimum" -eq 0 ] || return 1
-    total=$((total + maximum))
-    [ "$total" -le "$slots" ] || return 1
+    if [ "${ELASTIC_POOLS:-false}" = true ]; then
+      # Ceilings may overlap: native admission counts all classes against the
+      # aggregate protected maximum and actual RAM/CPU, before any start.
+      [ "$CI_PROVIDER" = github ] || return 1
+      [ "$maximum" -le "$slots" ] || return 1
+    else
+      total=$((total + maximum))
+      [ "$total" -le "$slots" ] || return 1
+    fi
     if [ "$pool" = build ]; then
       [ "$cpus" -eq "$default_cpus" ] && [ "$(shared_capacity_memory_mib "$memory")" -eq "$default_memory" ] || return 1
     fi
