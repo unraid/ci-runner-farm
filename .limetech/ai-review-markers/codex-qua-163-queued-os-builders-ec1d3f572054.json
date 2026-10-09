@@ -1,0 +1,20 @@
+{
+  "disposition": "PATCH",
+  "expected_structural_delta": "No new allocator state or production module. Extend existing farm start dispatch and engine-only configuration.",
+  "minimum_design": "Add opt-in queued pools that delegate one fresh count and retirement plan to the existing native capacity owner; start only returned sparse slots and close stopped-owner retry bypasses.",
+  "outcome": "Dynamically size OS build classes while retaining active jobs and releasing idle specialized capacity.",
+  "reuse_decisions": [
+    {
+      "decision": "extend",
+      "name": "native capacity owner",
+      "rationale": "Do not add a competing shell allocator or idle removal path."
+    },
+    {
+      "decision": "reuse",
+      "name": "stable pool slot identities",
+      "rationale": "Preserve busy high indices and start only exact selected free slots."
+    }
+  ],
+  "schema": "limetech.ai-review-marker.v2",
+  "stage": "forecast"
+}
