@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.11.0](https://github.com/unraid/ci-runner-farm/compare/v1.10.3...v1.11.0) (2026-10-09)
+
+
+### Features
+
+* **capacity:** grow general classes from occupied warm slots ([#138](https://github.com/unraid/ci-runner-farm/issues/138)) ([1d0fb7c](https://github.com/unraid/ci-runner-farm/commit/1d0fb7cc886a548cf1d8a8044174a3ff765da6ea))
+* **capacity:** share named build-slot admission with QA ([#133](https://github.com/unraid/ci-runner-farm/issues/133)) ([cae417f](https://github.com/unraid/ci-runner-farm/commit/cae417fc584920c2c5d2f750e09358bcb0fbf9b0))
+* **capacity:** use protected host budgets for named build pools ([#136](https://github.com/unraid/ci-runner-farm/issues/136)) ([3db67c8](https://github.com/unraid/ci-runner-farm/commit/3db67c83447eac251225520ce23fe6671b7740dc))
+* enforce runner job lifecycle cleanup ([#122](https://github.com/unraid/ci-runner-farm/issues/122)) ([57f2a7a](https://github.com/unraid/ci-runner-farm/commit/57f2a7ad621d3a52134bb4df44a8f56d57c28873))
+* **farm:** admit build jobs through bounded size pools ([#135](https://github.com/unraid/ci-runner-farm/issues/135)) ([647dc1c](https://github.com/unraid/ci-runner-farm/commit/647dc1ce272299cb7b1dfc3534fe188ed01237b7))
+* publish CI Runner Farm nightly plugin ([5de8d4e](https://github.com/unraid/ci-runner-farm/commit/5de8d4e4dc95059bc8a00ebd2fc7e30b90edb5e3))
+* **recommendations:** add historical job-weight tracking ([#121](https://github.com/unraid/ci-runner-farm/issues/121)) ([df73a68](https://github.com/unraid/ci-runner-farm/commit/df73a68f19f7d8cf23bc66e47ff83b8654d13c3d))
+* **runners:** support configurable user-share mounts ([c2abfbc](https://github.com/unraid/ci-runner-farm/commit/c2abfbc71d16ac7ef2f6db10394db329da9fe4a3))
+
+
+### Bug Fixes
+
+* **capacity:** retry gated starts after incomplete rebalance ([#139](https://github.com/unraid/ci-runner-farm/issues/139)) ([6dbf43c](https://github.com/unraid/ci-runner-farm/commit/6dbf43cebdfc8f2ea89a62cf069299e0937f337c))
+* **github:** opt in runner pools to KVM ([#126](https://github.com/unraid/ci-runner-farm/issues/126)) ([ca8e184](https://github.com/unraid/ci-runner-farm/commit/ca8e1848320e75bbbca99c9e111867dcb302fbe9))
+* **github:** recover exited slots without recycling live listeners ([#134](https://github.com/unraid/ci-runner-farm/issues/134)) ([ae71bd9](https://github.com/unraid/ci-runner-farm/commit/ae71bd9b8490bb44f660dd361d01b9c323fcee7d))
+* **github:** use the mounted pnpm store across workspace filesystems ([#131](https://github.com/unraid/ci-runner-farm/issues/131)) ([f029b93](https://github.com/unraid/ci-runner-farm/commit/f029b9320c17aee4a47152adbc6a89c57fe9361b))
+* **image-update:** roll when runners are on a superseded image ([#119](https://github.com/unraid/ci-runner-farm/issues/119)) ([535a0b3](https://github.com/unraid/ci-runner-farm/commit/535a0b31dbda21c3941f5ef20ee1b3e64c671a51))
+* target dedicated public nightly runner group ([8ad6e67](https://github.com/unraid/ci-runner-farm/commit/8ad6e67f81500209ac1519ebe20ea331ee7737d8))
+* use Unraid plugin installer command ([5dc1c3c](https://github.com/unraid/ci-runner-farm/commit/5dc1c3c7125ddc1a88c2b5e207b1eb51e445482a))
+
 ## [1.10.3](https://github.com/unraid/ci-runner-farm/compare/v1.10.2...v1.10.3) (2026-09-14)
 
 
