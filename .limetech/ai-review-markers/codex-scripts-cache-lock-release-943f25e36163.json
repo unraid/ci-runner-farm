@@ -1,15 +1,8 @@
 {
   "disposition": "PATCH",
-  "expected_structural_delta": "One descriptor closure and one focused lifecycle regression. No new lock or process owner.",
-  "minimum_design": "Close inherited fd8 in the existing usage-refresh child. Exercise actual maintenance and fleet-lock functions with a blocked refresh child.",
-  "outcome": "Package cache maintenance releases the fleet lock when the foreground operation finishes, while its asynchronous usage refresh may continue.",
-  "reuse_decisions": [
-    {
-      "decision": "reuse",
-      "name": "Existing fleet lock",
-      "rationale": "Keep foreground serialization and explicitly drop only its inherited descriptor in the asynchronous child."
-    }
-  ],
+  "forecast_commit": "648ddc99daa1964100a630778608d6179b1a9bc9",
+  "reviewed_sha": "e245a9cb6b8d9b4a1d48e75fa46838b99f5e5e62",
   "schema": "limetech.ai-review-marker.v2",
-  "stage": "forecast"
+  "stage": "final",
+  "unresolved_proportionality_findings": []
 }
