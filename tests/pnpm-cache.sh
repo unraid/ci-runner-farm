@@ -49,6 +49,26 @@ for entry in pnpm-store pnpm-store: pnpm-store:relative pnpm-store:/ pnpm-store:
 done
 CACHE_MOUNTS='pnpm-store:/opt/one pnpm-store:/opt/two'
 if github_build_args 1 test-runner >"$tmp/rejection" 2>&1; then fail 'duplicate store accepted'; fi
+# Clearing a store is also an uncoordinated writer. Both clear commands must
+# retain cache files while a managed runner exists or Docker cannot answer.
+mkdir -p "$CACHE_ROOT/pnpm-store/v11"
+printf 'retained' > "$CACHE_ROOT/pnpm-store/v11/index.db"
+crf_safe_cache_root() { printf '%s' "$CACHE_ROOT"; }
+grep -Fq 'cache-clear-pkg) with_fleet_lock wait cmd_cache_clear_pkg' src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-farm.sh \
+  || fail 'package clearing is not serialized with fleet starts'
+for state in busy unavailable idle; do
+  docker() {
+    case "$state" in busy) printf 'runner-1\n';; unavailable) return 1;; idle) return 0;; esac
+  }
+  if [ "$state" = idle ]; then
+    crf_cache_mutation_idle || fail 'idle cache rejected'
+  else
+    for command in cmd_cache_clear_pkg cmd_prune_cache; do
+      if "$command" >"$tmp/clear-result" 2>&1; then fail "$command allowed $state"; fi
+      [ "$(cat "$CACHE_ROOT/pnpm-store/v11/index.db")" = retained ] || fail 'live database removed'
+    done
+  fi
+done
 # An EXIT trap must fail a green test when cleanup fails, while retaining the
 # original failure. Run the actual cleanup function with a mock Docker boundary.
 cleanup_function="$(sed -n '/^cleanup() {/,/^}/p' tests/pnpm-store-runtime.sh)"

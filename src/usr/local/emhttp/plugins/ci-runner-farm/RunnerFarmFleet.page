@@ -392,7 +392,7 @@ function crfCacheClear(){
   const doIt=()=>crfPost({action:'cache-clear'})
     .then(o=>{ crfToast(o.ok?'Package caches cleared':('Clear failed'+(o.error?': '+o.error:''))); crfCacheUsage(); })
     .catch(e=>{ crfToast('Clear failed'); console.error('ci-runner-farm cache-clear:',e); });
-  const msg='Removes '+crfBytes(pkg)+' of warm cargo, npm, yarn, pnpm, sccache, and Playwright caches. Running jobs keep working (a cache miss at worst); workspaces and Docker data are left intact.';
+  const msg='Removes '+crfBytes(pkg)+' of warm cargo, npm, yarn, pnpm, sccache, and Playwright caches. Stop the fleet and finish validation before clearing caches. Workspaces and Docker data are left intact.';
   if(window.swal){ swal({title:'Clear package caches?',text:msg,type:'warning',showCancelButton:true,confirmButtonText:'Clear caches',cancelButtonText:'Cancel'},ok=>{ if(ok) doIt(); }); }
   else if(confirm('Clear package caches? '+msg)) doIt();
 }

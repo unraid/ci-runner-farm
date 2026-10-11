@@ -3065,9 +3065,9 @@ cmd_queued_refresh() {
   provider_call queued_refresh
 }
 
-# Warm dependency caches under CACHE_ROOT — safe to clear even while runners are
-# up (worst case is a cache miss, not a broken job). Deliberately EXCLUDES work/
-# and docker/, which hold running runners' live workspaces and DinD data.
+# Warm dependency caches can contain live SQLite indexes and must only be
+# cleared with the fleet stopped. Package-only clearing excludes work/ and
+# docker/, which hold runner workspaces and DinD data.
 CACHE_PKG_DIRS="cargo-registry cargo-git sccache npm yarn pnpm-store ms-playwright"
 
 # Resolve + validate CACHE_ROOT for destructive/expensive ops (rm -rf in
@@ -3234,10 +3234,28 @@ cmd_cache_usage_json() {
   echo "{\"total\":${total:--1},\"pkg\":${pkg:-0},\"age\":$age}"
 }
 
+crf_cache_mutation_idle() {
+  local active
+  active="$(docker ps -a --filter 'label=net.unraid.ci-runner-farm.managed=true' --format '{{.Names}}' 2>/dev/null)" \
+    || { err "cannot verify managed runners before clearing cache"; return 1; }
+  [ -z "$active" ] \
+    || { err "refusing to clear cache while runner/validation containers exist; Stop the fleet and finish Validate first"; return 1; }
+  active="$(docker ps -a --filter 'label=net.unraid.ci-runner-farm.sidecar=true' --format '{{.Names}}' 2>/dev/null)" \
+    || { err "cannot verify GitLab sidecars before clearing cache"; return 1; }
+  [ -z "$active" ] \
+    || { err "refusing to clear cache while GitLab sidecars exist; complete Stop/Force forget first"; return 1; }
+  active="$(docker ps -a --filter 'label=com.gitlab.gitlab-runner.managed=true' --filter 'label=net.unraid.ci-runner-farm.provider=gitlab' --format '{{.Names}}' 2>/dev/null)" \
+    || { err "cannot verify host-socket GitLab executor containers before clearing cache"; return 1; }
+  [ -z "$active" ] \
+    || { err "refusing to clear cache while GitLab executor containers exist"; return 1; }
+  return 0
+}
+
 cmd_cache_clear_pkg() {
   # Clear ONLY the warm package caches (never work/ or docker/). Reuses the
   # prune-cache root-shape guard so a misconfigured CACHE_ROOT can't wipe a share.
   local root d removed=0 failed=0
+  crf_cache_mutation_idle || { echo '{"ok":false,"error":"cache is in use or fleet state is unavailable"}'; return 1; }
   root="$(crf_safe_cache_root)" || { echo "{\"ok\":false,\"error\":\"unsafe cache root\"}"; return 1; }
   for d in $CACHE_PKG_DIRS; do
     [ -d "$root/$d" ] || continue
@@ -3862,19 +3880,8 @@ cmd_prune_cache() {
   # NEVER a bare "$root"/* glob: even if CACHE_ROOT is somehow mis-pointed at a
   # shared location, prune then cannot wipe unrelated data (appdata, VMs, other
   # shares) that happens to sit alongside our subdirs on the same pool.
-  local root d m dirs removed=0 active
-  active="$(docker ps -a --filter 'label=net.unraid.ci-runner-farm.managed=true' --format '{{.Names}}' 2>/dev/null)" \
-    || { err "cannot verify managed runners before pruning cache"; return 1; }
-  [ -z "$active" ] \
-    || { err "refusing to prune cache while runner/validation containers exist; Stop the fleet and finish Validate first"; return 1; }
-  active="$(docker ps -a --filter 'label=net.unraid.ci-runner-farm.sidecar=true' --format '{{.Names}}' 2>/dev/null)" \
-    || { err "cannot verify GitLab sidecars before pruning cache"; return 1; }
-  [ -z "$active" ] \
-    || { err "refusing to prune cache while GitLab sidecars exist; complete Stop/Force forget first"; return 1; }
-  active="$(docker ps -a --filter 'label=com.gitlab.gitlab-runner.managed=true' --filter 'label=net.unraid.ci-runner-farm.provider=gitlab' --format '{{.Names}}' 2>/dev/null)" \
-    || { err "cannot verify host-socket GitLab executor containers before pruning cache"; return 1; }
-  [ -z "$active" ] \
-    || { err "refusing to prune cache while GitLab executor containers exist"; return 1; }
+  local root d m dirs removed=0
+  crf_cache_mutation_idle || return 1
   root="$(crf_safe_cache_root)" || { err "refusing to prune-cache: CACHE_ROOT='$CACHE_ROOT' is unsafe (system dir, share/pool root, or unresolvable — point it at /mnt/<pool>/<subdir>)"; return 1; }
   dirs="docker work dind-logs gitlab-cache gitlab-sockets registry-mirror $CACHE_PKG_DIRS"
   for m in $CACHE_MOUNTS; do dirs="$dirs ${m%%:*}"; done
@@ -4111,7 +4118,7 @@ case "${1:-status}" in
   cache-usage-json) cmd_cache_usage_json ;;
   cache-usage-refresh) cmd_cache_usage_refresh ;;
   usage-refresh) cmd_usage_refresh ;;
-  cache-clear-pkg) cmd_cache_clear_pkg ;;
+  cache-clear-pkg) with_fleet_lock wait cmd_cache_clear_pkg ;;
   stats-json)   cmd_stats_json ;;
   stats-refresh) cmd_stats_refresh ;;
   recycle)      with_fleet_lock wait cmd_recycle "${2:?usage: recycle <name>}" ;;

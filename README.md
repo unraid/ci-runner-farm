@@ -601,3 +601,8 @@ withdrawal. No successful snapshot means no demand-based starts or retirement.
 The standard floor stays warm; zero minimum/headroom lets other classes stop.
 GitHub omits requested groups from queued jobs, so uncertain label demand adds
 at most one spare per class per tick; successful pickups drive further growth.
+
+Package-cache clearing requires a stopped fleet and refuses to delete caches
+while managed runner, validation, sidecar or executor containers exist, or when
+Docker cannot confirm their absence. The fleet lock serializes this check and
+deletion with runner starts. Shared pnpm stores remain shared across runners.
