@@ -73,6 +73,8 @@ done
 # lock after the actual maintenance command returns.
 mkdir -p "$tmp/lock-cache"
 mkfifo "$tmp/refresh-started" "$tmp/refresh-release"
+# Open both ends before launch so even a missing child is bounded by read -t.
+exec 5<>"$tmp/refresh-started" 6<>"$tmp/refresh-release"
 export CRF_TEST_SOURCE="$PWD/src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-farm.sh"
 export CRF_TEST_TEMP="$tmp"
 cat > "$tmp/maintenance" <<'SCRIPT'
@@ -95,12 +97,13 @@ SCRIPT
 chmod +x "$tmp/maintenance"
 "$tmp/maintenance" >"$tmp/maintenance-result" &
 maintenance_pid=$!
-read -r -t 10 refresh_state < "$tmp/refresh-started" || fail 'refresh did not start'
+read -r -t 10 refresh_state <&5 || fail 'refresh did not start'
 [ "$refresh_state" = started ] || fail 'unexpected refresh status'
 wait "$maintenance_pid" || fail 'cache maintenance failed'
 lock_released=0
 flock -n "$CRF_RUNDIR/fleet.lock" true && lock_released=1
-printf 'done\n' > "$tmp/refresh-release"
+printf 'done\n' >&6
+exec 5>&- 6>&-
 [ "$lock_released" = 1 ] || fail 'background usage refresh retained fleet lock'
 # An EXIT trap must fail a green test when cleanup fails, while retaining the
 # original failure. Run the actual cleanup function with a mock Docker boundary.
