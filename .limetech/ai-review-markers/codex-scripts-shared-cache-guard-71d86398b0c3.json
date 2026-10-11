@@ -1,0 +1,15 @@
+{
+  "disposition": "PATCH",
+  "expected_structural_delta": "About 30 shell lines, existing pnpm-cache regression file extended, two UI/doc descriptions corrected. No per-slot stores. Main-agent PATCH, independent historical cause unproven. Public push awaits explicit user authorization.",
+  "minimum_design": "Reuse the fleet lock for cache-clear-pkg and reject deletion if any managed runner, validation, sidecar or executor container exists. No store remapping or deployment change.",
+  "outcome": "Reject shared package-cache deletion while managed containers exist; preserve cross-runner shared pnpm stores.",
+  "reuse_decisions": [
+    {
+      "decision": "reuse",
+      "name": "with_fleet_lock and managed Docker labels",
+      "rationale": "Existing fleet lifecycle owns admission and identifies cache users. No new busy ledger or maintenance daemon."
+    }
+  ],
+  "schema": "limetech.ai-review-marker.v2",
+  "stage": "forecast"
+}
