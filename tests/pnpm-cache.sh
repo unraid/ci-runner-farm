@@ -69,6 +69,39 @@ for state in busy unavailable idle; do
     done
   fi
 done
+# A blocked asynchronous usage refresh must not retain the foreground fleet
+# lock after the actual maintenance command returns.
+mkdir -p "$tmp/lock-cache"
+mkfifo "$tmp/refresh-started" "$tmp/refresh-release"
+export CRF_TEST_SOURCE="$PWD/src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-farm.sh"
+export CRF_TEST_TEMP="$tmp"
+cat > "$tmp/maintenance" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = cache-usage-refresh ]; then
+  printf 'started\n' > "$CRF_TEST_TEMP/refresh-started"
+  read -r -t 10 _ < "$CRF_TEST_TEMP/refresh-release" || true
+  exit 0
+fi
+# shellcheck source=/dev/null
+source "$CRF_TEST_SOURCE"
+CACHE_ROOT="$CRF_TEST_TEMP/lock-cache"
+docker() { return 0; }
+crf_safe_cache_root() { printf '%s' "$CACHE_ROOT"; }
+reload_locked_snapshot() { return 0; }
+log() { :; }
+with_fleet_lock wait cmd_cache_clear_pkg
+SCRIPT
+chmod +x "$tmp/maintenance"
+"$tmp/maintenance" >"$tmp/maintenance-result" &
+maintenance_pid=$!
+read -r -t 10 refresh_state < "$tmp/refresh-started" || fail 'refresh did not start'
+[ "$refresh_state" = started ] || fail 'unexpected refresh status'
+wait "$maintenance_pid" || fail 'cache maintenance failed'
+lock_released=0
+flock -n "$CRF_RUNDIR/fleet.lock" true && lock_released=1
+printf 'done\n' > "$tmp/refresh-release"
+[ "$lock_released" = 1 ] || fail 'background usage refresh retained fleet lock'
 # An EXIT trap must fail a green test when cleanup fails, while retaining the
 # original failure. Run the actual cleanup function with a mock Docker boundary.
 cleanup_function="$(sed -n '/^cleanup() {/,/^}/p' tests/pnpm-store-runtime.sh)"
