@@ -1,25 +1,8 @@
 {
   "disposition": "PATCH",
-  "expected_structural_delta": "5-6 existing modules/config surfaces; 200-450 production lines; 2-3 focused test files, 250-500 lines; no new lifecycle owner or durable state representation, no new mutating operation. One stateless read-only report family. Existing no-exec shared lifecycle remains unchanged.",
-  "minimum_design": "Extend existing runner config, mount admission, GitHub bind/env/fingerprint and source-scoped firewall paths. Retain stateless read-only retired-store reporting. Native lifecycle and provisioning remain authoritative.",
-  "outcome": "Publish a mainline nightly that preserves installed shared filesystem and strict artifact-network behavior while retaining the merged freeze recovery fix.",
-  "reuse_decisions": [
-    {
-      "decision": "extend",
-      "name": "Native runner engine and provider",
-      "rationale": "Existing config, container lifecycle, fleet lock and replacement paths remain the only runtime owner."
-    },
-    {
-      "decision": "reuse",
-      "name": "Provisioned shared filesystem",
-      "rationale": "Bind an already attested host mount; no new filer, credential store or mount lifecycle."
-    },
-    {
-      "decision": "extend",
-      "name": "Strict firewall policy",
-      "rationale": "Narrow source and destination rules use existing owned rule helpers."
-    }
-  ],
+  "forecast_commit": "6ee857b696e6c9e1fe0af806930e171f080acdb3",
+  "reviewed_sha": "32a818cb6637022ab7070201c6c6158e4ad5e637",
   "schema": "limetech.ai-review-marker.v2",
-  "stage": "forecast"
+  "stage": "final",
+  "unresolved_proportionality_findings": []
 }
