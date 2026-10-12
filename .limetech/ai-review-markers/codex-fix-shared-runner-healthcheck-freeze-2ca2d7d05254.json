@@ -1,0 +1,25 @@
+{
+  "disposition": "PATCH",
+  "expected_structural_delta": "Zero new lifecycle owners, stores, schemas, dependencies or production layers; one shared status observer helper and focused regression fixtures.",
+  "minimum_design": "Disable inherited Docker healthchecks at shared create and read shared runner status through immutable host-side Docker inspection; preserve native lifecycle and legacy providers.",
+  "outcome": "Shared GitHub runners remain observable during native freeze without periodic health or UI probes spawning container execs.",
+  "reuse_decisions": [
+    {
+      "decision": "extend",
+      "name": "run_owned_github_container",
+      "rationale": "All new shared GitHub owners pass through existing gated create adapter."
+    },
+    {
+      "decision": "reuse",
+      "name": "native shared capacity withdrawal",
+      "rationale": "Existing owner preserves workers, remote idle proof, settlement and fenced release."
+    },
+    {
+      "decision": "extend",
+      "name": "github_runner_state",
+      "rationale": "Shared-only host-side process observation removes unlocked UI exec race while legacy behavior stays intact."
+    }
+  ],
+  "schema": "limetech.ai-review-marker.v2",
+  "stage": "forecast"
+}
