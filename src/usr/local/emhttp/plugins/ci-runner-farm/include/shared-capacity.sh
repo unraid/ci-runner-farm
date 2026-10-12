@@ -103,7 +103,10 @@ run_owned_github_container() {
   for arg in "${ARGS[@]}"; do
     [ "$arg" = -d ] || create_args+=("$arg")
   done
-  id="$(docker create "${create_args[@]}")" || return 1
+  # Image healthchecks spawn Docker exec processes. A probe racing native pause
+  # can block process inspection needed for frozen idle proof. Shared owners
+  # use the native lifecycle's host-side process and GitHub registration checks.
+  id="$(docker create --no-healthcheck "${create_args[@]}")" || return 1
   printf '%s' "$id" | grep -qE '^[0-9a-f]{64}$' \
     || { err "Docker create returned an invalid immutable runner identity"; return 1; }
   shared_capacity_start "$name" "$id"

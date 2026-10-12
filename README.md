@@ -587,6 +587,14 @@ may overlap, but each must fit the protected aggregate builder maximum.
 Native shared admission still charges the actual class RAM/CPU and gates
 every container start against the aggregate maximum and host budget.
 
+New shared GitHub owners disable inherited Docker image healthchecks. A
+healthcheck starts a container exec, which can race native pause and block the
+process inspection required for withdrawal. Shared status sampling also uses
+host-side inspection, preserving paused and unknown states. Native process and
+GitHub registration checks still own withdrawal safety. Existing containers
+receive this correction through normal native turnover; running jobs are not
+interrupted to replace them. Nonshared GitHub and GitLab behavior is unchanged.
+
 Unreadable, paused, starting or queued owners suppress further growth in
 that class and retain their exact slots. Queued starts keep their durable
 requests. This growth path never deletes an idle owner; native frozen

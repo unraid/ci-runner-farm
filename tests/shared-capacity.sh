@@ -60,6 +60,7 @@ if run_owned_github_container 1; then fail 'queued start reported running'; else
 grep -qF "gate start ci-runner-build-1 $docker_id" "$logfile" || fail 'immutable create did not reach gate'
 if grep -qE '^docker (run|start)' "$logfile"; then fail 'queued create bypassed admission'; fi
 grep -qF -- '--memory 12g --cpus 1 --env-file' "$logfile" || fail 'hard limits or private credential file changed'
+grep -q '^docker create --no-healthcheck ' "$logfile" || fail 'shared owner retained image healthcheck execs'
 if grep -qF 'create -d' "$logfile"; then fail 'detached run flag reached create'; fi
 
 # An expired inert token must use the supported refresh before a fresh create.
@@ -141,6 +142,7 @@ shared_capacity_enabled && fail 'positive legacy metadata enabled shared admissi
 : > "$logfile"
 run_owned_github_container 1
 grep -q '^docker run -d ' "$logfile" || fail 'legacy run compatibility changed'
+if grep -qF -- '--no-healthcheck' "$logfile"; then fail 'legacy image healthcheck was disabled'; fi
 # Closure applies even before activation, and must precede any Docker effect.
 cmd_admission_close
 : > "$logfile"

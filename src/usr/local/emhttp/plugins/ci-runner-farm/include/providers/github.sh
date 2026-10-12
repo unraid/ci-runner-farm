@@ -54,7 +54,38 @@ github_confgen() {
     | sha256sum | cut -c1-12
 }
 
+# Status sampling runs outside the fleet lock. Never spawn an exec that can
+# race native freeze; observe the captured owner from the host instead. These
+# display states do not authorize withdrawal or replace the provider's proof.
+github_shared_runner_state() {
+  local snapshot id provider role index gen state processes phase
+  snapshot="$(managed_runner_snapshot "$1")" || { echo starting; return; }
+  IFS='|' read -r id provider role index gen <<< "$snapshot"
+  [ "$provider" = github ] && [ "$role" = runner ] || { echo starting; return; }
+  state="$(timeout 10 docker inspect --format '{{.State.Status}}|{{.State.Paused}}' "$id" 2>/dev/null)" \
+    || { echo starting; return; }
+  case "$state" in
+    running\|true) echo paused; return ;;
+    running\|false) ;;
+    *) echo starting; return ;;
+  esac
+  processes="$(timeout 10 docker top "$id" -eo pid,comm 2>/dev/null)" \
+    || { echo starting; return; }
+  phase="$(printf '%s\n' "$processes" | awk '
+    NR==1 { if (NF!=2 || $1!="PID" || $2!="COMMAND") bad=1; next }
+    NF!=2 || $1!~/^[0-9]+$/ || $1==0 { bad=1 }
+    NF==2 && $1~/^[0-9]+$/ && $1>0 && $2=="Runner.Worker" { workers++ }
+    $2=="Runner.Listener" { listeners++ }
+    END {
+      if (workers) print "busy";
+      else if (!bad && listeners==1) print "idle";
+      else print "starting";
+    }')"
+  printf '%s\n' "$phase"
+}
+
 github_runner_state() {
+  if shared_capacity_enabled; then github_shared_runner_state "$1"; return; fi
   local c="$1" p
   p="$(docker exec "$c" sh -c 'pgrep -x Runner.Worker >/dev/null 2>&1 && echo busy || { pgrep -x Runner.Listener >/dev/null 2>&1 && echo idle; }' 2>/dev/null)"
   case "$p" in busy) echo busy; return;; idle) echo idle; return;; esac
