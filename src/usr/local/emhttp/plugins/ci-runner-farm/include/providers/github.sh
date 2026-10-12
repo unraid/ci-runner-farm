@@ -728,10 +728,20 @@ github_status_resources() { return 0; }
 
 # Populate cmd_usage_refresh's dynamically scoped provider-neutral output fields.
 github_usage_context() {
-  local c="$1" jline jenv jref
+  local c="$1" jline jenv jref shared=false snapshot provider role index gen
+  if shared_capacity_enabled; then
+    shared=true
+    snapshot="$(managed_runner_snapshot "$c")" || return 0
+    IFS='|' read -r c provider role index gen <<< "$snapshot"
+    [ "$provider" = github ] && [ "$role" = runner ] || return 0
+  fi
   jline="$(docker logs --timestamps --tail 60 "$c" 2>&1 | grep 'Running job: ' | tail -1 | tr -d '\r')"
   job="${jline##*Running job: }"
   jstarted="$(echo "$jline" | awk '{print $1}' | grep -oE '^[0-9T:.Z-]+' | head -1)"; jstarted="${jstarted:-_}"
+  # The worker can finish after the busy sample, allowing native pause before
+  # this optional metadata read. Keep log-derived fields; unavailable repo/run
+  # links are preferable to spawning an exec into a freezeable shared owner.
+  [ "$shared" = false ] || return 0
   jenv="$(docker exec "$c" sh -c 'for p in /proc/[0-9]*/environ; do if tr "\0" "\n" < $p 2>/dev/null | grep -q "^GITHUB_REPOSITORY="; then tr "\0" "\n" < $p | grep -E "^GITHUB_(REPOSITORY|RUN_ID|REF_NAME)="; break; fi; done' 2>/dev/null)"
   if [ -n "$jenv" ]; then
     jrepo="$(echo "$jenv" | grep '^GITHUB_REPOSITORY=' | head -1 | cut -d= -f2)"

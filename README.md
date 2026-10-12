@@ -594,6 +594,9 @@ host-side inspection, preserving paused and unknown states. Native process and
 GitHub registration checks still own withdrawal safety. Existing containers
 receive this correction through normal native turnover; running jobs are not
 interrupted to replace them. Nonshared GitHub and GitLab behavior is unchanged.
+Shared job details retain the log-derived job name and start time. Repository,
+run and ref links are unavailable because collecting them required an exec
+that could race withdrawal after the worker finished.
 
 Unreadable, paused, starting or queued owners suppress further growth in
 that class and retain their exact slots. Queued starts keep their durable
