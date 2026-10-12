@@ -32,6 +32,33 @@ if crf_shared_cache_mount 2>/dev/null; then fail 'missing mount accepted'; fi
   if crf_shared_cache_mount 2>/dev/null; then fail 'foreign filesystem accepted'; fi
   mount_source=ci-shared-cache-v1
   crf_shared_cache_mount || fail 'owned filesystem rejected'
+  # Retry the real existing-owner start path. Only native Docker inspection
+  # and admission are replaced; the mount policy and dispatch run unchanged.
+  NAME_PREFIX=ci-runner-build; CRF_POOL_ID=build
+  touch "$CFGDIR/shared-capacity.enabled"
+  docker() { [ "$1" = inspect ]; }
+  owner_id="$(printf '%064d' 1)"
+  managed_runner_snapshot() { printf '%s|created\n' "$owner_id"; }
+  shared_capacity_call() { printf '%s\n' "$*" >> "$tmp/admission"; }
+  for state in missing local foreign disconnected; do
+    filesystem=fuse.seaweedfs; mount_source=ci-shared-cache-v1; stat_status=0
+    case "$state" in
+      missing) filesystem='';;
+      local) filesystem=zfs;;
+      foreign) mount_source=foreign;;
+      disconnected) stat_status=1;;
+    esac
+    if start_one 1 2>/dev/null; then fail "queued retry accepted $state mount"; fi
+    [ ! -e "$tmp/admission" ] || fail "queued retry reached admission with $state mount"
+  done
+  filesystem=fuse.seaweedfs; mount_source=ci-shared-cache-v1; stat_status=0
+  start_one 1 || fail 'queued retry rejected owned mount'
+  grep -qx "start $NAME_PREFIX-1 $owner_id" "$tmp/admission" || fail 'queued retry lost owner identity'
+  SHARED_CACHE_ROOT=''; filesystem=zfs
+  start_one 1 || fail 'disabled shared cache blocked queued retry'
+  [ "$(wc -l < "$tmp/admission")" -eq 2 ] || fail 'disabled cache skipped native admission'
+  SHARED_CACHE_ROOT=/mnt/cache/ci_object_store/mounts/shared
+  filesystem=fuse.seaweedfs
   stat_status=1
   if crf_shared_cache_mount 2>/dev/null; then fail 'disconnected filesystem accepted'; fi
   stat_status=0

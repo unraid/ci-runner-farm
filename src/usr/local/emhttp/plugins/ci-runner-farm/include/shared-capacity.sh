@@ -60,6 +60,9 @@ shared_capacity_require_starts_open() {
 
 shared_capacity_start() {
   shared_capacity_require_starts_open || return 1
+  # Queued owners reuse their existing argv on retry. Recheck the optional
+  # mount before admission so an unmounted directory cannot become job storage.
+  crf_shared_cache_mount || return 1
   local name="$1" id="$2"
   [ "$CI_PROVIDER" = github ] && shared_capacity_build_pool "${CRF_POOL_ID:-default}" \
     || { err "shared capacity only supports owned GitHub build size pools"; return 1; }
