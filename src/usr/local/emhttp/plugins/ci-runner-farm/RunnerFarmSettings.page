@@ -36,6 +36,7 @@ $defaults = [
   'USER_SHARE_MOUNTS'=>'',
   'CACHE_MOUNTS'=>'pnpm-store:/home/runner/.local/share/pnpm/store npm:/home/runner/.npm yarn:/home/runner/.cache/yarn ms-playwright:/home/runner/.cache/ms-playwright',
   'DIND'=>'true', 'SHARE_DOCKER_SOCK'=>'false', 'SHARED_IMAGE_CACHE'=>'true', 'NETWORK_ISOLATION'=>'off',
+  'ARTIFACT_ENDPOINT'=>'',
   'IMAGE_AUTOUPDATE'=>'false', 'IMAGE_AUTOUPDATE_INTERVAL'=>'1800', 'IMAGE_DRAIN_TIMEOUT'=>'3600',
   'DASHBOARD_WIDGET_ENABLE'=>'true',
   'AUTOSCALE'=>'false', 'AUTOSCALE_MIN'=>'2', 'AUTOSCALE_MAX'=>'16', 'AUTOSCALE_MIN_IDLE'=>'2',
@@ -451,6 +452,13 @@ _(Network isolation)_:
 > **isolate** — runners run on a dedicated bridge (`ci-runner-net`), so they can't reach your **other Unraid containers**. The shared image cache joins the same network. GitLab host-socket mode cannot guarantee this for executor-created networks and is rejected; use the default per-slot DinD mode. Low-risk; recommended.
 >
 > **strict** — everything `isolate` does, **plus** IPv4 firewall rules (Docker's `DOCKER-USER`/`INPUT` chains) that block runners from reaching the **Unraid host and your LAN** while still allowing the internet, the shared cache, and TCP port 22 on the exact local farm address for the colocated QA VM MCP. Treat this as **defense-in-depth against accidental egress** (a build script phoning home by mistake), **not a hard boundary**: with Docker-in-Docker on (the default) runners are **privileged** and determined malicious code could break out and remove these rules, and the rules are IPv4-only. For genuinely untrusted code, prefer non-privileged runners and treat strict as an extra layer, not the wall. Requires `iptables`; Start fails closed if the required policy cannot be inspected or installed.
+:end
+
+_(Artifact endpoint)_:
+: <input type="text" name="ARTIFACT_ENDPOINT" value="<?=crf_g($cfg,'ARTIFACT_ENDPOINT','')?>" placeholder="blank = none, e.g. https://artifacts.example.com:8333">
+
+:crf_artifact_endpoint_plug:
+> Optional HTTP(S) origin for a private artifact service. Strict isolation permits only its resolved IPv4 addresses and TCP port. Do not include credentials, bucket paths, or CIDRs. Applies on the next Start; operators can apply it to running workers with the native `reconcile-network` command. Removed exceptions remain until the managed fleet is empty and its policy is rebuilt. Configure authentication separately in the CI workflow.
 :end
 
 ### Image auto-update

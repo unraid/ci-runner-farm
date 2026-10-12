@@ -58,6 +58,8 @@ bash tests/secret-write.sh
 bash tests/utf8-safety.sh
 bash tests/log-redaction.sh
 bash tests/provider-mocks.sh
+bash tests/shared-cache.sh
+bash tests/retired-docker-cache.sh
 bash tests/pnpm-cache.sh
 bash tests/lease-selfheal.sh
 bash tests/ownership-safety.sh
@@ -65,6 +67,7 @@ bash tests/temp-safety.sh
 bash tests/resource-ownership.sh
 bash tests/gitlab-policy.sh
 bash tests/firewall-transition.sh
+bash tests/firewall-forward-order.sh
 bash tests/deploy-uninstall-safety.sh
 bash tests/install-dev-safety.sh
 bash tests/release-guard.sh

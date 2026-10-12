@@ -150,6 +150,7 @@ gitlab_effective_pull_policy() {
 }
 
 gitlab_validate_settings() {
+  crf_shared_cache_mount || return 1
   crf_validate_user_share_mounts || return 1
   gitlab_validate_url || return 1
   printf '%s' "$GITLAB_RUNNER_IMAGE" | grep -qE '^[A-Za-z0-9][A-Za-z0-9_./:@-]*$' \

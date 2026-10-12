@@ -6,7 +6,7 @@ github_token_ready() { [ -n "$ACCESS_TOKEN" ]; }
 github_token_name()  { echo "GitHub token"; }
 github_builtin_image() { echo "$BUILTIN_IMAGE"; }
 github_validate_settings() {
-  crf_validate_user_share_mounts
+  crf_validate_user_share_mounts && crf_shared_cache_mount
 }
 github_strict_endpoint() { return 0; }
 github_imageupdate_pull() { return 1; }
@@ -39,6 +39,7 @@ github_confgen() {
       pnpm-store:*) runtime_salt="${runtime_salt}-pnpm-store-v1"; break ;;
     esac
   done
+  [ -z "$SHARED_CACHE_ROOT" ] || runtime_salt="${runtime_salt}-shared-cache-v1-${SHARED_CACHE_ROOT}"
   case ",$RUNNER_LABELS," in
     *,kvm,*)
       kvm_gid="$(github_kvm_gid 2>/dev/null || true)"
@@ -515,6 +516,7 @@ github_build_args() {
   local idx="$1"
   local name="${2:-${NAME_PREFIX}-${idx}}" role="${CRF_CONTAINER_ROLE:-runner}" host_service_ip image kvm_gid=''
   crf_user_share_mount_config_problem || return 1
+  crf_shared_cache_mount || return 1
   local pnpm_store_dest='' cache_spec cache_dest
   for cache_spec in $CACHE_MOUNTS; do
     case "$cache_spec" in
@@ -596,6 +598,11 @@ github_build_args() {
     [ "$share_mode" = ro ] && share_mount+=",readonly"
     ARGS+=( --mount "$share_mount" )
   done
+  if [ -n "$SHARED_CACHE_ROOT" ]; then
+    ARGS+=( --mount "type=bind,src=${SHARED_CACHE_ROOT},dst=/mnt/ci-cache"
+      -e CI_SHARED_CACHE=/mnt/ci-cache
+      --label net.unraid.ci-runner-farm.shared-cache=ci-shared-cache-v1 )
+  fi
   [ -n "$RUNNER_CPUS" ]   && ARGS+=( --cpus="$RUNNER_CPUS" )
   [ -n "$RUNNER_MEMORY" ] && ARGS+=( --memory="$RUNNER_MEMORY" )
   [ "$NETWORK_ISOLATION" != "off" ] && ARGS+=( --network "$RUNNER_NETWORK" )

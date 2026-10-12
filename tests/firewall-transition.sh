@@ -15,6 +15,7 @@ CI_PROVIDER=gitlab
 GITLAB_URL='https://new-gitlab.example.test:8443/gitlab'
 IMAGE_SOURCE=remote
 REGISTRY_SERVER='registry.example.test:5001'
+ARTIFACT_ENDPOINT='http://artifacts.example.test:8333'
 NETWORK_ISOLATION=strict
 RUNNER_NETWORK='ci-runner-net'
 SHARED_IMAGE_CACHE=true
@@ -28,6 +29,7 @@ getent() {
   case "$host" in
     new-gitlab.example.test) printf '10.20.30.40 STREAM host\n' ;;
     registry.example.test)   printf '10.20.30.50 STREAM host\n' ;;
+    artifacts.example.test)  printf '100.100.10.20 STREAM host\n' ;;
   esac
 }
 
@@ -49,6 +51,10 @@ docker() {
 iptables() {
   printf '%s\n' "$*" >> "$IPTABLES_LOG"
   case "$*" in
+    *'-S DOCKER-USER'*)
+      printf '%s\n' '-A DOCKER-USER -s 172.30.0.0/16 -d 10.0.0.0/8 -m comment --comment "ci-runner-farm:lan10" -j DROP'
+      printf '%s\n' '-A DOCKER-USER -s 172.31.0.0/16 -d 10.0.0.0/8 -m comment --comment "ci-runner-farm:lan10" -j DROP' ;;
+    *'-S FORWARD'*) printf '%s\n' '-A FORWARD -j ts-forward' ;;
     *'-L DOCKER-USER --line-numbers'*)
       printf '1 old allow /* ci-runner-farm:gitlab */\n2 old allow /* ci-runner-farm:registry */\n' ;;
     *'-L INPUT --line-numbers'*)
@@ -77,6 +83,10 @@ grep -q -- '-d 10.20.30.40 -p tcp --dport 8443' "$IPTABLES_LOG" \
   || fail "new GitLab endpoint was not allowed"
 grep -q -- '-d 10.20.30.50 -p tcp --dport 5001' "$IPTABLES_LOG" \
   || fail "new registry endpoint was not allowed"
+grep -q -- '-I DOCKER-USER 1 -s 172.31.0.0/16 -d 100.100.10.20 -p tcp --dport 8333 -j RETURN' "$IPTABLES_LOG" \
+  || fail "private artifact origin did not receive its narrow forward exception"
+grep -q -- '-I INPUT 1 -s 172.31.0.0/16 -d 100.100.10.20 -p tcp --dport 8333 -j RETURN' "$IPTABLES_LOG" \
+  || fail "colocated artifact origin did not receive its narrow host exception"
 grep -q -- '-I INPUT 1' "$IPTABLES_LOG" || fail "host-input endpoint exception was not added"
 grep -q -- '-I DOCKER-USER 1 -s 172.31.0.0/16 -d 192.168.0.0/16 -j DROP' "$IPTABLES_LOG" \
   || fail "complete policy for the replacement subnet was not added"
@@ -100,6 +110,42 @@ CI_PROVIDER=github
 if configured_strict_endpoints | grep -q ' registry$'; then
   fail "built-in GitHub policy unexpectedly enabled a registry exception"
 fi
+configured_strict_endpoints | grep -q '^100\.100\.10\.20 8333 artifact$' \
+  || fail "artifact exception depended on provider or remote-image configuration"
+
+# URL ports are decimal; leading zeros must never change the allowed TCP port.
+for pair in 010:10 080:80 00001:1 65535:65535; do
+  ARTIFACT_ENDPOINT="http://artifacts.example.test:${pair%:*}"
+  : > "$IPTABLES_LOG"
+  firewall_allow_current_policy
+  grep -q -- "-d 100.100.10.20 -p tcp --dport ${pair#*:} -j RETURN" "$IPTABLES_LOG" \
+    || fail "artifact port was not normalized to decimal"
+done
+ARTIFACT_ENDPOINT='http://artifacts.example.test:8333'
+
+# Invalid origins and unresolved names fail closed. A network-only apply must
+# not recycle or start runners, and must preserve an active fleet's old policy.
+managed_names() { printf 'ci-runner-1\n'; }
+: > "$IPTABLES_LOG"
+cmd_reconcile_network
+grep -q -- '-d 100.100.10.20 -p tcp --dport 8333' "$IPTABLES_LOG" \
+  || fail "network-only reconciliation omitted the artifact endpoint"
+if grep -Eq ' -D (DOCKER-USER|INPUT) [0-9]+$' "$IPTABLES_LOG"; then
+  fail "network-only reconciliation cleared an active fleet policy"
+fi
+for endpoint in 'http://artifacts.example.test:0' 'http://artifacts.example.test:00000' \
+  'https://artifacts.example.test:65536' 'http://artifacts.example.test:18446744073709551617' \
+  'http://user:password@artifacts.example.test:8333' 'http://artifacts.example.test:8333/bucket' \
+  'http://100.64.0.0/10' 'http://missing.example.test:8333' 'ftp://artifacts.example.test:8333'; do
+  ARTIFACT_ENDPOINT="$endpoint"
+  : > "$IPTABLES_LOG"
+  if cmd_reconcile_network >/dev/null 2>&1; then fail "accepted invalid/unresolved artifact origin"; fi
+  [ ! -s "$IPTABLES_LOG" ] || fail "invalid origin changed firewall policy"
+  if firewall_apply >/dev/null 2>&1; then fail "normal firewall apply accepted invalid artifact origin"; fi
+  if firewall_allow_current_policy >/dev/null 2>&1; then fail "replacement policy accepted invalid artifact origin"; fi
+  [ ! -s "$IPTABLES_LOG" ] || fail "invalid origin changed normal/replacement policy"
+done
+ARTIFACT_ENDPOINT='http://artifacts.example.test:8333'
 CI_PROVIDER=gitlab
 IMAGE_SOURCE=remote
 
@@ -146,6 +192,8 @@ grep -q ' -D DOCKER-USER ' "$IPTABLES_LOG" || fail "authoritative rebuild did no
 grep -q ' -D INPUT ' "$IPTABLES_LOG" || fail "authoritative rebuild did not remove old input rules"
 grep -q -- '-d 10.20.30.40 -p tcp --dport 8443' "$IPTABLES_LOG" \
   || fail "authoritative rebuild omitted current GitLab endpoint"
+grep -q -- '-d 100.100.10.20 -p tcp --dport 8333' "$IPTABLES_LOG" \
+  || fail "authoritative rebuild omitted current artifact endpoint"
 grep -q -- '-d 157.180.7.27 -p tcp --dport 22' "$IPTABLES_LOG" \
   || fail "authoritative rebuild omitted the local QA VM MCP endpoint"
 

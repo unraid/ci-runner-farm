@@ -17,6 +17,7 @@
 #   validate         dry-provision the selected provider to prove its generated
 #                    config, mounts, limits, and image, then remove it
 #   prune-cache      clear the shared cache root
+#   prune-retired-docker read-only snapshot of unreferenced slot Docker stores
 ###############################################################################
 set -uo pipefail
 
@@ -61,6 +62,7 @@ RUNNER_CPUS=""                        # per-runner CPU cap; empty = uncapped (CF
 RUNNER_MEMORY="16g"                   # per-runner memory cap (kept: memory isn't time-shared like CPU)
 CACHE_ROOT="/mnt/cache/github-runner" # must be a dedicated SUBDIR under a pool/disk, never a bare mount root (see crf_safe_cache_root)
 WORK_TMPFS_SIZE="8g"                  # empty => bind workdir to pool instead of RAM
+SHARED_CACHE_ROOT=""                  # optional owned SeaweedFS mount; jobs receive /mnt/ci-cache
 USER_SHARE_MOUNTS=""                  # optional user-share bind mounts exposed to jobs: host-path:container-path:ro|rw
 IMAGE_SOURCE="builtin"                # builtin = run the locally-built image; remote = pull IMAGE from a registry
 BUILTIN_IMAGE="ci-runner-farm-runner:latest"  # legacy/GitHub tag produced by build-image
@@ -91,6 +93,7 @@ NETWORK_ISOLATION="off"               # off     = runners on the default docker 
                                       #           while still allowing the internet + the shared mirror.
 RUNNER_NETWORK="ci-runner-net"        # name of the dedicated bridge (created when isolation != off).
                                       # Docker auto-allocates its subnet; we read it back for the rules.
+ARTIFACT_ENDPOINT=""                 # optional HTTP(S) artifact service allowed through strict isolation
 FW_TAG="ci-runner-farm"               # iptables comment tag used to find/remove our DOCKER-USER rules
 # ---- private registry auth: docker login so the host can pull a private IMAGE
 REGISTRY_SERVER=""                     # e.g. ghcr.io — registry to docker login (empty = skip)
@@ -151,9 +154,9 @@ HISTORY_FILE="${CRF_HISTORY_FILE:-${CFGDIR}/recommendations.history}"
 CFG_KEYS="CI_PROVIDER GH_SCOPE GH_OWNER GH_REPOS RUNNER_GROUP GITLAB_URL GITLAB_RUNNER_IMAGE GITLAB_PROJECTS GITLAB_SHUTDOWN_TIMEOUT \
 GITLAB_ALLOWED_IMAGES GITLAB_ALLOWED_SERVICES GITLAB_PULL_POLICY GITLAB_SHM_SIZE \
 RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS QUEUED_POOLS \
-RUNNER_CPUS RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE USER_SHARE_MOUNTS IMAGE_SOURCE IMAGE EPHEMERAL \
+RUNNER_CPUS RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE USER_SHARE_MOUNTS SHARED_CACHE_ROOT IMAGE_SOURCE IMAGE EPHEMERAL \
 RUN_AS_ROOT REGISTRY_SERVER REGISTRY_USERNAME CACHE_MOUNTS SHARE_DOCKER_SOCK DIND \
-SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
+SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK ARTIFACT_ENDPOINT MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
 AUTOSCALE_MAX AUTOSCALE_MIN_IDLE AUTOSCALE_STEP AUTOSCALE_INTERVAL \
 AUTOSCALE_IDLE_GRACE IMAGE_AUTOUPDATE IMAGE_AUTOUPDATE_INTERVAL IMAGE_DRAIN_TIMEOUT \
 DASHBOARD_WIDGET_ENABLE"
@@ -1633,13 +1636,13 @@ write_dind_config() {
 # allowed to accept work.
 
 # Remove every rule we previously added (matched by our comment tag), highest line
-# number first so deletes don't renumber out from under us. Covers BOTH chains we
-# touch: DOCKER-USER (forwarded traffic) and INPUT (traffic to the host's own IPs).
+# number first so deletes don't renumber out from under us. Covers the scoped
+# FORWARD hooks, DOCKER-USER policy, and INPUT rules for the host's own IPs.
 # Idempotent.
 firewall_clear() {
   command -v iptables >/dev/null 2>&1 || return 0
   local chain n listing failed=0
-  for chain in DOCKER-USER INPUT; do
+  for chain in FORWARD DOCKER-USER INPUT; do
     if ! listing="$(iptables -w -L "$chain" --line-numbers -n 2>/dev/null)"; then
       err "could not enumerate $chain while removing CI Runner Farm firewall rules"
       failed=1
@@ -1687,16 +1690,59 @@ firewall_insert_rule() {
   fi
 }
 
-# Resolve the two explicitly configured control-plane endpoints that may
+# VPNs can place an accepting FORWARD hook before Docker's DOCKER-USER hook.
+# Consult the existing policy first, only for subnets protected by our rules.
+# Include preserved old subnets while busy runners drain. Keep other owners'
+# relative order and retain superseded hooks until empty-fleet firewall_clear.
+firewall_ensure_forward_hooks() {
+  local policy subnets subnet forward leading
+  if ! policy="$(iptables -w -S DOCKER-USER 2>/dev/null)"; then
+    err "strict isolation: could not inspect runner forwarding policy"
+    return 1
+  fi
+  subnets="$(printf '%s\n' "$policy" | awk -v tag="$FW_TAG:" \
+    '$1=="-A" && $2=="DOCKER-USER" && $3=="-s" && index($0,tag) {print $4}' | sort -u)"
+  [ -n "$subnets" ] || { err "strict isolation: no protected runner subnet"; return 1; }
+  for subnet in $subnets; do
+    if ! forward="$(iptables -w -S FORWARD 2>/dev/null)"; then
+      err "strict isolation: could not inspect forwarding hook order"
+      return 1
+    fi
+    # Only our exact source-scoped jumps may precede this subnet's hook.
+    # A foreign jump/ACCEPT ahead of it requires promotion, even if -C finds it.
+    leading="$(printf '%s\n' "$forward" | awk -v tag="$FW_TAG:forward" '
+      $1!="-A" {next}
+      {gsub(/"/, "")}
+      NF==10 && $2=="FORWARD" && $3=="-s" && $5=="-m" && $6=="comment" &&
+        $7=="--comment" && $8==tag && $9=="-j" && $10=="DOCKER-USER" {print $4; next}
+      {exit}')"
+    if printf '%s\n' "$leading" | grep -Fxq -- "$subnet" &&
+       iptables -w -C FORWARD -s "$subnet" -m comment --comment "$FW_TAG:forward" \
+         -j DOCKER-USER >/dev/null 2>&1; then
+      continue
+    fi
+    firewall_insert_rule FORWARD 1 -s "$subnet" -m comment --comment "$FW_TAG:forward" \
+      -j DOCKER-USER || return 1
+  done
+}
+
+# Resolve the explicitly configured CI and artifact endpoints that may
 # legitimately live on a private/LAN address. Strict mode otherwise drops every
 # RFC1918/CGNAT destination. Output is "IPv4 port label" and is consumed only as
 # validated iptables arguments; arbitrary URLs never reach the shell command.
 configured_strict_endpoints() {
   local kind spec hostport host port ip
-  for kind in provider registry; do
+  for kind in provider registry artifact; do
     if [ "$kind" = provider ]; then
       spec="$(provider_strict_endpoint)"; [ -n "$spec" ] || continue
       spec="${spec#https://}"; port=443; kind="$CI_PROVIDER"
+    elif [ "$kind" = artifact ]; then
+      [ -n "$ARTIFACT_ENDPOINT" ] || continue
+      # This is a service origin, never credentials, a CIDR or a URL path.
+      [[ "$ARTIFACT_ENDPOINT" =~ ^https?://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?/?$ ]] || continue
+      spec="$ARTIFACT_ENDPOINT"
+      case "$spec" in http://*) port=80 ;; *) port=443 ;; esac
+      spec="${spec#https://}"; spec="${spec#http://}"
     else
       # GitLab jobs/services may override a built-in default image, so their
       # explicitly configured registry still needs its narrow LAN exception.
@@ -1717,6 +1763,11 @@ configured_strict_endpoints() {
     esac
     printf '%s' "$host" | grep -qE '^[A-Za-z0-9][A-Za-z0-9.-]*$' || continue
     case "$port" in ''|*[!0-9]*) continue ;; esac
+    # iptables parses leading-zero ports as octal. Emit the decimal origin port
+    # and bound its length before numeric comparisons can overflow.
+    port="${port#"${port%%[!0]*}"}"
+    port="${port:-0}"
+    [ "${#port}" -le 5 ] || continue
     [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || continue
     {
       getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}'
@@ -1725,6 +1776,16 @@ configured_strict_endpoints() {
       [ -n "$ip" ] && printf '%s %s %s\n' "$ip" "$port" "$kind"
     done
   done
+}
+
+validate_artifact_endpoint() {
+  [ "$NETWORK_ISOLATION" = strict ] && [ -n "$ARTIFACT_ENDPOINT" ] || return 0
+  local endpoints
+  endpoints="$(configured_strict_endpoints)"
+  if ! printf '%s\n' "$endpoints" | grep -q ' artifact$'; then
+    err "artifact endpoint must resolve to IPv4 and use an HTTP(S) origin with a valid TCP port"
+    return 1
+  fi
 }
 
 # Add the COMPLETE policy for the current runner subnet without deleting tagged
@@ -1737,6 +1798,7 @@ configured_strict_endpoints() {
 # cycles.
 firewall_allow_current_policy() {
   [ "$NETWORK_ISOLATION" = strict ] || return 0
+  validate_artifact_endpoint || return 1
   command -v iptables >/dev/null 2>&1 \
     || { err "strict isolation needs iptables — egress NOT restricted"; return 1; }
   docker network inspect "$RUNNER_NETWORK" >/dev/null 2>&1 \
@@ -1755,6 +1817,7 @@ firewall_allow_current_policy() {
   # inserted at the head and the guard is retired only after the whole policy is
   # present. INPUT's broad drop is itself the final host-protection rule.
   firewall_ensure_rule DOCKER-USER -s "$s" -j DROP -m comment --comment "$FW_TAG:install-guard" || return 1
+  firewall_ensure_forward_hooks || return 1
   firewall_ensure_rule INPUT -s "$s" -j DROP -m comment --comment "$FW_TAG:in-drop" || return 1
 
   # Specific drops first. Later -I 1 allows are guaranteed to precede them.
@@ -1816,6 +1879,7 @@ firewall_prepare_replacement() {
 # With no managed runner, an authoritative clear/rebuild is safe (and removes old
 # strict rules when the selected mode is now off/isolate).
 firewall_apply() {
+  validate_artifact_endpoint || return 1
   local live
   live="$(managed_names)" \
     || { err "could not verify the managed fleet before applying firewall state"; return 1; }
@@ -1881,6 +1945,7 @@ firewall_apply() {
     ini=$((ini+1))
   done <<< "$(configured_strict_endpoints)"
   firewall_insert_rule INPUT "$ini" -s "$s" -j DROP -m comment --comment "$FW_TAG:in-drop" || return 1
+  firewall_ensure_forward_hooks || return 1
   log "strict isolation: egress locked to internet+mirror+configured CI endpoints+local QA VM MCP for $s (other host/LAN access blocked)"
 }
 
@@ -2321,6 +2386,14 @@ cmd_reconcile_config() {
   # migration of a security-isolation setting can otherwise read as immediate enforcement.
   [ "$NETWORK_ISOLATION" != off ] && msg="$msg  NOTE: network isolation ($NETWORK_ISOLATION) takes effect on each runner only as it recycles — running jobs keep their current network until they finish. Restart the fleet to enforce it on every runner immediately."
   echo "$msg"
+}
+
+cmd_reconcile_network() {
+  # Existing policy is additive while any managed runner remains. Changing an
+  # endpoint must not clear rules or recycle busy workers. Empty fleets may
+  # retire obsolete exceptions through the existing authoritative rebuild.
+  [ "$NETWORK_ISOLATION" = strict ] || return 0
+  firewall_apply
 }
 
 reconcile_start() {
@@ -3205,6 +3278,37 @@ crf_validate_user_share_mounts() {
   done
 }
 
+# Shared cache data is a filesystem owned by host provisioning, never a local
+# cache directory we create or clear. An exact FUSE mount identity is mandatory.
+crf_shared_cache_mount() {
+  [ -n "$SHARED_CACHE_ROOT" ] || return 0
+  [ "$CI_PROVIDER" = github ] || { err "shared cache mounts currently require the GitHub provider"; return 1; }
+  printf '%s' "$SHARED_CACHE_ROOT" | grep -qE '^/mnt/[A-Za-z0-9_-]+/ci_object_store/mounts/shared$' \
+    || { err "SHARED_CACHE_ROOT must name the owned CI storage mount"; return 1; }
+  [ -d "$SHARED_CACHE_ROOT" ] && [ ! -L "$SHARED_CACHE_ROOT" ] \
+    || { err "shared cache mount is missing or a symlink"; return 1; }
+  [ "$(realpath -e -- "$SHARED_CACHE_ROOT" 2>/dev/null)" = "$SHARED_CACHE_ROOT" ] \
+    || { err "shared cache mount must resolve to its configured path"; return 1; }
+  [ "$(findmnt -M "$SHARED_CACHE_ROOT" -n -o FSTYPE 2>/dev/null)" = fuse.seaweedfs ] \
+    && [ "$(findmnt -M "$SHARED_CACHE_ROOT" -n -o SOURCE 2>/dev/null)" = ci-shared-cache-v1 ] \
+    || { err "shared cache requires the mounted ci-shared-cache-v1 SeaweedFS filesystem"; return 1; }
+  timeout 5 stat "$SHARED_CACHE_ROOT" >/dev/null 2>&1 \
+    || { err "shared cache filesystem is not responding"; return 1; }
+  local spec destination
+  for spec in $CACHE_MOUNTS; do
+    destination="${spec#*:}"
+    if crf_mount_destinations_overlap /mnt/ci-cache "$destination"; then
+      err "shared cache destination overlaps CACHE_MOUNTS"; return 1
+    fi
+  done
+  for spec in $USER_SHARE_MOUNTS; do
+    destination="${spec#*:}"; destination="${destination%:*}"
+    if crf_mount_destinations_overlap /mnt/ci-cache "$destination"; then
+      err "shared cache destination overlaps USER_SHARE_MOUNTS"; return 1
+    fi
+  done
+}
+
 cmd_cache_usage_refresh() {
   # du can be slow on a multi-GB cache, so this runs detached and the result is
   # cached; the UI reads the cache and only triggers a refresh when it is stale.
@@ -3894,6 +3998,80 @@ cmd_prune_cache() {
   log "cache pruned ($removed dir(s)) under $root"
 }
 
+# Inventory slot Docker stores without changing them. This is only a snapshot:
+# fleet.lock cannot exclude external Docker clients or host mount writers.
+crf_docker_storage_references() {
+  local ids id refs mounts daemon canonical
+  local -a containers=()
+  ids="$(docker ps -aq --no-trunc)" || return 1
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    printf '%s' "$id" | grep -qE '^[0-9a-f]{64}$' || return 1
+    containers+=("$id")
+  done <<< "$ids"
+  refs=""
+  if [ "${#containers[@]}" -gt 0 ]; then
+    refs="$(docker inspect --format '{{range .Mounts}}{{printf "%s\n" .Source}}{{end}}' "${containers[@]}")" || return 1
+  fi
+  daemon="$(docker info --format '{{.DockerRootDir}}')" || return 1
+  case "$daemon" in /*) ;; *) return 1 ;; esac
+  mounts="$(findmnt -rn -o TARGET)" || return 1
+  [ -n "$mounts" ] || return 1
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    case "$id" in /*) ;; *) return 1 ;; esac
+    canonical="$(realpath -m -- "$id")" || return 1
+    printf 'consumer|%s\n' "$canonical"
+  done <<< "$refs
+$daemon"
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    case "$id" in /*) ;; *) return 1 ;; esac
+    # --raw encodes whitespace and unsafe bytes as \xNN.
+    id="$(printf '%b' "$id")" || return 1
+    printf 'mount|%s\n' "$id"
+  done <<< "$mounts"
+}
+
+cmd_prune_retired_docker() {
+  local mode="${1:---dry-run}" root store canonical refs ref kind protected name
+  [ "$mode" = --dry-run ] \
+    || { err "prune-retired-docker is read-only; external Docker writers cannot be excluded"; return 1; }
+  root="$(crf_safe_cache_root)" || { err "refusing retired Docker cleanup under unsafe CACHE_ROOT"; return 1; }
+  # References are line-delimited; control bytes and raw backslashes would
+  # make the host mount table ambiguous. Normal spaces remain supported.
+  case "$root" in *$'\n'*|*$'\r'*|*$'\t'*|*'\'*) return 1 ;; esac
+  store="$root/docker"
+  [ -d "$store" ] || return 0
+  canonical="$(realpath -m -- "$store")" || return 1
+  [ "$canonical" = "$store" ] && [ ! -L "$store" ] \
+    || { err "refusing retired Docker cleanup through a symlink"; return 1; }
+  refs="$(crf_docker_storage_references)" \
+    || { err "cannot establish Docker storage references; snapshot unavailable"; return 1; }
+  for canonical in "$store"/*; do
+    [ -e "$canonical" ] || continue
+    name="${canonical##*/}"
+    printf '%s' "$name" | grep -qE '^ci-runner-([1-9][0-9]*|[a-z][a-z0-9-]{0,23}-[1-9][0-9]*)$' || continue
+    [ -d "$canonical" ] && [ ! -L "$canonical" ] || continue
+    [ "$(realpath -m -- "$canonical")" = "$canonical" ] || return 1
+    protected=false
+    while IFS='|' read -r kind ref; do
+      [ -n "$ref" ] || continue
+      case "$kind" in
+        consumer)
+          crf_mount_destinations_overlap "$canonical" "$ref" && { protected=true; break; } ;;
+        mount)
+          # Host / and pool mounts are expected ancestors, not consumers.
+          case "$ref" in "$canonical"|"$canonical"/*) protected=true; break ;; esac ;;
+        *) return 1 ;;
+      esac
+    done <<< "$refs"
+    [ "$protected" = false ] || continue
+    log "Docker store unreferenced in this snapshot: $name"
+  done
+  log "Docker storage snapshot complete; no files changed"
+}
+
 # --- Runner-image build orchestration. The engine owns the flock/launch/liveness
 #     state machine (previously inlined in exec.php); exec.php now just runs the verb. ---
 
@@ -3996,11 +4174,12 @@ cmd_boot_autostart() {
   provider_token_ready || { log "boot-autostart: no valid $(provider_token_name) configured yet — skipping"; return 0; }
   local i
   for i in $(seq 1 150); do
-    docker info >/dev/null 2>&1 && check_cache_root >/dev/null 2>&1 && break
+    docker info >/dev/null 2>&1 && check_cache_root >/dev/null 2>&1 && crf_shared_cache_mount >/dev/null 2>&1 && break
     sleep 4
   done
   docker info >/dev/null 2>&1 || { err "boot-autostart: dockerd not ready after wait — giving up"; return 1; }
   check_cache_root >/dev/null 2>&1 || { err "boot-autostart: cache pool not ready after wait — giving up"; return 1; }
+  crf_shared_cache_mount || { err "boot-autostart: shared cache mount not ready after wait"; return 1; }
   log "boot-autostart: docker + cache pool ready — bringing fleet up"
   # Serialize the actual fleet bring-up behind the same lock every other mutation
   # uses: on a Docker-service restart (no reboot) the autoscale/image daemons may
@@ -4125,6 +4304,7 @@ case "${1:-status}" in
   recycle)      with_fleet_lock wait cmd_recycle "${2:?usage: recycle <name>}" ;;
   force-forget-gitlab) with_fleet_lock wait cmd_force_forget_gitlab "${2:?usage: force-forget-gitlab <name>}" ;;
   reconcile-config) with_fleet_lock wait cmd_reconcile_config ;;
+  reconcile-network) with_fleet_lock wait cmd_reconcile_network ;;
   reconcile-drain)  ( flock -w 5 7 || { echo "reconcile: a drain is already running (it re-reads the cfg each pass and will pick up this change) — skipping duplicate" >>"$RUNDIR/autoscale.log"; exit 0; }; cmd_reconcile_drain ) 7>"$RUNDIR/reconcile.lock" ;;
   logs-tail)    cmd_logs_tail "${2:?usage: logs-tail <name> [n]}" "${3:-150}" ;;
   logs)         cmd_logs "${2:-1}" "${3:-100}" ;;
@@ -4134,6 +4314,11 @@ case "${1:-status}" in
   build-status)     cmd_build_status ;;
   farm-log)         cmd_farm_log ;;
   prune-cache)      with_fleet_lock wait cmd_prune_cache ;;
+  prune-retired-docker)
+    # Reject destructive requests before opening fleet.lock or reloading state.
+    [ "${2:---dry-run}" = --dry-run ] \
+      || { err "prune-retired-docker is read-only; external Docker writers cannot be excluded"; exit 1; }
+    with_fleet_lock wait cmd_prune_retired_docker --dry-run ;;
   autoscale-daemon) autoscale_daemon ;;
   history-daemon) recommendation_history_daemon ;;
   autoscale-tick)   with_fleet_lock wait autoscale_tick ;;
@@ -4153,5 +4338,5 @@ case "${1:-status}" in
   credential-clear-github-token) with_fleet_lock wait cmd_credential_clear_github_token ;;
   credential-clear-gitlab-runner) with_fleet_lock wait cmd_credential_clear_gitlab_runner "${2:-0}" ;;
   credential-clear-registry-token) with_fleet_lock wait cmd_credential_clear_registry_token ;;
-  *) echo "usage: $0 {start|boot-autostart|docker-stopping|stop|restart|scale N|recycle NAME|force-forget-gitlab NAME|status|status-json|recommendations-json|logs i|validate|build-image|prune-cache|autoscale-tick|autoscale-start|autoscale-stop|autoscale-status|lifecycle-tick|lifecycle-start|lifecycle-stop|lifecycle-status|history-daemon|imageupdate-tick|imageupdate-start|imageupdate-stop|imageupdate-status}"; exit 1 ;;
+  *) echo "usage: $0 {start|boot-autostart|docker-stopping|stop|restart|scale N|recycle NAME|force-forget-gitlab NAME|reconcile-network|status|status-json|recommendations-json|logs i|validate|build-image|prune-cache|prune-retired-docker [--dry-run]|autoscale-tick|autoscale-start|autoscale-stop|autoscale-status|lifecycle-tick|lifecycle-start|lifecycle-stop|lifecycle-status|history-daemon|imageupdate-tick|imageupdate-start|imageupdate-stop|imageupdate-status}"; exit 1 ;;
 esac

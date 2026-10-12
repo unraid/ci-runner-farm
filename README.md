@@ -547,6 +547,18 @@ new web actions use the replacement.
 The generated `.plg` downloads a version-pinned reproducible `.tgz`; it is not
 an inline/base64 package.
 
+### Private artifact services
+
+Private artifact services can use `ARTIFACT_ENDPOINT="https://artifacts.example.com:8333"`
+with strict network isolation. The setting accepts one HTTP(S) origin without
+credentials or a path. Only its resolved IPv4 addresses and TCP port are allowed;
+other host and LAN access stays blocked. The next Start applies the setting.
+Operators can run `runner-farm.sh reconcile-network` after saving the
+configuration to apply it through the native fleet lock without restarting
+runners. The existing additive policy preserves old exceptions while a managed fleet is present;
+removed exceptions retire only when the empty-fleet policy is rebuilt. Workflow
+credentials and artifact retention remain the artifact service's responsibility.
+
 ### Layout
 
 ```text
@@ -617,3 +629,44 @@ Package-cache clearing requires a stopped fleet and refuses to delete caches
 while managed runner, validation, sidecar or executor containers exist, or when
 Docker cannot confirm their absence. The fleet lock serializes this check and
 deletion with runner starts. Shared pnpm stores remain shared across runners.
+
+### Shared CI filesystem
+
+Host provisioning can set the engine-only `SHARED_CACHE_ROOT` to the owned
+SeaweedFS mount, `/mnt/<pool>/ci_object_store/mounts/shared`. The GitHub provider
+exposes it in new job containers at `/mnt/ci-cache` and sets
+`CI_SHARED_CACHE=/mnt/ci-cache`. Jobs opt in by using a repository-specific
+subdirectory. No object credentials, SDK, or mount process runs in a job.
+
+The engine requires an exact `fuse.seaweedfs` mount named
+`ci-shared-cache-v1`, a canonical source, a responsive filesystem, and no
+conflicting bind destination. A plain directory, disconnected mount, or foreign
+filesystem fails closed. Boot waits for the client mount before starting the
+fleet. The configuration fingerprint uses the normal job-boundary replacement
+path, preserving busy runners. Existing containers gain the mount only after
+that replacement completes; verify every eligible runner before enabling a
+consumer. The option is not supported by the GitLab provider yet.
+
+This filesystem is rebuildable shared data in the trusted build-farm domain.
+Use separate repository paths, atomic file publication, and suitable cache keys
+or locks. Keep Docker/Podman graph directories, workspaces and mutable build
+engine state on their existing local disks. A disconnected client requires
+supported recovery and runner replacement; no local-directory fallback is used.
+
+### Retired Docker storage
+
+Use `include/runner-farm.sh prune-retired-docker [--dry-run]` for a read-only
+snapshot of slot Docker stores without observed references. It inspects all
+Docker containers, including stopped and foreign containers, the host Docker
+data root and host mount targets. Unavailable reference information fails the
+inventory. Symlink paths and unknown directory names are omitted.
+
+This snapshot does not authorize deletion: external Docker clients and host
+mount writers do not acquire the native fleet lock. `--apply` is rejected before
+that lock is opened, and the command never removes or moves files. Do not use
+the output as input to a deletion command. Current job workspaces and warm
+package caches are outside this inventory's scope.
+
+This inventory does not impose a size limit on active Docker stores. Keep
+build headroom when budgeting a shared filesystem; its configured object maximum
+does not reserve free disk space.
