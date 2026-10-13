@@ -2047,6 +2047,30 @@ clear_args_tmpdir() {
     || { err "could not remove temporary argv dir '$dir'"; return 1; }
 }
 
+# Retry one existing queued owner without requiring a new queue scan. The native
+# controller retains its pending age and authorizes every create/start effect.
+cmd_resume_queued() {
+  shared_capacity_require_starts_open || return 1
+  shared_capacity_enabled && [ "$QUEUED_POOLS" = true ] || return 1
+  validate_runner_mode || return 1
+  local name="$1" snapshot id provider role idx generation current_generation pool state
+  snapshot="$(managed_runner_snapshot "$name")" || return 1
+  IFS='|' read -r id provider role idx generation <<< "$snapshot"
+  [ "$provider" = github ] && [ "$role" = runner ] || return 1
+  state="$(docker inspect -f '{{.State.Status}}' "$id")" || return 1
+  [ "$state" = created ] || { err "queued resume requires a never-started owner"; return 1; }
+  pool="$(runner_pool "$name")" || return 1
+  pool_activate "$pool" || return 1
+  current_generation="$(crf_confgen)" || return 1
+  [ -n "$current_generation" ] || return 1
+  if [ "$generation" != "$current_generation" ]; then
+    shared_capacity_call refresh-queued "$name" "$id" || return 1
+    provider_call start_one "$idx" "$name"
+    return $?
+  fi
+  shared_capacity_start "$name" "$id"
+}
+
 start_one() {
   shared_capacity_require_starts_open || return 1
   local idx="$1" name="${NAME_PREFIX}-$1" snapshot
@@ -4424,6 +4448,7 @@ case "${1:-status}" in
   shared-prepare) with_fleet_lock wait cmd_shared_prepare ;;
   shared-adopt) with_fleet_lock wait cmd_shared_adopt ;;
   shared-activate) with_fleet_lock wait cmd_shared_activate ;;
+  resume-queued) with_fleet_lock wait cmd_resume_queued "${2:?usage: resume-queued <name>}" ;;
   start)        with_fleet_lock wait cmd_start ;;
   boot-autostart)   cmd_boot_autostart ;;
   docker-stopping)  cmd_docker_stopping ;;
