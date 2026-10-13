@@ -36,3 +36,31 @@ if start_configured_capacity; then fail 'out-of-bound slot accepted'; fi
 docker() { fail 'stopped-owner bypass'; }
 start_stopped_managed || fail 'stopped restore bypassed demand'
 printf 'queued-pools: sparse starts, cold zero, failed snapshot and stopped-owner guard passed\n'
+
+# General queues are read by Farm before short native owner leases. No failed
+# scan, missing capability, or unknown apply may fall back to QA queue reads.
+RUNNER_POOLS="${RUNNER_POOLS/os-build/general-build}"
+pool_base_refresh
+mode=good
+php() {
+ case "$2" in
+ scan) printf '%s\n' scan >> "$tmp/order"; [ "$mode" != scan-fails ] || return 1; printf '{}';;
+ targets) printf '%s\n' targets >> "$tmp/order"; [ "$mode" != targets-fails ] || return 1; printf '{}';;
+ *) fail 'unexpected PHP action';;
+ esac
+}
+shared_capacity_call() {
+ case "$1" in
+ demand-observe) printf '%s\n' observe >> "$tmp/order"; [ "$mode" != capability-missing ] || return 1; printf '{}';;
+ demand-apply) printf '%s\n' apply >> "$tmp/order"; [ "$mode" != apply-unknown ] || return 1; printf 'build|1\n';;
+ *) fail 'general demand fell back to QA scale';;
+ esac
+}
+start_configured_capacity || fail 'Farm general plan failed'
+[ "$(cat "$tmp/order")" = $'scan\nobserve\ntargets\napply' ] || fail 'network scan held native configuration lease'
+rm "$tmp/starts"
+for mode in scan-fails capability-missing targets-fails apply-unknown; do
+ if start_configured_capacity; then fail "accepted $mode"; fi
+ [ ! -e "$tmp/starts" ] || fail "started after $mode"
+done
+printf 'queued-pools: Farm owns general queue sizing; staged capability/unknown evidence preserves owners\n'

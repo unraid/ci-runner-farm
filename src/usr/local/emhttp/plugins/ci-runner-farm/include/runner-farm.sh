@@ -2071,8 +2071,17 @@ pool_start_target() {
 # One complete native plan owns both idle retirement and selected sparse starts.
 # Failure returns before creating any new runner; stale plans are never cached.
 start_queued_capacity() {
-  local plan pool idx failed=0 rc
-  plan="$(shared_capacity_call scale "$RUNNER_POOLS")" || { err "queued capacity unavailable; preserving owners"; return 1; }
+  local plan pool idx failed=0 rc scan observation targets
+  if printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'; then
+    # Read GitHub before acquiring a short native configuration lease.
+    # A missing native capability during rollout preserves existing owners.
+    scan="$(php "$SCRIPT_DIR/build-demand.php" scan "$CFGDIR" "$RUNDIR" "$RUNNER_POOLS")" || return 1
+    observation="$(shared_capacity_call demand-observe "$RUNNER_POOLS")" || return 1
+    targets="$(php "$SCRIPT_DIR/build-demand.php" targets "$RUNNER_POOLS" "$scan" "$observation")" || return 1
+    plan="$(shared_capacity_call demand-apply "$RUNNER_POOLS" "$targets")" || return 1
+  else
+    plan="$(shared_capacity_call scale "$RUNNER_POOLS")" || { err "queued capacity unavailable; preserving owners"; return 1; }
+  fi
   while IFS='|' read -r pool idx; do
     [ -n "$pool" ] || continue
     case "$pool" in build|build-small|build-large) ;; *) return 1 ;; esac

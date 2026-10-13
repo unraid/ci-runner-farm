@@ -670,3 +670,28 @@ package caches are outside this inventory's scope.
 This inventory does not impose a size limit on active Docker stores. Keep
 build headroom when budgeting a shared filesystem; its configured object maximum
 does not reserve free disk space.
+
+### General build queue ownership
+
+For shared OVH general pools, CI Runner Farm reads the native private runner
+group's queues and computes desired class targets. The host-side registration
+credential attests the local group; a separate root-owned mode-0600
+`queue-token` provides read-only Actions and Metadata access. Neither credential
+is passed to a job or logged. Complete authenticated snapshots include queued
+jobs in both queued and in-progress runs at their current attempt. Unknown,
+stale, redirected or partial evidence preserves owners.
+
+Farm performs its bounded GitHub scan before the short native
+`farm-capacity demand-observe` and `demand-apply` configuration leases. The
+existing shared resource broker remains the sole allocator. Native apply checks
+policy, organization and pool identities, snapshot age and all class bounds,
+then reobserves exact owners. Busy, unknown and guaranteed floor slots remain
+protected by the existing fenced lifecycle. OS-specific pools retain their
+existing queue path.
+
+Qualify both Farm and provider packages before rollout. Install Farm first on
+one host, then upgrade that host's compatible provider through its native lease.
+Until the new native actions exist, scaling fails closed and running jobs
+continue. Normal ticks resume after upgrade. Keep the other host serving and
+verify live registrations, exact grants and unchanged busy jobs before the
+second host. Related to [QUA-203](https://linear.app/lime-technology/issue/QUA-203).
