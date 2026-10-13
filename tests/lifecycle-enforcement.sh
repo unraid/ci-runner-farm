@@ -10,6 +10,7 @@ mkdir -p "$CRF_CFGDIR" "$CRF_RUNDIR"
 source src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-farm.sh
 fail() { printf 'LIFECYCLE ENFORCEMENT FAIL: %s\n' "$*" >&2; exit 1; }
 CI_PROVIDER=github
+RUNNER_COUNT=1
 DIND=true
 LIFECYCLE_CONFIRMATIONS=2
 OWNER_ID=owner-1

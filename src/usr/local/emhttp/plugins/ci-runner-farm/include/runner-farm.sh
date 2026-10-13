@@ -18,6 +18,7 @@
 #                    config, mounts, limits, and image, then remove it
 #   prune-cache      clear the shared cache root
 #   prune-retired-docker read-only snapshot of unreferenced slot Docker stores
+#   prune-completed-docker [--dry-run|--apply] lifecycle cleanup of completed DinD owners
 ###############################################################################
 set -uo pipefail
 
@@ -58,6 +59,7 @@ RUNNER_MODE="single"                  # single | pools (provider-neutral classic
 RUNNER_POOLS=""                       # semicolon-separated validated V3 pool records
 QUEUED_POOLS="false"                  # native queued-job sizing and fenced idle retirement
 ELASTIC_POOLS="false"                 # shared GitHub pools grow from occupied slots plus warm headroom
+DOCKER_CACHE_MIN_FREE_PERCENT="15"     # reclaim completed DinD stores below this free-space threshold; 0 disables
 RUNNER_CPUS=""                        # per-runner CPU cap; empty = uncapped (CFS time-shares fairly)
 RUNNER_MEMORY="16g"                   # per-runner memory cap (kept: memory isn't time-shared like CPU)
 CACHE_ROOT="/mnt/cache/github-runner" # must be a dedicated SUBDIR under a pool/disk, never a bare mount root (see crf_safe_cache_root)
@@ -153,7 +155,7 @@ HISTORY_FILE="${CRF_HISTORY_FILE:-${CFGDIR}/recommendations.history}"
 # Allowlist of keys the settings page may set. load_cfg only ever assigns these.
 CFG_KEYS="CI_PROVIDER GH_SCOPE GH_OWNER GH_REPOS RUNNER_GROUP GITLAB_URL GITLAB_RUNNER_IMAGE GITLAB_PROJECTS GITLAB_SHUTDOWN_TIMEOUT \
 GITLAB_ALLOWED_IMAGES GITLAB_ALLOWED_SERVICES GITLAB_PULL_POLICY GITLAB_SHM_SIZE \
-RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS QUEUED_POOLS \
+RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS QUEUED_POOLS DOCKER_CACHE_MIN_FREE_PERCENT \
 RUNNER_CPUS RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE USER_SHARE_MOUNTS SHARED_CACHE_ROOT IMAGE_SOURCE IMAGE EPHEMERAL \
 RUN_AS_ROOT REGISTRY_SERVER REGISTRY_USERNAME CACHE_MOUNTS SHARE_DOCKER_SOCK DIND \
 SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK ARTIFACT_ENDPOINT MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
@@ -169,7 +171,7 @@ DASHBOARD_WIDGET_ENABLE"
 # RUNNER_MEMORY and WORK_TMPFS_SIZE (unit-suffixed).
 CFG_NUMERIC_KEYS="RUNNER_COUNT MIRROR_PORT AUTOSCALE_MIN AUTOSCALE_MAX AUTOSCALE_MIN_IDLE \
 AUTOSCALE_STEP AUTOSCALE_INTERVAL AUTOSCALE_IDLE_GRACE IMAGE_AUTOUPDATE_INTERVAL \
-IMAGE_DRAIN_TIMEOUT GITLAB_SHUTDOWN_TIMEOUT GITLAB_SHM_SIZE"
+IMAGE_DRAIN_TIMEOUT GITLAB_SHUTDOWN_TIMEOUT GITLAB_SHM_SIZE DOCKER_CACHE_MIN_FREE_PERCENT"
 
 # Read ci-runner-farm.cfg WITHOUT sourcing it (the file is written by the web form, so
 # sourcing would execute anything a crafted value smuggled in). Parse KEY="value"
@@ -811,6 +813,7 @@ autoscale_queue_depth() {
 autoscale_tick() {
   shared_capacity_require_starts_open || return 0
   [ "$AUTOSCALE" = "true" ] || return 0
+  crf_storage_pressure_cleanup
   if pool_mode_enabled; then
     validate_runner_mode || return 1
     pool_activate build || return 1
@@ -987,6 +990,8 @@ autoscale_status() {
 # farm must receive the same cleanup and recycle protection as an autoscaled one.
 lifecycle_tick() {
   shared_capacity_require_starts_open || return 0
+  crf_storage_pressure_cleanup
+  replenish_fixed_github_capacity || return 1
   # Shared idle withdrawal owns local admission closure and exact worker proof.
   # Legacy log-derived idle recycling cannot race a frozen owner.
   shared_capacity_enabled && return 0
@@ -1008,6 +1013,30 @@ lifecycle_tick() {
   log "lifecycle: replacing positively exited $candidate"
   cmd_recycle "$candidate" >/dev/null \
     || { err "lifecycle: could not recycle $candidate; will retry"; return 1; }
+}
+
+# Fixed fleets have no autoscale tick to restore a removed completed slot.
+# Their saved slot configuration is also the retry authority after a failed
+# replacement or a crash between cleanup and creation.
+replenish_fixed_github_capacity() {
+  [ "$CI_PROVIDER" = github ] && [ "$AUTOSCALE" != true ] || return 0
+  shared_capacity_enabled && return 0
+  local names pools=default pool wanted idx name
+  names="$(managed_names)" || return 1
+  if pool_mode_enabled; then pools="$(pool_records | cut -d'|' -f2)"; fi
+  for pool in $pools; do
+    pool_activate "$pool" || return 1
+    wanted="$RUNNER_COUNT"
+    if pool_mode_enabled; then wanted="$(pool_fixed "$pool")" || return 1; fi
+    case "$wanted" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$wanted" -ge 1 ] && [ "$wanted" -le 64 ] || return 1
+    for ((idx=1; idx<=wanted; idx++)); do
+      name="$NAME_PREFIX-$idx"
+      printf '%s\n' "$names" | grep -Fxq -- "$name" && continue
+      validate_runner_mode && provider_token_ready && provider_validate_settings && provision_base || return 1
+      start_one "$idx" || return 1
+    done
+  done
 }
 
 lifecycle_daemon() {
@@ -4010,12 +4039,13 @@ cmd_prune_cache() {
 # Inventory slot Docker stores without changing them. This is only a snapshot:
 # fleet.lock cannot exclude external Docker clients or host mount writers.
 crf_docker_storage_references() {
-  local ids id refs mounts daemon canonical
+  local ids id refs mounts daemon canonical excluded="${1:-}"
   local -a containers=()
   ids="$(docker ps -aq --no-trunc)" || return 1
   while IFS= read -r id; do
     [ -n "$id" ] || continue
     printf '%s' "$id" | grep -qE '^[0-9a-f]{64}$' || return 1
+    [ "$id" != "$excluded" ] || continue
     containers+=("$id")
   done <<< "$ids"
   refs=""
@@ -4040,6 +4070,81 @@ $daemon"
     id="$(printf '%b' "$id")" || return 1
     printf 'mount|%s\n' "$id"
   done <<< "$mounts"
+}
+
+# The fleet lock excludes replacement starts. Only completed immutable owners
+# may release their persistent DinD stores through the normal lifecycle hooks.
+cmd_prune_completed_docker() {
+  local mode="${1:---dry-run}" names c snapshot id provider role index gen state root store bind refs kind ref
+  case "$mode" in --dry-run|--apply|--pressure) ;; *) return 1 ;; esac
+  names="$(managed_names)" || return 1
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    if [ "$mode" = --pressure ]; then
+      crf_docker_storage_pressure || return 0
+    fi
+    snapshot="$(managed_runner_snapshot "$c")" || return 1
+    IFS='|' read -r id provider role index gen <<< "$snapshot"
+    [ "$provider" = github ] || continue
+    state="$(docker inspect --format '{{.State.Status}}|{{.State.Running}}|{{.State.Restarting}}|{{.State.Pid}}|{{.HostConfig.RestartPolicy.Name}}' "$id")" || return 1
+    case "$state" in exited\|false\|false\|0\|no|dead\|false\|false\|0\|no) ;; *) continue ;; esac
+    pool_activate "$(runner_pool "$c")" || return 1
+    root="$(crf_safe_cache_root)" || return 1
+    store="$root/docker/$c"
+    [ -d "$store" ] && [ ! -L "$store" ] && [ "$(realpath -m -- "$store")" = "$store" ] \
+      || { err "completed Docker store has an unsafe path; preserving $c"; return 1; }
+    bind="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/var/lib/docker"}}{{println .Source}}{{end}}{{end}}' "$id")" || return 1
+    [ "$bind" = "$store" ] || { err "completed Docker store differs from the owned bind; preserving $c"; return 1; }
+    refs="$(crf_docker_storage_references "$id")" || return 1
+    while IFS='|' read -r kind ref; do
+      [ -n "$ref" ] || continue
+      case "$kind" in
+        consumer) crf_mount_destinations_overlap "$store" "$ref" && { err "completed Docker store has another consumer; preserving $c"; return 1; } ;;
+        mount) case "$ref" in "$store"|"$store"/*) err "completed Docker store contains a mount; preserving $c"; return 1 ;; esac ;;
+        *) return 1 ;;
+      esac
+    done <<< "$refs"
+    # External restarts must not turn an earlier completed sample into deletion.
+    [ "$(docker inspect --format '{{.State.Status}}|{{.State.Running}}|{{.State.Restarting}}|{{.State.Pid}}|{{.HostConfig.RestartPolicy.Name}}' "$id")" = "$state" ] || return 1
+    if [ "$mode" = --dry-run ]; then
+      log "completed Docker store eligible for lifecycle cleanup: $c"
+      continue
+    fi
+    remove_runner "$c" true "$id" github || return 1
+    docker inspect "$id" >/dev/null 2>&1 && return 1
+    docker inspect "$c" >/dev/null 2>&1 && return 1
+    [ ! -e "$store" ] && [ ! -L "$store" ] || return 1
+    log "completed Docker store removed through lifecycle: $c"
+  done <<< "$names"
+}
+
+# df reports usable dataset capacity, including quotas and ZFS reservations.
+# An unknown reading never authorizes cleanup or blocks the existing recovery.
+crf_docker_storage_pressure() {
+  local threshold="${DOCKER_CACHE_MIN_FREE_PERCENT:-15}" root usage total available filesystem
+  case "$threshold" in ''|*[!0-9]*|0[0-9]*) err "invalid Docker cache free-space threshold; skipping cleanup"; return 2 ;; esac
+  [ "$threshold" -le 100 ] || { err "invalid Docker cache free-space threshold; skipping cleanup"; return 2; }
+  [ "$threshold" -gt 0 ] || return 1
+  root="$(crf_safe_cache_root)" || { err "unknown Docker cache root; skipping cleanup"; return 2; }
+  filesystem="$(df -Pk -- "$root" 2>/dev/null)" \
+    || { err "Docker cache free space unavailable; skipping cleanup"; return 2; }
+  usage="$(printf '%s\n' "$filesystem" | awk 'NR==2 && $2 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ {print $2 "|" $4}')"
+  printf '%s' "$usage" | grep -qE '^[1-9][0-9]*\|[0-9]+$' \
+    || { err "Docker cache free space malformed; skipping cleanup"; return 2; }
+  IFS='|' read -r total available <<< "$usage"
+  [ "$available" -le "$total" ] || { err "Docker cache free space inconsistent; skipping cleanup"; return 2; }
+  [ "$((available * 100 / total))" -lt "$threshold" ]
+}
+
+crf_storage_pressure_cleanup() {
+  [ "$CI_PROVIDER" = github ] && [ "$DIND" = true ] && [ "$SHARE_DOCKER_SOCK" != true ] || return 0
+  [ -d "$CACHE_ROOT/docker" ] || return 0
+  if crf_docker_storage_pressure; then
+    log "Docker cache storage pressure; checking completed owners"
+    cmd_prune_completed_docker --pressure \
+      || err "completed Docker cleanup incomplete; retaining allocations for normal recovery"
+  fi
+  return 0
 }
 
 cmd_prune_retired_docker() {
@@ -4323,6 +4428,7 @@ case "${1:-status}" in
   build-status)     cmd_build_status ;;
   farm-log)         cmd_farm_log ;;
   prune-cache)      with_fleet_lock wait cmd_prune_cache ;;
+  prune-completed-docker) with_fleet_lock wait cmd_prune_completed_docker "${2:---dry-run}" ;;
   prune-retired-docker)
     # Reject destructive requests before opening fleet.lock or reloading state.
     [ "${2:---dry-run}" = --dry-run ] \
@@ -4347,5 +4453,5 @@ case "${1:-status}" in
   credential-clear-github-token) with_fleet_lock wait cmd_credential_clear_github_token ;;
   credential-clear-gitlab-runner) with_fleet_lock wait cmd_credential_clear_gitlab_runner "${2:-0}" ;;
   credential-clear-registry-token) with_fleet_lock wait cmd_credential_clear_registry_token ;;
-  *) echo "usage: $0 {start|boot-autostart|docker-stopping|stop|restart|scale N|recycle NAME|force-forget-gitlab NAME|reconcile-network|status|status-json|recommendations-json|logs i|validate|build-image|prune-cache|prune-retired-docker [--dry-run]|autoscale-tick|autoscale-start|autoscale-stop|autoscale-status|lifecycle-tick|lifecycle-start|lifecycle-stop|lifecycle-status|history-daemon|imageupdate-tick|imageupdate-start|imageupdate-stop|imageupdate-status}"; exit 1 ;;
+  *) echo "usage: $0 {start|boot-autostart|docker-stopping|stop|restart|scale N|recycle NAME|force-forget-gitlab NAME|reconcile-network|status|status-json|recommendations-json|logs i|validate|build-image|prune-cache|prune-completed-docker [--dry-run|--apply]|prune-retired-docker [--dry-run]|autoscale-tick|autoscale-start|autoscale-stop|autoscale-status|lifecycle-tick|lifecycle-start|lifecycle-stop|lifecycle-status|history-daemon|imageupdate-tick|imageupdate-start|imageupdate-stop|imageupdate-status}"; exit 1 ;;
 esac

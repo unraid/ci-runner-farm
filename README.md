@@ -655,6 +655,26 @@ supported recovery and runner replacement; no local-directory fallback is used.
 
 ### Retired Docker storage
 
+GitHub Docker-in-Docker stores persist between runner jobs. Without cleanup,
+completed runners can retain large image and build caches. The lifecycle and
+autoscale ticks reclaim completed stores when the dataset has less than 15%
+free space. Set the engine-only `DOCKER_CACHE_MIN_FREE_PERCENT` to an integer
+from `0` to `100`. Set `0` to disable automatic cleanup.
+
+Cleanup requires an exited or dead managed container, its exact Docker identity,
+and the matching Docker data bind. It rejects restart policies, symlink paths,
+other container references and nested host mounts. Shared hosts retain their
+existing durable prepare/release checks. Running, paused and created containers
+remain untouched. Free space is checked after each removal. Normal admission
+replenishes the configured runner floor. Unknown disk information or failed
+cleanup preserves normal recovery.
+
+For an explicit cleanup run, use
+`include/runner-farm.sh prune-completed-docker --dry-run`, then
+`include/runner-farm.sh prune-completed-docker --apply`. Both commands acquire
+the fleet lock and inspect current ownership. Coordinate external Docker and
+mount operations during maintenance because those writers do not use this lock.
+
 Use `include/runner-farm.sh prune-retired-docker [--dry-run]` for a read-only
 snapshot of slot Docker stores without observed references. It inspects all
 Docker containers, including stopped and foreign containers, the host Docker
@@ -667,7 +687,7 @@ that lock is opened, and the command never removes or moves files. Do not use
 the output as input to a deletion command. Current job workspaces and warm
 package caches are outside this inventory's scope.
 
-This inventory does not impose a size limit on active Docker stores. Keep
+These commands do not impose a size limit on active Docker stores. Keep
 build headroom when budgeting a shared filesystem; its configured object maximum
 does not reserve free disk space.
 
