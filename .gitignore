@@ -111,3 +111,6 @@ $RECYCLE.BIN/
 *.lnk
 
 # End of https://www.toptal.com/developers/gitignore/api/windows,linux,macos,git
+
+# Compiled by build-plg.sh from the pinned Go toolchain.
+/src/usr/local/emhttp/plugins/ci-runner-farm/bin/

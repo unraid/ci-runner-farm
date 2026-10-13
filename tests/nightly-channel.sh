@@ -5,7 +5,7 @@ cd "$(dirname "$0")/.."
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-tar -cf - build-plg.sh VERSION CHANGELOG.md src | tar -xf - -C "$tmp"
+tar -cf - build-plg.sh go.mod go.sum cmd internal pkg VERSION CHANGELOG.md src | tar -xf - -C "$tmp"
 
 (
   cd "$tmp"

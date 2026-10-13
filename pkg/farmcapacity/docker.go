@@ -1,0 +1,160 @@
+// Package farmcapacity owns native builder admission and fenced lifecycle recovery.
+package farmcapacity
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os/exec"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// NativeDocker uses immutable IDs and never interprets inspect failure as absence.
+type NativeDocker struct{}
+
+const nativeCreatedStatus = "created"
+
+func neverStarted(status string, pid *int, startedAt *time.Time) bool {
+	return status == nativeCreatedStatus && pid != nil && *pid == 0 && startedAt != nil && startedAt.IsZero()
+}
+
+// Inspect enumerates exact IDs/names before inspection so daemon failures fail closed.
+func (NativeDocker) Inspect(ctx context.Context, identity string) (*Container, error) {
+	listing, err := exec.CommandContext(ctx, "docker", "ps", "-a", "--no-trunc", "--format", "{{.ID}}|{{.Names}}").Output()
+	if err != nil {
+		return nil, errors.New("cannot enumerate Docker build ownership")
+	}
+	found := false
+	for line := range strings.SplitSeq(string(listing), "\n") {
+		id, name, ok := strings.Cut(line, "|")
+		if ok && (id == identity || name == identity) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, ErrContainerMissing
+	}
+	data, err := exec.CommandContext(ctx, "docker", "inspect", identity).Output()
+	if err != nil {
+		return nil, errors.New("cannot inspect Docker build ownership")
+	}
+	var inspected []struct {
+		ID     string `json:"Id"`
+		Name   string `json:"Name"`
+		Config struct {
+			Labels map[string]string `json:"Labels"`
+			Env    []string          `json:"Env"`
+		} `json:"Config"`
+		HostConfig struct {
+			Memory   uint64 `json:"Memory"`
+			NanoCPUs uint64 `json:"NanoCpus"`
+		} `json:"HostConfig"`
+		Mounts []struct {
+			Type        string `json:"Type"`
+			Source      string `json:"Source"`
+			Destination string `json:"Destination"`
+		} `json:"Mounts"`
+		State struct {
+			Running   bool       `json:"Running"`
+			Paused    bool       `json:"Paused"`
+			Status    string     `json:"Status"`
+			PID       *int       `json:"Pid"`
+			StartedAt *time.Time `json:"StartedAt"`
+		} `json:"State"`
+	}
+	if err := json.Unmarshal(data, &inspected); err != nil {
+		return nil, err
+	}
+	if len(inspected) != 1 {
+		return nil, errors.New("Docker ownership result is ambiguous")
+	}
+	item := &inspected[0]
+	registrationName := ""
+	registrationNameSeen := false
+	for _, value := range item.Config.Env {
+		if strings.HasPrefix(value, "RUNNER_NAME=") {
+			if registrationNameSeen {
+				return nil, errors.New("ambiguous native registration name")
+			}
+			registrationName = strings.TrimPrefix(value, "RUNNER_NAME=")
+			registrationNameSeen = true
+		}
+	}
+	labels := item.Config.Labels
+	const prefix = "net.unraid.ci-runner-farm."
+	issuedAt, parseErr := strconv.ParseInt(labels[prefix+"registration-issued"], 10, 64)
+	if parseErr != nil {
+		issuedAt = 0
+	}
+	routing := strings.Split(labels[prefix+"routing-labels"], ",")
+	gated := routingEnvironment(item.Config.Env, routing)
+	root := ""
+	for _, mount := range item.Mounts {
+		if mount.Type == "bind" && mount.Destination == "/var/lib/docker" {
+			if root != "" {
+				return nil, errors.New("ambiguous native Docker root")
+			}
+			root = mount.Source
+		}
+	}
+	return &Container{
+		RegistrationName: registrationName,
+		DockerRoot:       root, ID: item.ID, Name: strings.TrimPrefix(item.Name, "/"), Managed: labels[prefix+"managed"] == "true",
+		Provider: labels[prefix+"provider"], Role: labels[prefix+"role"], Pool: labels[prefix+"pool"],
+		MemoryBytes: item.HostConfig.Memory, NanoCPUs: item.HostConfig.NanoCPUs, Running: item.State.Running, Paused: item.State.Paused, Exited: !item.State.Running && !item.State.Paused && item.State.Status == "exited" && item.State.PID != nil && *item.State.PID == 0, NeverStarted: !item.State.Running && !item.State.Paused && neverStarted(item.State.Status, item.State.PID, item.State.StartedAt), RegistrationIssuedAt: issuedAt, RoutingLabels: routing, RoutingGated: gated,
+	}, nil
+}
+
+// Start retains a grant on every failed or uncertain Docker outcome.
+func (NativeDocker) Start(ctx context.Context, id string) error {
+	if !idPattern.MatchString(id) {
+		return errors.New("invalid immutable build container ID")
+	}
+	if err := exec.CommandContext(ctx, "docker", "start", id).Run(); err != nil {
+		return errors.New("Docker build start did not complete")
+	}
+	return nil
+}
+
+// RemoveCreated refuses any container that might have started; no force or stop.
+func (d NativeDocker) RemoveCreated(ctx context.Context, id string) error {
+	item, err := d.Inspect(ctx, id)
+	if err != nil {
+		return err
+	}
+	if item.ID != id || !item.NeverStarted || item.Running {
+		return errors.New("replacement requires an exact never-started container")
+	}
+	if err := exec.CommandContext(ctx, "docker", "rm", id).Run(); err != nil {
+		return errors.New("inert native removal did not complete")
+	}
+	return nil
+}
+
+// Owned includes every native managed identity, so adoption cannot miss an
+// inert replacement, stopped container or unsupported managed provider.
+func (d NativeDocker) Owned(ctx context.Context) ([]Container, error) {
+	const label = "net.unraid.ci-runner-farm.managed=true"
+	output, err := exec.CommandContext(ctx, "docker", "ps", "-a", "--no-trunc", "--filter", "label="+label, "--format", "{{.ID}}").Output()
+	if err != nil {
+		return nil, errors.New("native managed inventory is unavailable")
+	}
+	containers := []Container{}
+	for id := range strings.SplitSeq(strings.TrimSpace(string(output)), "\n") {
+		if id == "" {
+			continue
+		}
+		if !idPattern.MatchString(id) {
+			return nil, errors.New("native inventory identity is invalid")
+		}
+		item, err := d.Inspect(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		containers = append(containers, *item)
+	}
+	return containers, nil
+}

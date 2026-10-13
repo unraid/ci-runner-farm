@@ -48,12 +48,31 @@ REPO="${REPO:-unraid/ci-runner-farm}"
 # (never /usr or a root '.' entry that could clobber system-dir perms on extract;
 # the install step extracts --no-same-owner and chowns root:root regardless).
 make_tgz() {
+  build_native_capacity
   local opts=()
   if tar --version 2>/dev/null | grep -qi 'gnu tar'; then
     opts=(--sort=name --mtime='UTC 2020-01-01' --owner=0 --group=0 --numeric-owner)
   fi
   # ${opts[@]+...} keeps this safe under `set -u` when opts is empty (bash 3.2).
   tar ${opts[@]+"${opts[@]}"} -cf - -C "$SRCDIR" . | gzip -9n > "$TGZ"
+}
+
+# Pin the compiler and strip checkout paths/VCS state so tagged rebuilds produce
+# the same Linux executable. Never package a previously generated helper.
+build_native_capacity() {
+  local temporary
+  command -v go >/dev/null 2>&1 || { echo "Go is required to build native capacity" >&2; return 1; }
+  temporary="$(mktemp -d)" || return 1
+  if ! GOTOOLCHAIN=go1.26.2 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' \
+    -o "$temporary/ci-runner-capacity" ./cmd/ci-runner-capacity; then
+    rm -rf -- "$temporary"
+    return 1
+  fi
+  mkdir -p "$SRCDIR/bin"
+  chmod 755 "$temporary/ci-runner-capacity"
+  mv -f "$temporary/ci-runner-capacity" "$SRCDIR/bin/ci-runner-capacity"
+  rm -rf -- "$temporary"
 }
 
 # Build an explicitly local-only plugin descriptor and package without touching
@@ -126,6 +145,8 @@ build_dev_package() {
   render_dir="$dev_workdir/render"
   mkdir -p "$render_dir/$SRCDIR"
   cp -p build-plg.sh "$render_dir/build-plg.sh"
+  cp -p go.mod go.sum "$render_dir/"
+  cp -pR cmd internal pkg "$render_dir/"
   [ ! -f VERSION ] || cp -p VERSION "$render_dir/VERSION"
   [ ! -f CHANGELOG.md ] || cp -p CHANGELOG.md "$render_dir/CHANGELOG.md"
   cp -pR "$SRCDIR"/. "$render_dir/$SRCDIR/"

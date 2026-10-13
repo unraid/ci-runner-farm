@@ -9,7 +9,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 mkdir -p "$tmp/build" "$tmp/extracted"
-tar -cf - build-plg.sh VERSION CHANGELOG.md "$RUNTIME" | tar -xf - -C "$tmp/build"
+tar -cf - build-plg.sh go.mod go.sum cmd internal pkg VERSION CHANGELOG.md "$RUNTIME" | tar -xf - -C "$tmp/build"
 (
   cd "$tmp/build"
   DATE=2026.01.02.0304 BUILD_NUMBER=7 INTERNAL_VERSION=0.0.0 REPO=unraid/ci-runner-farm \
@@ -28,11 +28,25 @@ tar -cf - build-plg.sh VERSION CHANGELOG.md "$RUNTIME" | tar -xf - -C "$tmp/buil
   tar -xzf ci-runner-farm.tgz -C "$tmp/extracted"
 )
 
-diff -r "$RUNTIME" "$tmp/extracted" >/dev/null || {
+diff -r "$tmp/build/$RUNTIME" "$tmp/extracted" >/dev/null || {
   echo "package-contents: archive does not exactly match the runtime source tree" >&2
-  diff -r "$RUNTIME" "$tmp/extracted" >&2 || true
+  diff -r "$tmp/build/$RUNTIME" "$tmp/extracted" >&2 || true
   exit 1
 }
+diff -r --exclude=bin "$RUNTIME" "$tmp/extracted" >/dev/null
+# Inspect the actual packaged executable without requiring x86 emulation on
+# ARM development hosts. A shell script or a host-native Mach-O is not valid.
+python3 - "$tmp/extracted/bin/ci-runner-capacity" <<'PY'
+import os
+import struct
+import sys
+with open(sys.argv[1], 'rb') as handle:
+    header = handle.read(64)
+assert header[:6] == b'\x7fELF\x02\x01', 'capacity helper must be little-endian ELF64'
+assert struct.unpack_from('<H', header, 18)[0] == 62, 'capacity helper must target amd64'
+assert os.stat(sys.argv[1]).st_mode & 0o111, 'capacity helper must be executable'
+PY
+go version -m "$tmp/extracted/bin/ci-runner-capacity" | grep -qF 'go1.26.2'
 
 # Validate the actual generated package-manager action, not only its source
 # template: strict error handling must stop before the success banner when fleet
@@ -76,7 +90,7 @@ for required in \
   event/docker_started event/stopping_docker include/runner-farm.sh include/exec.php include/crf-core.php \
   include/boot-log.sh include/encoding.php include/providers/github.sh include/providers/gitlab.sh \
   include/runner-recommendations.sh include/runner-history.sh \
-  nchan/ci_runner_farm README.md
+  nchan/ci_runner_farm README.md bin/ci-runner-capacity
 do
   [ -f "$tmp/extracted/$required" ] || {
     echo "package-contents: required runtime file missing from archive: $required" >&2

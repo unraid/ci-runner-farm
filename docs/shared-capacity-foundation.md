@@ -36,3 +36,28 @@ markers, or alter budgets to bypass outstanding grants.
 
 The initial implementation retains the existing `build` memory-borrowing class.
 General named-pool support and standalone controller wiring follow separately.
+
+
+## Native controller package
+
+`pkg/farmcapacity` reuses the native Docker controller, receipts, registration
+binding, routing publication and phased withdrawal from the same QA source.
+Its only protocol helper change replaces QA's JSON/SHA-256 digest function
+with the same encoding in Farm. Native control remains under `fleet.lock`.
+
+The package includes `bin/ci-runner-capacity`, built with Go 1.26.2 for Linux
+amd64. Packaging strips checkout paths and VCS state. `version` needs no
+provider installation. Lifecycle commands require root, the inherited native
+fleet lock and Farm's private `host-capacity.json` configuration. That file
+supplies the host identity, ownership epoch, policy, ledger, receipts, token
+path and policy lock. Every non-build class must have a declared consumer.
+Consumers retain shared policy leases through effects. Policy changes and
+handoffs require an exclusive lease. `mode: "closed"` denies mutations.
+
+This controller package does not activate an additional controller. Existing
+shell integration stays on its current owner until the participants and ledger
+can switch together. A manually written active configuration does not prove
+migration. Preserve all existing grants, fences, pending ages and owner receipts.
+Old controller commands and old ledger paths must be fenced before admission
+reopens. Fresh standalone initialization also requires a complete owner proof;
+this stage does not initialize a replacement ledger automatically.
