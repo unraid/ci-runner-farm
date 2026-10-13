@@ -24,7 +24,7 @@ func Run(arguments []string, output io.Writer) (result error) {
 		return err
 	}
 	if os.Geteuid() != 0 || !validArguments(arguments) {
-		return errors.New("root and start|prepare-release|release|refresh-queued <name> <id>, demand-observe <pools>, demand-apply <pools> <targets>, or rebalance|retire|status are required")
+		return errors.New("root and start|prepare-release|release|refresh-queued <name> <id>, demand-observe <pools>, demand-apply|demand-warm <pools> <targets>, or rebalance|retire|status are required")
 	}
 	if err := verifyFleetLock(); err != nil {
 		return err
@@ -62,7 +62,7 @@ func validArguments(arguments []string) bool {
 	if len(arguments) == 2 {
 		return arguments[0] == "demand-observe"
 	}
-	return len(arguments) == 3 && (arguments[0] == "start" || arguments[0] == "prepare-release" || arguments[0] == "release" || arguments[0] == "refresh-queued" || arguments[0] == "demand-apply")
+	return len(arguments) == 3 && (arguments[0] == "start" || arguments[0] == "prepare-release" || arguments[0] == "release" || arguments[0] == "refresh-queued" || arguments[0] == "demand-apply" || arguments[0] == "demand-warm")
 }
 
 func verifyFleetLock() error {
@@ -108,7 +108,7 @@ func runAction(ctx context.Context, config *hostcapacity.Config, controller *far
 			return errors.New("retirement requires native runner starts to be closed")
 		}
 		return controller.Retire(ctx, nativeBinding(controller, config, false))
-	case "demand-observe", "demand-apply":
+	case "demand-observe", "demand-apply", "demand-warm":
 		return runDemand(ctx, config, controller, arguments, bind, output)
 	default:
 		return errors.New("unknown Farm capacity action")
@@ -136,14 +136,20 @@ func runDemand(ctx context.Context, config *hostcapacity.Config, controller *far
 	}
 	decoder := json.NewDecoder(bytes.NewBufferString(arguments[2]))
 	decoder.DisallowUnknownFields()
-	var request farmcapacity.DemandTargets
-	if err := decoder.Decode(&request); err != nil {
-		return err
+	var starts map[string][]int
+	if arguments[0] == "demand-warm" {
+		var request farmcapacity.WarmTargets
+		if err := decodeDemandTarget(decoder, &request); err != nil {
+			return err
+		}
+		starts, err = controller.WarmStarts(ctx, pools, &request)
+	} else {
+		var request farmcapacity.DemandTargets
+		if err := decodeDemandTarget(decoder, &request); err != nil {
+			return err
+		}
+		starts, err = controller.ApplyDemandTargets(ctx, pools, records, &request, bind)
 	}
-	if err := decoder.Decode(new(any)); err != io.EOF {
-		return errors.New("farm demand target has trailing data")
-	}
-	starts, err := controller.ApplyDemandTargets(ctx, pools, records, &request, bind)
 	if err != nil {
 		return err
 	}
@@ -153,6 +159,16 @@ func runDemand(ctx context.Context, config *hostcapacity.Config, controller *far
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+func decodeDemandTarget(decoder *json.Decoder, request any) error {
+	if err := decoder.Decode(request); err != nil {
+		return err
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return errors.New("farm demand target has trailing data")
 	}
 	return nil
 }
