@@ -44,6 +44,7 @@ type Container struct {
 	Running              bool
 	Paused               bool
 	Exited               bool
+	Terminated           bool
 	NeverStarted         bool
 	RegistrationIssuedAt int64
 	RoutingLabels        []string

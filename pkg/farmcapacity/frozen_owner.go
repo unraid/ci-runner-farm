@@ -322,6 +322,32 @@ func (o *FrozenOwner) RegistrationNameGone(ctx context.Context) (bool, error) {
 	return absence.unregisteredGone(ctx)
 }
 
+// Terminated proves exact native exit with automatic restart disabled. It does
+// not establish remote absence or authorize release on its own.
+func (o *FrozenOwner) Terminated(ctx context.Context) (bool, error) {
+	item, err := o.container(ctx)
+	if err != nil {
+		return false, err
+	}
+	return item.Terminated, nil
+}
+
+// RemoveTerminated refuses a restarted owner. Docker's non-forced removal
+// closes the race between the final inspection and native deletion.
+func (o *FrozenOwner) RemoveTerminated(ctx context.Context) error {
+	terminated, err := o.Terminated(ctx)
+	if err != nil {
+		return err
+	}
+	if !terminated {
+		return errors.New("native owner is not positively terminated")
+	}
+	if err := o.docker(ctx, "rm"); err != nil {
+		return err
+	}
+	return o.confirmRemoved(ctx)
+}
+
 // RemoveFrozen never thaws a listener before deleting its native container.
 func (o *FrozenOwner) RemoveFrozen(ctx context.Context) error {
 	idle, err := o.FrozenIdle(ctx)
@@ -334,6 +360,10 @@ func (o *FrozenOwner) RemoveFrozen(ctx context.Context) error {
 	if removeErr := o.docker(ctx, "rm", "--force"); removeErr != nil {
 		return removeErr
 	}
+	return o.confirmRemoved(ctx)
+}
+
+func (o *FrozenOwner) confirmRemoved(ctx context.Context) error {
 	removed, err := o.Removed(ctx)
 	if err != nil {
 		return err
