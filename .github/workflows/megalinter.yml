@@ -32,6 +32,7 @@ jobs:
         uses: oxsecurity/megalinter@9949bad031045f366be2467e00e8371a7328a2e2 # v10.1.0
         env:
           VALIDATE_ALL_CODEBASE: true
+          GOTOOLCHAIN: go1.26.9
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload MegaLinter reports
