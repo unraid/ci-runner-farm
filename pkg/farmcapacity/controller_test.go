@@ -4,6 +4,7 @@ package farmcapacity
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -164,5 +165,77 @@ func TestOwnershipAndLimitsFailBeforeCharging(t *testing.T) {
 		if err != nil || len(snapshot.Grants) != 0 || d.starts != 0 {
 			t.Fatal("unsafe container charged")
 		}
+	}
+}
+
+func TestReleaseResumesAfterGrantCommitBeforeReceiptRemoval(t *testing.T) {
+	c, d, id := fixture(t)
+	ctx := context.Background()
+	if err := c.Start(ctx, testName, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.PrepareRelease(ctx, testName, id); err != nil {
+		t.Fatal(err)
+	}
+	owned, err := c.load(testName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(d.containers, id)
+	if err = c.Broker.Release(&c.Policy, "build:"+testName, owned.Fence, func(sharedcapacity.Grant) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err = c.Release(ctx, testName, id); err != nil {
+		t.Fatal("release committed but receipt cleanup cannot resume", err)
+	}
+	if _, err = c.load(testName); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("receipt remains", err)
+	}
+}
+func TestReleaseIntentRequiresNoGrantOrPendingRequest(t *testing.T) {
+	c, _, id := fixture(t)
+	ctx := context.Background()
+	if err := c.Start(ctx, testName, id); err != nil {
+		t.Fatal(err)
+	}
+	owned, err := c.load(testName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned.ReleasePending = true
+	for _, live := range []string{"grant", "pending", "none"} {
+		snapshot := sharedcapacity.Snapshot{Grants: map[string]sharedcapacity.Grant{}, Pending: map[string]sharedcapacity.Pending{}}
+		if live == "grant" {
+			snapshot.Grants["build:"+testName] = sharedcapacity.Grant{}
+		}
+		if live == "pending" {
+			snapshot.Pending["build:"+testName] = sharedcapacity.Pending{}
+		}
+		if completedRelease("build:"+testName, owned, &snapshot) != (live == "none") {
+			t.Fatalf("intent completion with %s", live)
+		}
+	}
+}
+
+func TestReleaseRejectsMissingGrantWithoutPriorIntent(t *testing.T) {
+	c, d, id := fixture(t)
+	ctx := context.Background()
+	if err := c.Start(ctx, testName, id); err != nil {
+		t.Fatal(err)
+	}
+	owned, err := c.load(testName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(d.containers, id)
+	if err = c.Broker.Release(&c.Policy, "build:"+testName, owned.Fence, func(sharedcapacity.Grant) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err = c.Release(ctx, testName, id); err == nil {
+		t.Fatal("unexplained lost grant accepted")
+	}
+	after, err := c.load(testName)
+	if err != nil || after.ReleasePending {
+		t.Fatal("missing grant manufactured release intent", err)
 	}
 }

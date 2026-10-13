@@ -65,8 +65,10 @@ func (c *Controller) retireOwner(ctx context.Context, name string, owned *receip
 	if binding.Owner == nil {
 		return errors.New("native retirement owner is unavailable")
 	}
-	if registrationErr := c.RecordRegistration(name, owned.ID, binding.RunnerID, binding.RunnerName); registrationErr != nil {
-		return registrationErr
+	if binding.RunnerID != 0 {
+		if registrationErr := c.RecordRegistration(name, owned.ID, binding.RunnerID, binding.RunnerName); registrationErr != nil {
+			return registrationErr
+		}
 	}
 	owned, err = c.load(name)
 	if err != nil {
@@ -78,13 +80,19 @@ func (c *Controller) retireOwner(ctx context.Context, name string, owned *receip
 			return err
 		}
 	}
-	if owned.Withdrawal.Phase == "" {
-		routing, ok := binding.Owner.(retirementRoutingOwner)
-		if !ok {
-			return errors.New("native retirement routing capability is required")
-		}
-		if err := routing.WithdrawRetirementRouting(ctx); err != nil {
-			return err
+	if owned.Withdrawal == nil || owned.Withdrawal.Phase == "" {
+		if binding.RunnerID == 0 {
+			if err := requireUnregisteredGone(ctx, binding.Owner); err != nil {
+				return err
+			}
+		} else {
+			routing, ok := binding.Owner.(retirementRoutingOwner)
+			if !ok {
+				return errors.New("native retirement routing capability is required")
+			}
+			if err := routing.WithdrawRetirementRouting(ctx); err != nil {
+				return err
+			}
 		}
 		idle, err := binding.Owner.Idle(ctx)
 		if err != nil {

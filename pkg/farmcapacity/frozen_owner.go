@@ -65,11 +65,14 @@ func registration(ctx context.Context, id, organization, name string, legacy boo
 	if decodeErr := json.Unmarshal(data, &identity); decodeErr != nil {
 		return 0, "", decodeErr
 	}
-	host, err := os.Hostname()
-	if err != nil {
-		return 0, "", err
+	item, err := (NativeDocker{}).Inspect(ctx, id)
+	if err != nil || item.ID != id || item.Name != name || !item.Managed || item.Provider != githubProvider || item.Role != runnerRole || (!ownedBuildPool(item.Pool, item.Name) && (!legacy || !ownedLegacyBuild(item))) {
+		return 0, "", errors.New("native agent owner identity differs")
 	}
-	expectedName := strings.Split(host, ".")[0] + "-" + name
+	expectedName := item.RegistrationName
+	if !registrationNameMatches(name, expectedName, legacy) {
+		return 0, "", errors.New("native registration name does not match the owned slot")
+	}
 	if identity.AgentID <= 0 || identity.AgentName != expectedName || strings.TrimSuffix(identity.GitHubURL, "/") != "https://github.com/"+organization {
 		return 0, "", errors.New("native agent does not match the configured organization and owned slot")
 	}

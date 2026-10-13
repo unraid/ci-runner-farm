@@ -157,6 +157,13 @@ func TestUnregisteredBindingRequiresPositiveExitedGatedOwnership(t *testing.T) {
 }
 
 func TestUnregisteredWithdrawalRecoversAfterUncertainRemovalAndRetainsGrant(t *testing.T) {
+	testUnregisteredRemovalRecovery(t, false)
+}
+func TestRetirementRecoversUnregisteredWithdrawalAfterUncertainRemoval(t *testing.T) {
+	testUnregisteredRemovalRecovery(t, true)
+}
+func testUnregisteredRemovalRecovery(t *testing.T, retirement bool) {
+	t.Helper()
 	c, d, id := fixture(t)
 	ctx := context.Background()
 	if err := c.Start(ctx, testName, id); err != nil {
@@ -194,7 +201,16 @@ func TestUnregisteredWithdrawalRecoversAfterUncertainRemovalAndRetainsGrant(t *t
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	if err = c.Withdraw(ctx, testName, id, owner, 0, startupRunnerName, now); !errors.Is(err, sharedcapacity.ErrWithdrawalWaiting) {
+	if retirement {
+		freshBind := func(_ context.Context, _, _ string, _ int64, _ string) (OwnerBinding, error) {
+			return OwnerBinding{Owner: owner, RunnerName: startupRunnerName}, nil
+		}
+		c.Broker.Now = func() time.Time { return now }
+		err = c.Retire(ctx, freshBind)
+	} else {
+		err = c.Withdraw(ctx, testName, id, owner, 0, startupRunnerName, now)
+	}
+	if !errors.Is(err, sharedcapacity.ErrWithdrawalWaiting) {
 		t.Fatal(err)
 	}
 	owned, err = c.load(testName)
@@ -219,7 +235,13 @@ func TestUnregisteredWithdrawalRecoversAfterUncertainRemovalAndRetainsGrant(t *t
 		return OwnerBinding{Owner: owner, RunnerName: runnerName}, nil
 	}
 	c.Broker.Now = func() time.Time { return now.Add(80 * time.Second) }
-	if err = c.Rebalance(ctx, bind); err == nil {
+	recoverOwner := func() error {
+		if retirement {
+			return c.Retire(ctx, bind)
+		}
+		return c.Rebalance(ctx, bind)
+	}
+	if err = recoverOwner(); err == nil {
 		t.Fatal("remote presence released allocation")
 	}
 	requireStartupGrants(t, c, 1)
@@ -228,16 +250,16 @@ func TestUnregisteredWithdrawalRecoversAfterUncertainRemovalAndRetainsGrant(t *t
 	if err = c.save(testName, owned); err != nil {
 		t.Fatal(err)
 	}
-	if err = c.Rebalance(ctx, bind); err == nil {
+	if err = recoverOwner(); err == nil {
 		t.Fatal("saved removal skipped fresh remote proof")
 	}
 	requireStartupGrants(t, c, 1)
 	remotePresent = false
-	if err = c.Rebalance(ctx, bind); err != nil {
+	if err = recoverOwner(); err != nil {
 		t.Fatal(err)
 	}
 	requireStartupGrants(t, c, 0)
-	if err = c.Rebalance(ctx, bind); err != nil {
+	if err = recoverOwner(); err != nil {
 		t.Fatal("repeat recovery", err)
 	}
 }

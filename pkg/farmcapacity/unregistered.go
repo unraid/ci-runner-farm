@@ -43,8 +43,12 @@ func BindUnregistered(ctx context.Context, id, name, organization, tokenPath str
 }
 
 func unregisteredName(name, expected string) bool {
+	return registrationNameMatches(name, expected, false)
+}
+
+func registrationNameMatches(name, expected string, legacy bool) bool {
 	prefix, matched := strings.CutSuffix(expected, "-"+name)
-	return namePattern.MatchString(name) && matched && regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`).MatchString(prefix)
+	return (namePattern.MatchString(name) || (legacy && legacyNamePattern.MatchString(name))) && matched && regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`).MatchString(prefix)
 }
 
 // Every page must be complete and scope-authorized. A name is used only to

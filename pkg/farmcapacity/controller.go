@@ -222,6 +222,17 @@ func (c *Controller) Release(ctx context.Context, name, id string) error {
 			return err
 		}
 	}
+	// A missing fenced grant requires intent that predates this observation.
+	if _, charged := snapshot.Grants[requestID]; !charged && owned.Fence != "" && !completedRelease(requestID, owned, &snapshot) {
+		return errors.New("build allocation disappeared before release")
+	}
+	// Persist intent before either ledger effect so receipt cleanup is replayable.
+	if !owned.ReleasePending {
+		owned.ReleasePending = true
+		if err := c.save(name, owned); err != nil {
+			return err
+		}
+	}
 	if releaseErr := c.releaseAllocation(requestID, owned, &snapshot, prove); releaseErr != nil {
 		return releaseErr
 	}
@@ -353,11 +364,16 @@ func (c *Controller) prepareStartReceipt(ctx context.Context, name string, conta
 }
 
 func completedRelease(requestID string, owned *receipt, snapshot *sharedcapacity.Snapshot) bool {
-	if owned.Withdrawal == nil || owned.Withdrawal.Phase != withdrawalRemovedPhase || owned.Withdrawal.Fence != owned.Fence || owned.Withdrawal.ContainerID != owned.ID {
+	if _, charged := snapshot.Grants[requestID]; charged {
 		return false
 	}
-	_, pending := snapshot.Pending[requestID]
-	return !pending
+	if _, pending := snapshot.Pending[requestID]; pending {
+		return false
+	}
+	if owned.ReleasePending {
+		return true
+	}
+	return owned.Withdrawal != nil && owned.Withdrawal.Phase == withdrawalRemovedPhase && owned.Withdrawal.Fence == owned.Fence && owned.Withdrawal.ContainerID == owned.ID
 }
 
 // ownedBuildPool binds a configured build size class to its exact native name.
