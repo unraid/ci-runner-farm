@@ -18,7 +18,23 @@ class BuildDemand
         if (file_exists($cachePath) || is_link($cachePath)) {
             $this->cache = self::decode(self::protectedRead($cachePath, self::CACHE_LIMIT, true));
             self::check(isset($this->cache['items'], $this->cache['cooldown']) && is_array($this->cache['items']) && count($this->cache['items']) <= 512 && is_int($this->cache['cooldown']), 'invalid HTTP cache');
+            if (isset($this->cache['cooldownScope']) && $this->cache['cooldownScope'] !== $this->scope) $this->cache['cooldown'] = 0;
         }
+    }
+
+    // The native fleet lock serializes this gate with all background effects.
+    // Record the attempt before remote reads so failures/restarts cannot rescan.
+    public function begin(): void
+    {
+        $plan = $this->cache['plan'] ?? null;
+        if ($plan !== null) {
+            self::check(is_array($plan) && is_string($plan['scope'] ?? null) && is_int($plan['attemptedAt'] ?? null) &&
+                $plan['attemptedAt'] <= time(), 'invalid background poll receipt');
+            self::check($plan['scope'] !== $this->scope || time() - $plan['attemptedAt'] >= 300, 'background GitHub poll deferred');
+        }
+        $this->fresh();
+        $this->cache['plan'] = ['scope' => $this->scope, 'attemptedAt' => time()];
+        $this->save();
     }
 
     public static function check(bool $condition, string $message): void
@@ -151,12 +167,19 @@ class BuildDemand
 
     public function response(string $key, int $status, array $headers, string $body, ?array $previous): array
     {
+        // Keep a reserve for registration, routing and recovery. Header evidence
+        // comes from the actual authenticated endpoint, never /rate_limit.
+        if (ctype_digit($headers['x-ratelimit-remaining'] ?? '') && (int)$headers['x-ratelimit-remaining'] <= 500 &&
+            ctype_digit($headers['x-ratelimit-reset'] ?? '')) {
+            $this->cache['cooldown'] = max($this->cache['cooldown'], min(time() + 86400, (int)$headers['x-ratelimit-reset']) + 5);
+        }
         if ($status === 403 || $status === 429) {
-            $until = time() + 60;
+            $until = time() + 300;
             if (ctype_digit($headers['retry-after'] ?? '')) $until = max($until, time() + min(86400, (int)$headers['retry-after']));
             if (($headers['x-ratelimit-remaining'] ?? '') === '0' && ctype_digit($headers['x-ratelimit-reset'] ?? '')) $until = max($until, min(time() + 86400, (int)$headers['x-ratelimit-reset']));
             $this->cache['cooldown'] = max($this->cache['cooldown'], $until);
         }
+        $this->cache['cooldownScope'] = $this->scope;
         if ($status === 304) {
             self::check($previous !== null, 'unattested GitHub 304');
             return self::decode($previous['body']);
@@ -318,11 +341,11 @@ if (realpath($_SERVER['SCRIPT_FILENAME'] ?? '') === __FILE__) {
     try {
         umask(0077);
         ini_set("memory_limit", "128M");
-        if (($argv[1] ?? '') === 'scan' && count($argv) === 5) {
+        if (in_array($argv[1] ?? '', ['begin', 'scan'], true) && count($argv) === 5) {
             BuildDemand::check(posix_geteuid() === 0 && function_exists('curl_multi_init'), 'general demand requires native root PHP curl runtime');
             $scope = BuildDemand::credentials($argv[2]);
             $reader = new BuildDemand($argv[3] . '/build-demand-http.json', $scope['token'], $scope['queue-token']);
-            try { $result = $reader->queue($scope, BuildDemand::pools($argv[4])); }
+            try { if ($argv[1] === 'begin') { $reader->begin(); $result = ['backgroundReady' => true]; } else $result = $reader->queue($scope, BuildDemand::pools($argv[4])); }
             finally { $reader->save(); }
         } elseif (($argv[1] ?? '') === 'warm-targets' && count($argv) === 3) {
             $result = BuildDemand::warmTargets($argv[2]);

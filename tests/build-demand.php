@@ -126,8 +126,33 @@ try {
     $stored=json_decode(file_get_contents($cache),true);
     same(count($stored['items']),512); same(fileperms($cache)&0777,0600);
     rejects(fn()=>$reader->response('rate',429,['retry-after'=>'120'],'',null));
-    $reader->save(); same(json_decode(file_get_contents($cache),true)['cooldown'] >= time()+119,true);
+    $reader->save(); same(json_decode(file_get_contents($cache),true)['cooldown'] >= time()+299,true);
     chmod($cache,0644); rejects(fn()=>new BuildDemand($cache,'g','q')); unlink($cache);
     symlink('/dev/null',$cache); rejects(fn()=>new BuildDemand($cache,'g','q')); unlink($cache);
+    if (posix_geteuid() === 0) {
+        $reader = new BuildDemand($cache,'g','q');
+        $reader->begin();
+        // A fresh process cannot turn a failed/restarted pass into another scan.
+        rejects(fn()=>(new BuildDemand($cache,'g','q'))->begin());
+        $stored=json_decode(file_get_contents($cache),true);
+        $stored['plan']['attemptedAt']=time()-300;
+        file_put_contents($cache,json_encode($stored));
+        (new BuildDemand($cache,'g','q'))->begin();
+        unlink($cache);
+        $reader = new BuildDemand($cache,'g','q');
+        $reset=time()+900;
+        same($reader->response('reserve',200,['x-ratelimit-remaining'=>'500','x-ratelimit-reset'=>(string)$reset],'{"ok":true}',null),['ok'=>true]);
+        $reader->save();
+        rejects(fn()=>(new BuildDemand($cache,'g','q'))->begin());
+        same(json_decode(file_get_contents($cache),true)['cooldown'] >= $reset,true);
+        // A credential replacement must not inherit another credential's denial.
+        (new BuildDemand($cache,'other','credential'))->begin();
+        unlink($cache);
+        $reader = new BuildDemand($cache,'g','q');
+        $reader->response('above',200,['x-ratelimit-remaining'=>'501','x-ratelimit-reset'=>(string)$reset],'{"ok":true}',null);
+        $reader->save();
+        (new BuildDemand($cache,'g','q'))->begin();
+        unlink($cache);
+    }
     echo "build-demand: private group/credential split, complete current-attempt queues, target identity and authenticated cache protections passed\n";
 } finally { if (file_exists($cache)||is_link($cache)) unlink($cache); }

@@ -817,7 +817,13 @@ autoscale_tick() {
   if pool_mode_enabled; then
     validate_runner_mode || return 1
     pool_activate build || return 1
-    # Restore the static warm total before network scans or owned withdrawal
+    # Rate-limit the entire remote planning pass, including native per-owner
+    # reads before queue scanning. Failed scans and daemon restarts retain the
+    # same cooldown; local cleanup and running workloads remain independent.
+    if [ "$QUEUED_POOLS" = true ] && printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'; then
+      php "$SCRIPT_DIR/build-demand.php" begin "$CFGDIR" "$RUNDIR" "$RUNNER_POOLS" >/dev/null || return 75
+    fi
+    # Restore the static warm total before queue scans or owned withdrawal
     # settlement. The normal start still requires the sole broker's admission.
     restore_warm_capacity || return 1
     shared_capacity_poison_scan || err "shared capacity: poison scan unavailable; preserving existing owner intents"
@@ -904,7 +910,7 @@ autoscale_daemon() {
   # runs) and (b) every UI start/stop/scale/recycle would block 20s then fail "fleet
   # busy". Closing fd 8 here releases the inherited lock; with_fleet_lock reopens it
   # fresh per tick. (7/9 closed too, defensively, for any future locked spawn path.)
-  exec 8>&- 7>&- 9>&- 2>/dev/null || true
+  { exec 8>&- 7>&- 9>&-; } 2>/dev/null || true
   log "autoscale daemon up (min=$AUTOSCALE_MIN max=$AUTOSCALE_MAX buffer=$AUTOSCALE_MIN_IDLE step=$AUTOSCALE_STEP every ${AUTOSCALE_INTERVAL}s)"
   while true; do
     load_cfg
@@ -928,7 +934,7 @@ autoscale_start() {
 # work instead of creating a second observation path.
 recommendation_history_daemon() {
   local sleeper=""
-  exec 8>&- 7>&- 9>&- 2>/dev/null || true
+  { exec 8>&- 7>&- 9>&-; } 2>/dev/null || true
   trap 'if [ -n "$sleeper" ]; then if jobs -pr | grep -qx "$sleeper"; then kill "$sleeper" 2>/dev/null || true; fi; wait "$sleeper" 2>/dev/null || true; fi; rm -f "$HISTORY_PID" 2>/dev/null || true' EXIT
   trap 'exit 0' HUP INT TERM
   log "recommendation history daemon up (every 30s)"
@@ -1045,7 +1051,7 @@ replenish_fixed_github_capacity() {
 lifecycle_daemon() {
   # This daemon is nohup'd from cmd_start under fleet.lock. Do not inherit that
   # lock or the worker would hold it for its entire lifetime.
-  exec 8>&- 7>&- 9>&- 2>/dev/null || true
+  { exec 8>&- 7>&- 9>&-; } 2>/dev/null || true
   log "lifecycle watchdog up (every ${LIFECYCLE_INTERVAL}s)"
   while true; do
     load_cfg
@@ -1237,7 +1243,7 @@ imageupdate_tick() {
 
 # long-running loop; re-reads config each tick so UI changes apply live
 imageupdate_daemon() {
-  exec 8>&- 7>&- 9>&- 2>/dev/null || true   # disown inherited lock fds (see autoscale_daemon)
+  { exec 8>&- 7>&- 9>&-; } 2>/dev/null || true   # disown inherited lock fds (see autoscale_daemon)
   log "image-update daemon up (every ${IMAGE_AUTOUPDATE_INTERVAL}s, drain-timeout ${IMAGE_DRAIN_TIMEOUT}s)"
   while true; do
     load_cfg
@@ -2360,7 +2366,7 @@ cmd_reconcile_drain() {
   # Disown an inherited fleet-lock fd (this can be nohup'd from cmd_start, which holds
   # fd 8) so our own `with_fleet_lock wait` below isn't self-blocked. Keep fd 7 — the
   # dispatch wrapper holds it as this drain's own reconcile.lock. See autoscale_daemon.
-  exec 8>&- 9>&- 2>/dev/null || true
+  { exec 8>&- 9>&-; } 2>/dev/null || true
   trap 'rm -f "$RECONCILE_PID" 2>/dev/null || true' EXIT
   trap 'rm -f "$RECONCILE_PID" 2>/dev/null || true; exit 0' HUP INT TERM
   local deadline announced=0 lost paused=0 stale=-1

@@ -61,3 +61,20 @@ migration. Preserve all existing grants, fences, pending ages and owner receipts
 Old controller commands and old ledger paths must be fenced before admission
 reopens. Fresh standalone initialization also requires a complete owner proof;
 this stage does not initialize a replacement ledger automatically.
+
+## GitHub request containment
+
+General queued pools run a complete background planning pass at most once every
+five minutes, even if the daemon tick is shorter. The protected HTTP cache saves
+the attempt before remote work, so failed scans and restarts retain that limit.
+Local cache cleanup and running jobs continue during the delay.
+
+Queue responses with 500 or fewer remaining requests defer background work until
+the reported reset time. Rate-limit responses also honor `Retry-After`, with at
+least five minutes of backoff. These observations do not guarantee a global
+reserve when multiple hosts or other clients share the same GitHub identity.
+Explicit Start still establishes the retry controllers when capacity is deferred.
+
+This containment reduces polling; native conditional reads and batched planning
+remain separate work. Cached queue bodies still require authenticated revalidation,
+and denied or partial observations never authorize an empty-queue retirement.

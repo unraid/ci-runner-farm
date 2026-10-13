@@ -71,3 +71,49 @@ for mode in scan-fails capability-missing targets-fails apply-unknown; do
  fi
 done
 printf 'queued-pools: Farm owns general queue sizing; staged capability/unknown evidence preserves owners\n'
+
+# Full planning (including native reads) stops before effects during cooldown.
+mode=deferred
+php() {
+ case "$2" in begin) printf 'begin\n' >> "$tmp/rate-order"; [ "$mode" != deferred ];; *) fail 'deferred pass reached network scan';; esac
+}
+crf_storage_pressure_cleanup() { :; }
+validate_runner_mode() { :; }
+shared_capacity_poison_scan() { fail 'cooldown reached poison planning'; }
+shared_capacity_call() { fail 'cooldown reached native planning'; }
+if autoscale_tick; then fail 'cooldown reported applied plan'; else [ "$?" -eq 75 ] || fail 'cooldown lost deferred status'; fi
+[ "$(cat "$tmp/rate-order")" = begin ] || fail 'background rate gate not reached'
+# Closing inherited lock descriptors must not hide later daemon errors.
+(
+ load_cfg() { AUTOSCALE=false; printf 'visible-daemon-error\n' >&2; }
+ reload_secret_files() { :; }
+ autoscale_daemon
+) > "$tmp/daemon-out" 2> "$tmp/daemon-err"
+grep -qx visible-daemon-error "$tmp/daemon-err" || fail 'daemon discarded operational errors'
+printf 'queued-pools: durable background cooldown precedes all remote effects; daemon errors stay visible\n'
+
+# Cooldown defers capacity, but startup must establish controllers that retry it.
+(
+ shared_capacity_require_starts_open() { :; }
+ shared_capacity_enabled() { return 0; }
+ shared_capacity_poison_scan() { :; }
+ restore_warm_capacity() { :; }
+ shared_capacity_call() { [ "$1" = rebalance ] || fail 'unexpected startup effect'; return 75; }
+ validate_runner_mode() { :; }
+ pool_tokens_ready() { :; }
+ public_repo_problem() { :; }
+ gitlab_assert_no_orphan_manager_configs() { :; }
+ managed_names() { :; }
+ provision_preflight() { :; }
+ gitlab_cleanup_orphan_sidecars() { :; }
+ start_stopped_managed() { :; }
+ reap_dead_runners() { :; }
+ start_configured_capacity() { return 75; }
+ current_count() { echo 1; }
+ lifecycle_start() { echo lifecycle >> "$tmp/startup"; }
+ recommendation_history_start() { echo history >> "$tmp/startup"; }
+ autoscale_start() { echo autoscale >> "$tmp/startup"; }
+ NETWORK_ISOLATION=off IMAGE_AUTOUPDATE=false
+ if cmd_start; then fail 'deferred startup reported healthy capacity'; fi
+)
+[ "$(cat "$tmp/startup")" = $'lifecycle\nhistory\nautoscale' ] || fail 'cooldown stranded retry controllers'
