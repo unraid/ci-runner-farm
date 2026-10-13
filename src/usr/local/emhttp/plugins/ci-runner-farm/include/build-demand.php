@@ -273,10 +273,13 @@ class BuildDemand
                 array_key_exists('runner_id', $job) && ($job['runner_id'] === null || (is_int($job['runner_id']) && $job['runner_id'] >= 0)), 'incomplete job identity');
             $jobIDs[$key] = true;
             foreach ($job['labels'] as $label) self::check(is_string($label) && $label !== '', 'invalid job label');
-            if ($job['status'] !== 'queued') return;
-            self::check(is_int($job['runner_id']), 'queued job assignment is unknown');
-            if ($job['runner_id'] !== 0 || !$job['labels']) return;
-            foreach ($pools as $pool) if (!array_diff(array_map('strtolower', $job['labels']), $pool['labels'])) { $counts[$pool['id']]++; break; }
+            if ($job['status'] !== 'queued' || !$job['labels']) return;
+            foreach ($pools as $pool) if (!array_diff(array_map('strtolower', $job['labels']), $pool['labels'])) {
+                // Assignment evidence matters only for jobs this pool can run.
+                self::check(is_int($job['runner_id']), 'queued job assignment is unknown');
+                if ($job['runner_id'] === 0) $counts[$pool['id']]++;
+                break;
+            }
         }, 10);
         $this->fresh();
         return ['queueStartedAt' => (int)$this->started, 'counts' => $counts, 'organization' => $org];

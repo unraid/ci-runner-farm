@@ -39,8 +39,19 @@ class QueueFixture extends BuildDemand {
                 if ($this->mode === 'small') $job['labels'] = ['self-hosted','Linux','X64'];
                 if ($this->mode === 'status') $job['status'] = 'unrecognized';
                 if ($this->mode === 'assigned') $job['runner_id'] = 42;
+                if ($this->mode === 'unknown-assignment') $job['runner_id'] = null;
+                if ($this->mode === 'small-unknown-assignment') { $job['runner_id'] = null; $job['labels'] = ['self-hosted','Linux','X64']; }
+                if ($this->mode === 'foreign-qa') { $job['runner_id'] = null; $job['labels'] = ['Linux','X64','unraid','qa-vm-client','qa-vm-ready']; }
+                if ($this->mode === 'foreign-hosted') { $job['runner_id'] = null; $job['labels'] = ['ubuntu-latest']; }
+                if ($this->mode === 'foreign-invalid-identity') { $job['runner_id'] = null; $job['labels'] = ['ubuntu-latest']; $job['run_id'] = 999; }
+                if ($this->mode === 'foreign-invalid-assignment') { $job['runner_id'] = 'unknown'; $job['labels'] = ['ubuntu-latest']; }
                 if ($this->mode === 'labels') $job['labels'][] = 'unsupported';
                 $result[$url] = ['total_count'=>1,'jobs'=>[$job]];
+                if ($this->mode === 'mixed-foreign') {
+                    $result[$url]['total_count']=3;
+                    $result[$url]['jobs'][]=array_merge($job,['id'=>$job['id']+1000,'runner_id'=>null,'labels'=>['Linux','X64','unraid','qa-vm-client','qa-vm-ready']]);
+                    $result[$url]['jobs'][]=array_merge($job,['id'=>$job['id']+2000,'runner_id'=>null,'labels'=>['ubuntu-latest']]);
+                }
                 if ($this->mode === 'duplicate') { $result[$url]['total_count']=2; $result[$url]['jobs'][]=$job; }
                 if ($this->mode === 'missing') unset($result[$url]['jobs'][0]['labels']);
                 if ($this->mode === 'skipped') { $result[$url]['total_count']=2; $result[$url]['jobs'][]=array_merge($job,['id'=>$job['id']+1000,'status'=>'completed','runner_id'=>null,'labels'=>[]]); }
@@ -76,13 +87,14 @@ try {
     $scan = $reader->queue($scope,$pools);
     same($scan['counts'],['build-small'=>0,'build'=>2]);
     foreach ($reader->seen as $path=>$token) same($token,str_contains($path,'runner-groups')?'group-only':'actions-only');
-    foreach (['public','inherited','ambiguous','repository','run','partial','job','duplicate','missing','inaccessible','status'] as $mode) {
+    foreach (['public','inherited','ambiguous','repository','run','partial','job','duplicate','missing','inaccessible','status','unknown-assignment','small-unknown-assignment','foreign-invalid-identity','foreign-invalid-assignment'] as $mode) {
         $reader->mode=$mode; rejects(fn()=>$reader->queue($scope,$pools));
     }
     $reader->mode='selected'; same($reader->queue($scope,$pools)['counts'],['build-small'=>0,'build'=>1]);
     $reader->mode='small'; same($reader->queue($scope,$pools)['counts'],['build-small'=>2,'build'=>0]);
     $reader->mode='skipped'; same($reader->queue($scope,$pools)['counts'],['build-small'=>0,'build'=>2]);
-    foreach (['assigned','labels'] as $mode) { $reader->mode=$mode; same($reader->queue($scope,$pools)['counts'],['build-small'=>0,'build'=>0]); }
+    $reader->mode='mixed-foreign'; same($reader->queue($scope,$pools)['counts'],['build-small'=>0,'build'=>2]);
+    foreach (['assigned','labels','foreign-qa','foreign-hosted'] as $mode) { $reader->mode=$mode; same($reader->queue($scope,$pools)['counts'],['build-small'=>0,'build'=>0]); }
     $observation=['schema'=>1,'observedAt'=>time(),'policyDigest'=>str_repeat('a',64),'poolsDigest'=>hash('sha256',"unraid\0".RECORDS),'retained'=>['build'=>5,'build-small'=>0]];
     same(BuildDemand::targets(RECORDS,$scan,$observation)['targets'],['build-small'=>0,'build'=>10]);
     foreach (['stale','policy','pool','missing','negative','extra'] as $mode) {
