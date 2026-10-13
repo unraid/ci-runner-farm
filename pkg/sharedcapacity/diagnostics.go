@@ -1,3 +1,4 @@
+// Package sharedcapacity reports admission state without exposing release capabilities.
 package sharedcapacity
 
 import (

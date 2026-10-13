@@ -160,3 +160,15 @@ func TestWithdrawalWorkerAfterRemoteIntentFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestWithdrawalRemoteBusyAfterIntentRetainsFrozenOwner(t *testing.T) {
+	owner := &fakeWithdrawalOwner{frozen: true, remoteBusy: true}
+	withdrawal := withdrawalFixture()
+	withdrawal.Phase = withdrawRemoteIntent
+	original := withdrawal
+	saves := 0
+	err := AdvanceWithdrawal(context.Background(), &withdrawal, owner, time.Now(), func() error { saves++; return nil })
+	if err == nil || errors.Is(err, ErrWorkloadBusy) || !owner.frozen || owner.resumes != 0 || owner.deletes != 0 || owner.removed || withdrawal != original || saves != 0 {
+		t.Fatal("ambiguous remote assignment was reported as resumed or changed ownership", owner, withdrawal, saves, err)
+	}
+}

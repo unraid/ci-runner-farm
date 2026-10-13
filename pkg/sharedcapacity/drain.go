@@ -1,3 +1,4 @@
+// Package sharedcapacity plans withdrawals from current fenced workload observations.
 package sharedcapacity
 
 import (

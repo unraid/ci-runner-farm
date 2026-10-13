@@ -1,3 +1,4 @@
+// Package sharedcapacity bounds builder memory borrowing while protecting physical reserves.
 package sharedcapacity
 
 import (

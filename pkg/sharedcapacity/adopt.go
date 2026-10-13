@@ -1,3 +1,4 @@
+// Package sharedcapacity preserves exact workload ownership during explicit ledger adoption.
 package sharedcapacity
 
 import (

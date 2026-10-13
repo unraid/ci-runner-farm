@@ -1,3 +1,4 @@
+// Package sharedcapacity persists fenced grants against one shared host resource budget.
 package sharedcapacity
 
 import (

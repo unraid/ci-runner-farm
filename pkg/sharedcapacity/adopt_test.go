@@ -115,7 +115,7 @@ func TestAdoptionResumesExactQueuedOwnersWithoutResettingDemandOrGrants(t *testi
 		}
 	}
 	altered := append([]Request(nil), owners...)
-	altered[len(altered)-1].Pool = "qa-guest"
+	altered[len(altered)-1].Pool = "qa"
 	if err := broker.Adopt(&policy, altered, func() error { return nil }); err == nil {
 		t.Fatal("changed pending identity accepted")
 	}

@@ -1,3 +1,4 @@
+// Package sharedcapacity preserves durable withdrawal phases until exact owners stop.
 package sharedcapacity
 
 import (
@@ -167,7 +168,7 @@ func withdrawRemote(ctx context.Context, withdrawal *Withdrawal, owner Withdrawa
 	}
 	if !idle {
 		if withdrawal.Phase == withdrawRemoteIntent {
-			return ErrWorkloadBusy
+			return errors.New("remote assignment found after idle withdrawal intent; preserve frozen owner")
 		}
 		if resumeErr := owner.Resume(ctx); resumeErr != nil {
 			return resumeErr
