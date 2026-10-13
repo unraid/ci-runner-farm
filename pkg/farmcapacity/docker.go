@@ -14,7 +14,10 @@ import (
 // NativeDocker uses immutable IDs and never interprets inspect failure as absence.
 type NativeDocker struct{}
 
-const nativeCreatedStatus = "created"
+const (
+	nativeCreatedStatus = "created"
+	nativeExitedStatus  = "exited"
+)
 
 func neverStarted(status string, pid *int, startedAt *time.Time) bool {
 	return status == nativeCreatedStatus && pid != nil && *pid == 0 && startedAt != nil && startedAt.IsZero()
@@ -23,9 +26,11 @@ func neverStarted(status string, pid *int, startedAt *time.Time) bool {
 // terminatedNative requires complete evidence that automatic restart and local
 // execution are closed. Missing Docker fields never establish this fast path.
 func terminatedNative(status string, pid *int, running, paused, restarting *bool, restartPolicy *string) bool {
-	return status == "exited" && pid != nil && *pid == 0 && running != nil && !*running &&
+	return status == nativeExitedStatus && pid != nil && *pid == 0 && running != nil && !*running &&
 		paused != nil && !*paused && restarting != nil && !*restarting && restartPolicy != nil && *restartPolicy == "no"
 }
+
+func nativeFlag(value *bool) bool { return value != nil && *value }
 
 // Inspect enumerates exact IDs/names before inspection so daemon failures fail closed.
 func (NativeDocker) Inspect(ctx context.Context, identity string) (*Container, error) {
@@ -111,14 +116,14 @@ func (NativeDocker) Inspect(ctx context.Context, identity string) (*Container, e
 			root = mount.Source
 		}
 	}
-	running := item.State.Running != nil && *item.State.Running
-	paused := item.State.Paused != nil && *item.State.Paused
+	running := nativeFlag(item.State.Running)
+	paused := nativeFlag(item.State.Paused)
 	return &Container{
 		Terminated:       terminatedNative(item.State.Status, item.State.PID, item.State.Running, item.State.Paused, item.State.Restarting, item.HostConfig.RestartPolicy.Name),
 		RegistrationName: registrationName,
 		DockerRoot:       root, ID: item.ID, Name: strings.TrimPrefix(item.Name, "/"), Managed: labels[prefix+"managed"] == "true",
 		Provider: labels[prefix+"provider"], Role: labels[prefix+"role"], Pool: labels[prefix+"pool"],
-		MemoryBytes: item.HostConfig.Memory, NanoCPUs: item.HostConfig.NanoCPUs, Running: running, Paused: paused, Exited: !running && !paused && item.State.Status == "exited" && item.State.PID != nil && *item.State.PID == 0, NeverStarted: !running && !paused && neverStarted(item.State.Status, item.State.PID, item.State.StartedAt), RegistrationIssuedAt: issuedAt, RoutingLabels: routing, RoutingGated: gated,
+		MemoryBytes: item.HostConfig.Memory, NanoCPUs: item.HostConfig.NanoCPUs, Running: running, Paused: paused, Exited: !running && !paused && item.State.Status == nativeExitedStatus && item.State.PID != nil && *item.State.PID == 0, NeverStarted: !running && !paused && neverStarted(item.State.Status, item.State.PID, item.State.StartedAt), RegistrationIssuedAt: issuedAt, RoutingLabels: routing, RoutingGated: gated,
 	}, nil
 }
 

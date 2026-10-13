@@ -12,20 +12,20 @@ import (
 )
 
 func TestNativeTerminationRequiresCompleteClosedState(t *testing.T) {
-	for _, mode := range []string{"closed", "running", "paused", "restarting", "automatic-restart", "live-pid", "created", "missing-running", "missing-paused", "missing-restarting", "missing-pid", "missing-restart-policy"} {
+	for _, mode := range []string{"closed", "live-owner", "paused-owner", "restarting", "automatic-restart", "live-pid", "created-owner", "missing-running", "missing-paused", "missing-restarting", "pid-omitted", "missing-restart-policy"} {
 		t.Run(mode, func(t *testing.T) {
 			zero := 0
 			no := false
 			yes := true
 			policy := "no"
-			status := "exited"
+			status := testExitedStatus
 			pid := &zero
 			running, paused, restarting := &no, &no, &no
 			restartPolicy := &policy
 			switch mode {
-			case "running":
+			case "live-owner":
 				running = &yes
-			case "paused":
+			case "paused-owner":
 				paused = &yes
 			case "restarting":
 				restarting = &yes
@@ -33,15 +33,15 @@ func TestNativeTerminationRequiresCompleteClosedState(t *testing.T) {
 				policy = "always"
 			case "live-pid":
 				zero = 123
-			case "created":
-				status = "created"
+			case "created-owner":
+				status = nativeCreatedStatus
 			case "missing-running":
 				running = nil
 			case "missing-paused":
 				paused = nil
 			case "missing-restarting":
 				restarting = nil
-			case "missing-pid":
+			case "pid-omitted":
 				pid = nil
 			case "missing-restart-policy":
 				restartPolicy = nil
@@ -53,10 +53,10 @@ func TestNativeTerminationRequiresCompleteClosedState(t *testing.T) {
 	}
 }
 
-func terminalFixture(t *testing.T) (*FrozenOwner, string) {
+func terminalFixture(t *testing.T) (owner *FrozenOwner, directory string) {
 	t.Helper()
 	id := strings.Repeat("a", 64)
-	directory := installExitedRegistrationFixture(t, id, "exited", false, 0, "unused", "test-org")
+	directory = installExitedRegistrationFixture(t, id, testExitedStatus, false, 0, "unused", "test-org")
 	data, err := os.ReadFile(filepath.Join(directory, "inspect"))
 	if err != nil {
 		t.Fatal(err)
@@ -65,10 +65,16 @@ func terminalFixture(t *testing.T) (*FrozenOwner, string) {
 	if err = json.Unmarshal(data, &inspected); err != nil {
 		t.Fatal(err)
 	}
-	state := inspected[0]["State"].(map[string]any)
+	state, ok := inspected[0]["State"].(map[string]any)
+	if !ok {
+		t.Fatal("native fixture state is not an object")
+	}
 	state["Paused"] = false
 	state["Restarting"] = false
-	inspected[0]["HostConfig"] = map[string]any{"RestartPolicy": map[string]any{"Name": "no"}}
+	policy := struct {
+		Name string `json:"Name"`
+	}{Name: "no"}
+	inspected[0]["HostConfig"] = map[string]any{"RestartPolicy": policy}
 	data, err = json.Marshal(inspected)
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +102,16 @@ func TestNativeTerminalRemovalNeverForcesARestartedContainer(t *testing.T) {
 				script += ": > " + strconv.Quote(filepath.Join(directory, "listing")) + "\n exit 0\n"
 			}
 			script += "fi\n" + string(original)
-			if err = os.WriteFile(filepath.Join(directory, "docker"), []byte(script), 0o700); err != nil {
+			root, openErr := os.OpenRoot(directory)
+			if openErr != nil {
+				t.Fatal(openErr)
+			}
+			defer func() {
+				if closeErr := root.Close(); closeErr != nil {
+					t.Error(closeErr)
+				}
+			}()
+			if err = root.WriteFile("docker", []byte(script), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			err = owner.RemoveTerminated(context.Background())
@@ -129,8 +144,8 @@ func TestNativeTerminalProofRejectsReplacedIdentity(t *testing.T) {
 
 type terminalPlanningOwner struct{ *fakePlanningOwner }
 
-func (o *terminalPlanningOwner) Terminated(context.Context) (bool, error) {
-	item, err := o.docker.Inspect(context.Background(), o.id)
+func (o *terminalPlanningOwner) Terminated(ctx context.Context) (bool, error) {
+	item, err := o.docker.Inspect(ctx, o.id)
 	if err != nil {
 		return false, err
 	}
