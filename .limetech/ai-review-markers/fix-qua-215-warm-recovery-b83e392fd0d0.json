@@ -1,15 +1,8 @@
 {
   "disposition": "PATCH",
-  "expected_structural_delta": "No new owners or stores; one native-only warm plan action, one Go owner-planning module and bounded PHP/Bash/CLI/test/documentation changes across the two existing packages.",
-  "minimum_design": "Farm computes static warm targets; existing native adapter validates additive-only local owner plan with oldest pending priority and existing fenced Start. Fresh queue evidence exclusively authorizes burst sizing and idle retirement.",
-  "outcome": "Restore protected floor and configured warm builders independently of GitHub queue evidence, preserve running jobs and one broker.",
-  "reuse_decisions": [
-    {
-      "decision": "extend existing paths",
-      "name": "Farm profile parser, native owner receipts, pending diagnostics and broker Start",
-      "rationale": "No new service, ledger or raw state repair."
-    }
-  ],
+  "forecast_commit": "d392c9414b4a255616babbbd5c31d66c25ab68fd",
+  "reviewed_sha": "45ca08273a16df30f7921f530b865dcceba448d8",
   "schema": "limetech.ai-review-marker.v2",
-  "stage": "forecast"
+  "stage": "final",
+  "unresolved_proportionality_findings": []
 }
