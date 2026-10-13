@@ -39,8 +39,13 @@ class QueueFixture extends BuildDemand {
                 if ($this->mode === 'small') $job['labels'] = ['self-hosted','Linux','X64'];
                 if ($this->mode === 'status') $job['status'] = 'unrecognized';
                 if ($this->mode === 'assigned') $job['runner_id'] = 42;
-                if ($this->mode === 'unknown-assignment') $job['runner_id'] = null;
-                if ($this->mode === 'small-unknown-assignment') { $job['runner_id'] = null; $job['labels'] = ['self-hosted','Linux','X64']; }
+                if ($this->mode === 'unassigned-null') $job['runner_id'] = null;
+                if ($this->mode === 'missing-assignment') unset($job['runner_id']);
+                if ($this->mode === 'string-assignment') $job['runner_id'] = '0';
+                if ($this->mode === 'boolean-assignment') $job['runner_id'] = false;
+                if ($this->mode === 'negative-assignment') $job['runner_id'] = -1;
+                if ($this->mode === 'in-progress-null') { $job['runner_id'] = null; $job['status'] = 'in_progress'; }
+                if ($this->mode === 'small-unassigned-null') { $job['runner_id'] = null; $job['labels'] = ['self-hosted','Linux','X64']; }
                 if ($this->mode === 'foreign-qa') { $job['runner_id'] = null; $job['labels'] = ['Linux','X64','unraid','qa-vm-client','qa-vm-ready']; }
                 if ($this->mode === 'foreign-hosted') { $job['runner_id'] = null; $job['labels'] = ['ubuntu-latest']; }
                 if ($this->mode === 'foreign-invalid-identity') { $job['runner_id'] = null; $job['labels'] = ['ubuntu-latest']; $job['run_id'] = 999; }
@@ -87,14 +92,16 @@ try {
     $scan = $reader->queue($scope,$pools);
     same($scan['counts'],['build-small'=>0,'build'=>2]);
     foreach ($reader->seen as $path=>$token) same($token,str_contains($path,'runner-groups')?'group-only':'actions-only');
-    foreach (['public','inherited','ambiguous','repository','run','partial','job','duplicate','missing','inaccessible','status','unknown-assignment','small-unknown-assignment','foreign-invalid-identity','foreign-invalid-assignment'] as $mode) {
+    foreach (['public','inherited','ambiguous','repository','run','partial','job','duplicate','missing','inaccessible','status','missing-assignment','string-assignment','boolean-assignment','negative-assignment','foreign-invalid-identity','foreign-invalid-assignment'] as $mode) {
         $reader->mode=$mode; rejects(fn()=>$reader->queue($scope,$pools));
     }
     $reader->mode='selected'; same($reader->queue($scope,$pools)['counts'],['build-small'=>0,'build'=>1]);
+    $reader->mode='unassigned-null'; same($reader->queue($scope,$pools)['counts'],['build-small'=>0,'build'=>2]);
+    $reader->mode='small-unassigned-null'; same($reader->queue($scope,$pools)['counts'],['build-small'=>2,'build'=>0]);
     $reader->mode='small'; same($reader->queue($scope,$pools)['counts'],['build-small'=>2,'build'=>0]);
     $reader->mode='skipped'; same($reader->queue($scope,$pools)['counts'],['build-small'=>0,'build'=>2]);
     $reader->mode='mixed-foreign'; same($reader->queue($scope,$pools)['counts'],['build-small'=>0,'build'=>2]);
-    foreach (['assigned','labels','foreign-qa','foreign-hosted'] as $mode) { $reader->mode=$mode; same($reader->queue($scope,$pools)['counts'],['build-small'=>0,'build'=>0]); }
+    foreach (['assigned','in-progress-null','labels','foreign-qa','foreign-hosted'] as $mode) { $reader->mode=$mode; same($reader->queue($scope,$pools)['counts'],['build-small'=>0,'build'=>0]); }
     $observation=['schema'=>1,'observedAt'=>time(),'policyDigest'=>str_repeat('a',64),'poolsDigest'=>hash('sha256',"unraid\0".RECORDS),'retained'=>['build'=>5,'build-small'=>0]];
     same(BuildDemand::targets(RECORDS,$scan,$observation)['targets'],['build-small'=>0,'build'=>10]);
     foreach (['stale','policy','pool','missing','negative','extra'] as $mode) {

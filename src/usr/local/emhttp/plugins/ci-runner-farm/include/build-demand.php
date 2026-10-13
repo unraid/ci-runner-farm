@@ -275,9 +275,8 @@ class BuildDemand
             foreach ($job['labels'] as $label) self::check(is_string($label) && $label !== '', 'invalid job label');
             if ($job['status'] !== 'queued' || !$job['labels']) return;
             foreach ($pools as $pool) if (!array_diff(array_map('strtolower', $job['labels']), $pool['labels'])) {
-                // Assignment evidence matters only for jobs this pool can run.
-                self::check(is_int($job['runner_id']), 'queued job assignment is unknown');
-                if ($job['runner_id'] === 0) $counts[$pool['id']]++;
+                // GitHub documents null as not yet assigned; zero is also observed.
+                if ($job['runner_id'] === null || $job['runner_id'] === 0) $counts[$pool['id']]++;
                 break;
             }
         }, 10);
