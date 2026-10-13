@@ -12,3 +12,10 @@ updates:
       github-actions:
         patterns:
           - "*"
+
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"

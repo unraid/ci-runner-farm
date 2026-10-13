@@ -1,0 +1,37 @@
+name: Capacity
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  capacity:
+    name: Allocator compatibility and race tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Check formatting and module dependencies
+        shell: bash
+        run: |
+          test -z "$(gofmt -l pkg)"
+          go mod tidy -diff
+      - name: Vet allocator
+        run: go vet ./...
+      - name: Verify compatibility and concurrent admission
+        run: go test -race ./...

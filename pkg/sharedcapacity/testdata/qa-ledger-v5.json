@@ -1,0 +1,212 @@
+{
+  "schema": "shared-capacity-ledger/v5",
+  "policyDigest": "6ddd8f6bdace34994e499267c6edc430f0eb547d73fd3e6c91d697f19682d8e3",
+  "policy": {
+    "budget": {
+      "memoryMiB": 112000,
+      "vcpus": 28
+    },
+    "pools": {
+      "build": {
+        "cost": {
+          "memoryMiB": 12288,
+          "vcpus": 1
+        },
+        "minimum": 4,
+        "maximum": 24,
+        "priority": 1,
+        "minimumRequestIDs": [
+          "loan-builder-0",
+          "loan-builder-1",
+          "loan-builder-2",
+          "loan-builder-3"
+        ]
+      },
+      "qa": {
+        "cost": {
+          "memoryMiB": 7168,
+          "vcpus": 3
+        },
+        "minimum": 0,
+        "maximum": 8,
+        "priority": 3
+      },
+      "qa-runner": {
+        "cost": {
+          "memoryMiB": 2048,
+          "vcpus": 1
+        },
+        "minimum": 4,
+        "maximum": 4,
+        "priority": 2
+      }
+    },
+    "agingSeconds": 60,
+    "cpuAdmission": "soft",
+    "buildMemoryOvercommit": {
+      "additionalMiB": 65536,
+      "minimumAvailableMiB": 16384
+    }
+  },
+  "grants": {
+    "listener-0": {
+      "id": "listener-0",
+      "pool": "qa-runner",
+      "cost": {
+        "memoryMiB": 2048,
+        "vcpus": 1
+      },
+      "fence": "00000000000000000000000000000001",
+      "grantedAt": "2026-10-13T12:00:00Z"
+    },
+    "listener-1": {
+      "id": "listener-1",
+      "pool": "qa-runner",
+      "cost": {
+        "memoryMiB": 2048,
+        "vcpus": 1
+      },
+      "fence": "00000000000000000000000000000002",
+      "grantedAt": "2026-10-13T12:00:00Z"
+    },
+    "listener-2": {
+      "id": "listener-2",
+      "pool": "qa-runner",
+      "cost": {
+        "memoryMiB": 2048,
+        "vcpus": 1
+      },
+      "fence": "00000000000000000000000000000003",
+      "grantedAt": "2026-10-13T12:00:00Z"
+    },
+    "listener-3": {
+      "id": "listener-3",
+      "pool": "qa-runner",
+      "cost": {
+        "memoryMiB": 2048,
+        "vcpus": 1
+      },
+      "fence": "00000000000000000000000000000004",
+      "grantedAt": "2026-10-13T12:00:00Z"
+    },
+    "loan-builder-0": {
+      "id": "loan-builder-0",
+      "pool": "build",
+      "cost": {
+        "memoryMiB": 12288,
+        "vcpus": 1
+      },
+      "fence": "00000000000000000000000000000005",
+      "grantedAt": "2026-10-13T12:00:00Z"
+    },
+    "loan-builder-1": {
+      "id": "loan-builder-1",
+      "pool": "build",
+      "cost": {
+        "memoryMiB": 12288,
+        "vcpus": 1
+      },
+      "fence": "00000000000000000000000000000006",
+      "grantedAt": "2026-10-13T12:00:00Z"
+    },
+    "loan-builder-2": {
+      "id": "loan-builder-2",
+      "pool": "build",
+      "cost": {
+        "memoryMiB": 12288,
+        "vcpus": 1
+      },
+      "fence": "00000000000000000000000000000007",
+      "grantedAt": "2026-10-13T12:00:00Z"
+    },
+    "loan-builder-3": {
+      "id": "loan-builder-3",
+      "pool": "build",
+      "cost": {
+        "memoryMiB": 12288,
+        "vcpus": 1
+      },
+      "fence": "00000000000000000000000000000008",
+      "grantedAt": "2026-10-13T12:00:00Z"
+    },
+    "loan-builder-4": {
+      "id": "loan-builder-4",
+      "pool": "build",
+      "cost": {
+        "memoryMiB": 12288,
+        "vcpus": 1
+      },
+      "fence": "00000000000000000000000000000009",
+      "grantedAt": "2026-10-13T12:00:00Z"
+    },
+    "loan-builder-5": {
+      "id": "loan-builder-5",
+      "pool": "build",
+      "cost": {
+        "memoryMiB": 12288,
+        "vcpus": 1
+      },
+      "fence": "0000000000000000000000000000000a",
+      "grantedAt": "2026-10-13T12:00:00Z"
+    },
+    "loan-builder-6": {
+      "id": "loan-builder-6",
+      "pool": "build",
+      "cost": {
+        "memoryMiB": 12288,
+        "vcpus": 1
+      },
+      "fence": "0000000000000000000000000000000b",
+      "grantedAt": "2026-10-13T12:00:00Z"
+    },
+    "loan-builder-7": {
+      "id": "loan-builder-7",
+      "pool": "build",
+      "cost": {
+        "memoryMiB": 12288,
+        "vcpus": 1
+      },
+      "fence": "0000000000000000000000000000000c",
+      "grantedAt": "2026-10-13T12:00:00Z"
+    },
+    "loan-builder-8": {
+      "id": "loan-builder-8",
+      "pool": "build",
+      "cost": {
+        "memoryMiB": 12288,
+        "vcpus": 1
+      },
+      "borrowedMemoryMiB": 6784,
+      "fence": "0000000000000000000000000000000d",
+      "grantedAt": "2026-10-13T12:00:00Z"
+    },
+    "loan-builder-9": {
+      "id": "loan-builder-9",
+      "pool": "build",
+      "cost": {
+        "memoryMiB": 12288,
+        "vcpus": 1
+      },
+      "borrowedMemoryMiB": 12288,
+      "fence": "0000000000000000000000000000000e",
+      "grantedAt": "2026-10-13T12:00:00Z"
+    }
+  },
+  "pending": {
+    "waiting-guest": {
+      "id": "waiting-guest",
+      "pool": "qa",
+      "queuedAt": "2026-10-13T12:00:00Z",
+      "owner": {
+        "principalId": "test-principal",
+        "reservationId": "test-reservation",
+        "capacityId": "test-capacity",
+        "operationId": "test-operation",
+        "requestKey": "test-key",
+        "generation": 1,
+        "incarnation": "test-incarnation"
+      },
+      "revision": 1
+    }
+  }
+}

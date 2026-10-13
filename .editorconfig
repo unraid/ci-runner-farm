@@ -20,3 +20,8 @@ end_of_line = unset
 charset = unset
 trim_trailing_whitespace = false
 insert_final_newline = false
+
+# Go source uses gofmt.
+[*.go]
+indent_style = tab
+indent_size = unset
