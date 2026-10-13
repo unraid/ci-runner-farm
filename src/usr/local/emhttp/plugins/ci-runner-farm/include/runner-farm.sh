@@ -2076,9 +2076,9 @@ start_queued_capacity() {
     # Read GitHub before acquiring a short native configuration lease.
     # A missing native capability during rollout preserves existing owners.
     scan="$(php "$SCRIPT_DIR/build-demand.php" scan "$CFGDIR" "$RUNDIR" "$RUNNER_POOLS")" || return 1
-    observation="$(shared_capacity_call demand-observe "$RUNNER_POOLS")" || return 1
+    observation="$(shared_capacity_call demand-observe "$RUNNER_POOLS")" || { err "native demand observation unavailable; preserving owners"; return 1; }
     targets="$(php "$SCRIPT_DIR/build-demand.php" targets "$RUNNER_POOLS" "$scan" "$observation")" || return 1
-    plan="$(shared_capacity_call demand-apply "$RUNNER_POOLS" "$targets")" || return 1
+    plan="$(shared_capacity_call demand-apply "$RUNNER_POOLS" "$targets")" || { err "native demand apply unavailable; preserving owners"; return 1; }
   else
     plan="$(shared_capacity_call scale "$RUNNER_POOLS")" || { err "queued capacity unavailable; preserving owners"; return 1; }
   fi
