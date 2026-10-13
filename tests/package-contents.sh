@@ -48,6 +48,19 @@ assert os.stat(sys.argv[1]).st_mode & 0o111, 'capacity helper must be executable
 PY
 go version -m "$tmp/extracted/bin/ci-runner-capacity" | grep -qF 'go1.26.9'
 
+# Exercise permissions from the generated install action. Archive permissions
+# alone do not prove that Unraid leaves the native controller executable.
+python3 - "$tmp/build/ci-runner-farm.plg" "$tmp/extracted" <<'PYMODE'
+import pathlib
+import subprocess
+import sys
+text = pathlib.Path(sys.argv[1]).read_text()
+start = text.index('find "$PLGDIR" -type d -exec chmod 0755 {} +')
+end = text.index('# Config defaults', start)
+subprocess.run(['bash', '-euc', 'PLGDIR="$1"\n' + text[start:end], 'install-mode', sys.argv[2]], check=True)
+assert pathlib.Path(sys.argv[2], 'bin/ci-runner-capacity').stat().st_mode & 0o111, 'installed capacity controller must remain executable'
+PYMODE
+
 # Validate the actual generated package-manager action, not only its source
 # template: strict error handling must stop before the success banner when fleet
 # stop, runtime deletion, or cached-package deletion fails.
