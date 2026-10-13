@@ -75,7 +75,7 @@ printf 'queued-pools: Farm owns general queue sizing; staged capability/unknown 
 # Full planning (including native reads) stops before effects during cooldown.
 mode=deferred
 php() {
- case "$2" in begin) printf 'begin\n' >> "$tmp/rate-order"; [ "$mode" != deferred ];; *) fail 'deferred pass reached network scan';; esac
+ case "$2" in begin-recovery) printf 'begin\n' >> "$tmp/rate-order"; [ "$mode" != deferred ];; *) fail 'deferred pass reached network scan';; esac
 }
 crf_storage_pressure_cleanup() { :; }
 validate_runner_mode() { :; }
@@ -117,3 +117,20 @@ printf 'queued-pools: durable background cooldown precedes all remote effects; d
  if cmd_start; then fail 'deferred startup reported healthy capacity'; fi
 )
 [ "$(cat "$tmp/startup")" = $'lifecycle\nhistory\nautoscale' ] || fail 'cooldown stranded retry controllers'
+
+# Queue cooldown retains its request budget while native ownership settles.
+(
+ php() {
+  case "$2" in
+   begin-recovery) printf 'native-gate\n' >> "$tmp/queue-cooldown";;
+   begin) printf 'queue-gate\n' >> "$tmp/queue-cooldown"; return 1;;
+   *) fail 'queue cooldown reached network scan';;
+  esac
+ }
+ restore_warm_capacity() { printf 'warm\n' >> "$tmp/queue-cooldown"; }
+ shared_capacity_call() { [ "$1" = rebalance ] || fail 'unexpected recovery action'; printf 'rebalance\n' >> "$tmp/queue-cooldown"; }
+ shared_capacity_poison_scan() { fail 'queue cooldown reached poison scan'; }
+ if autoscale_tick; then fail 'queue cooldown reported completed plan'; else [ "$?" -eq 75 ] || fail 'queue cooldown lost deferred status'; fi
+)
+[ "$(cat "$tmp/queue-cooldown")" = $'native-gate\nwarm\nrebalance\nwarm\nqueue-gate' ] || fail 'queue quota suppressed native recovery'
+printf 'queued-pools: queue cooldown preserves separately bounded native recovery\n'

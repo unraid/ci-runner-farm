@@ -9,12 +9,14 @@ class BuildDemand
     private const CACHE_LIMIT = 16777216;
     private array $cache = ['items' => [], 'cooldown' => 0];
     private string $scope;
+    private string $recoveryScope;
     private float $started;
 
     public function __construct(private string $cachePath, string $groupToken, string $queueToken)
     {
         $this->started = microtime(true);
         $this->scope = hash('sha256', $groupToken . "\0" . $queueToken);
+        $this->recoveryScope = hash('sha256', $groupToken);
         if (file_exists($cachePath) || is_link($cachePath)) {
             $this->cache = self::decode(self::protectedRead($cachePath, self::CACHE_LIMIT, true));
             self::check(isset($this->cache['items'], $this->cache['cooldown']) && is_array($this->cache['items']) && count($this->cache['items']) <= 512 && is_int($this->cache['cooldown']), 'invalid HTTP cache');
@@ -34,6 +36,20 @@ class BuildDemand
         }
         $this->fresh();
         $this->cache['plan'] = ['scope' => $this->scope, 'attemptedAt' => time()];
+        $this->save();
+    }
+
+    // Native ownership recovery uses the registration credential and its own
+    // durable cadence. A depleted queue-reader budget must not strand grants.
+    public function beginRecovery(): void
+    {
+        $plan = $this->cache['recoveryPlan'] ?? null;
+        if ($plan !== null) {
+            self::check(is_array($plan) && is_string($plan['scope'] ?? null) && is_int($plan['attemptedAt'] ?? null) &&
+                $plan['attemptedAt'] <= time(), 'invalid native recovery receipt');
+            self::check($plan['scope'] !== $this->recoveryScope || time() - $plan['attemptedAt'] >= 300, 'background native recovery deferred');
+        }
+        $this->cache['recoveryPlan'] = ['scope' => $this->recoveryScope, 'attemptedAt' => time()];
         $this->save();
     }
 
@@ -341,11 +357,15 @@ if (realpath($_SERVER['SCRIPT_FILENAME'] ?? '') === __FILE__) {
     try {
         umask(0077);
         ini_set("memory_limit", "128M");
-        if (in_array($argv[1] ?? '', ['begin', 'scan'], true) && count($argv) === 5) {
+        if (in_array($argv[1] ?? '', ['begin', 'begin-recovery', 'scan'], true) && count($argv) === 5) {
             BuildDemand::check(posix_geteuid() === 0 && function_exists('curl_multi_init'), 'general demand requires native root PHP curl runtime');
             $scope = BuildDemand::credentials($argv[2]);
             $reader = new BuildDemand($argv[3] . '/build-demand-http.json', $scope['token'], $scope['queue-token']);
-            try { if ($argv[1] === 'begin') { $reader->begin(); $result = ['backgroundReady' => true]; } else $result = $reader->queue($scope, BuildDemand::pools($argv[4])); }
+            try {
+                if ($argv[1] === 'begin-recovery') { $reader->beginRecovery(); $result = ['recoveryReady' => true]; }
+                elseif ($argv[1] === 'begin') { $reader->begin(); $result = ['backgroundReady' => true]; }
+                else $result = $reader->queue($scope, BuildDemand::pools($argv[4]));
+            }
             finally { $reader->save(); }
         } elseif (($argv[1] ?? '') === 'warm-targets' && count($argv) === 3) {
             $result = BuildDemand::warmTargets($argv[2]);

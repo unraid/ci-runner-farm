@@ -817,21 +817,25 @@ autoscale_tick() {
   if pool_mode_enabled; then
     validate_runner_mode || return 1
     pool_activate build || return 1
-    # Rate-limit the entire remote planning pass, including native per-owner
-    # reads before queue scanning. Failed scans and daemon restarts retain the
-    # same cooldown; local cleanup and running workloads remain independent.
+    # Bound native registration reads across restarts independently of queue
+    # quota. A queue-reader cooldown must not strand completed owner grants.
     if [ "$QUEUED_POOLS" = true ] && printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'; then
-      php "$SCRIPT_DIR/build-demand.php" begin "$CFGDIR" "$RUNDIR" "$RUNNER_POOLS" >/dev/null || return 75
+      php "$SCRIPT_DIR/build-demand.php" begin-recovery "$CFGDIR" "$RUNDIR" "$RUNNER_POOLS" >/dev/null || return 75
     fi
-    # Restore the static warm total before queue scans or owned withdrawal
-    # settlement. The normal start still requires the sole broker's admission.
-    restore_warm_capacity || return 1
-    shared_capacity_poison_scan || err "shared capacity: poison scan unavailable; preserving existing owner intents"
+    restore_warm_capacity || err "shared capacity: warm restoration incomplete; settling existing owners"
     if shared_capacity_call rebalance; then :; else
       # Unknown recovery retains its charged grant. Independent starts still
       # require the broker, so one unproved owner must not stall the fleet.
       [ "$?" -eq 75 ] || err "shared capacity: rebalance incomplete; retaining allocations and retrying gated starts"
     fi
+    # Queued starts can return healthy waiting before settlement frees grants.
+    # Retry warm restoration before a queue cooldown can defer burst planning.
+    restore_warm_capacity || return 1
+    # Preserve the broad queue cooldown without coupling it to owner recovery.
+    if [ "$QUEUED_POOLS" = true ] && printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'; then
+      php "$SCRIPT_DIR/build-demand.php" begin "$CFGDIR" "$RUNDIR" "$RUNNER_POOLS" >/dev/null || return 75
+    fi
+    shared_capacity_poison_scan || err "shared capacity: poison scan unavailable; preserving existing owner intents"
     # The shared broker, rather than local count arithmetic, owns admission.
     # Retrying every stable slot preserves queue age and repairs inert creates.
     start_configured_capacity

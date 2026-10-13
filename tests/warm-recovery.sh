@@ -34,3 +34,50 @@ if start_configured_capacity; then fail 'unknown warm native outcome accepted'; 
 [ ! -e "$tmp/starts" ] || fail 'unknown warm outcome started a container'
 ! grep -q scan "$tmp/order" || fail 'unknown native outcome fell back to queue effects'
 printf 'warm-recovery: denied queue preserves additive recovery; unknown native outcomes fail closed\n'
+
+# A failed warm start must not prevent the existing owner from settling grants.
+# After settlement, retry through the same native warm/admission path.
+for failure in transient persistent; do
+ (
+  rm -f "$tmp/settled" "$tmp/recovery-order" "$tmp/recovery-starts"
+  crf_storage_pressure_cleanup() { :; }
+  validate_runner_mode() { :; }
+  shared_capacity_poison_scan() { :; }
+  php() {
+   case "$2" in
+    begin-recovery|begin|warm-targets|scan|targets) printf '{}';;
+    *) fail 'unexpected recovery planning action';;
+   esac
+  }
+  shared_capacity_call() {
+   printf '%s\n' "$1" >> "$tmp/recovery-order"
+   case "$1" in
+    demand-warm)
+     [ "$failure" != persistent ] && [ -e "$tmp/settled" ] || return 1
+     printf 'build|2\n';;
+    rebalance) touch "$tmp/settled";;
+    demand-observe) printf '{}';;
+    demand-apply) :;;
+    *) fail 'recovery bypassed the native controller';;
+   esac
+  }
+  start_one() {
+   [ -e "$tmp/settled" ] || fail 'start preceded owner settlement'
+   printf '%s\n' "$NAME_PREFIX-$1" >> "$tmp/recovery-starts"
+  }
+  if autoscale_tick; then
+   [ "$failure" = transient ] || fail 'persistent warm failure reported success'
+  else
+   [ "$failure" = persistent ] || fail 'settlement could not repair transient warm failure'
+  fi
+  [ -e "$tmp/settled" ] || fail 'warm failure stranded stale grants'
+  if [ "$failure" = transient ]; then
+   [ "$(cat "$tmp/recovery-order")" = $'demand-warm\nrebalance\ndemand-warm\ndemand-warm\ndemand-observe\ndemand-apply' ] || fail 'recovery did not settle then retry gated planning'
+   [ "$(cat "$tmp/recovery-starts")" = $'ci-runner-build-2\nci-runner-build-2' ] || fail 'recovery did not retry only the native selected slot'
+  else
+   [ "$(cat "$tmp/recovery-order")" = $'demand-warm\nrebalance\ndemand-warm' ] || fail 'persistent failure reached burst planning'
+   [ ! -e "$tmp/recovery-starts" ] || fail 'persistent failure bypassed native warm planning'
+  fi
+ )
+done
+printf 'warm-recovery: failed warm restoration still settles owners before a gated retry\n'

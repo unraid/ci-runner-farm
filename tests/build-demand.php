@@ -145,6 +145,24 @@ try {
         $reader->save();
         rejects(fn()=>(new BuildDemand($cache,'g','q'))->begin());
         same(json_decode(file_get_contents($cache),true)['cooldown'] >= $reset,true);
+        // Queue quota blocks queue reads, while one scheduled native recovery
+        // remains available and persists across fresh processes.
+        (new BuildDemand($cache,'g','q'))->beginRecovery();
+        rejects(fn()=>(new BuildDemand($cache,'g','q'))->beginRecovery());
+        rejects(fn()=>(new BuildDemand($cache,'g','rotated-queue'))->beginRecovery());
+        rejects(fn()=>(new BuildDemand($cache,'g','q'))->begin());
+        $stored=json_decode(file_get_contents($cache),true);
+        same($stored['cooldown'] >= $reset,true);
+        $stored['recoveryPlan']['attemptedAt']=time()-300;
+        file_put_contents($cache,json_encode($stored));
+        (new BuildDemand($cache,'g','q'))->beginRecovery();
+        (new BuildDemand($cache,'rotated-native','q'))->beginRecovery();
+        $stored=json_decode(file_get_contents($cache),true);
+        $stored['recoveryPlan']['attemptedAt']=time()+300;
+        file_put_contents($cache,json_encode($stored));
+        rejects(fn()=>(new BuildDemand($cache,'rotated-native','q'))->beginRecovery());
+        unset($stored['recoveryPlan']);
+        file_put_contents($cache,json_encode($stored));
         // A credential replacement must not inherit another credential's denial.
         (new BuildDemand($cache,'other','credential'))->begin();
         unlink($cache);
