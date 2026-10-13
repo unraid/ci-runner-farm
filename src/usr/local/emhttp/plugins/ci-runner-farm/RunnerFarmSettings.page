@@ -398,6 +398,7 @@ _(Cache mounts)_:
 _(User-share mounts)_:
 : <input type="text" name="USER_SHARE_MOUNTS" value="<?=crf_g($cfg,'USER_SHARE_MOUNTS','')?>" placeholder="/mnt/user/ci-runner/shared:/mnt/shared:rw">
 
+:crf_user_share_mounts_plug:
 > Optional space-separated <code>host-path:container-path:ro|rw</code> mounts for CI jobs. Example: <code>/mnt/user/ci-runner/shared:/mnt/shared:rw</code>. Each source must be an existing directory under an Unraid user share. Destinations must be safe paths under <code>/mnt</code> in the job container. GitHub and GitLab jobs receive these mounts; the selected mode controls write access. Every job routed to this farm can access each configured mount, so route only trusted repositories to it. Keep <code>CACHE_ROOT</code> and Docker data on a pool, not a FUSE user share. Leave blank when no job needs a host share.
 :end
 

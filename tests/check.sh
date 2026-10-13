@@ -27,6 +27,8 @@ while IFS= read -r file; do
   php -l "$file" >/dev/null
 done < <(find "$RUNTIME" -type f \( -name '*.php' -o -name '*.page' \) -print | sort)
 
+php tests/page-template-syntax.php "$RUNTIME"
+
 echo "== Contracts and package =="
 bash tests/config-parity.sh
 bash tests/image-validation.sh
