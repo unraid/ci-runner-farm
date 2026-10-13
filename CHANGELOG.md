@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.12.0](https://github.com/unraid/ci-runner-farm/compare/v1.11.1...v1.12.0) (2026-10-13)
+
+
+### Features
+
+* **capacity:** package the Farm-owned native controller ([#155](https://github.com/unraid/ci-runner-farm/issues/155)) ([6008f45](https://github.com/unraid/ci-runner-farm/commit/6008f4507b046e08c6dd343d7b3b2798070afbe2))
+
+
+### Bug Fixes
+
+* bound GitHub polling and restore Settings rendering ([#157](https://github.com/unraid/ci-runner-farm/issues/157)) ([a08f0f5](https://github.com/unraid/ci-runner-farm/commit/a08f0f53bdb20780d4490c89ba1dc240a3055550))
+* **capacity:** preserve controller executable mode on install ([#158](https://github.com/unraid/ci-runner-farm/issues/158)) ([5047c70](https://github.com/unraid/ci-runner-farm/commit/5047c7040ca5d35bb171cf1196979b404c92139e))
+
 ## [1.11.1](https://github.com/unraid/ci-runner-farm/compare/v1.11.0...v1.11.1) (2026-10-13)
 
 
