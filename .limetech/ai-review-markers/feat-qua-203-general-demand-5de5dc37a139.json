@@ -1,25 +1,8 @@
 {
   "disposition": "PATCH",
-  "expected_structural_delta": "Farm adds one PHP queue/sizing helper plus existing shell adapter/tests; QA adds short native observation/apply and removes superseded general reader/cache/scope; no new service, ledger or owner.",
-  "minimum_design": "Move existing general reader semantics and desired-target formula into existing Farm runtime using PHP curl_multi. Extend existing farm-capacity adapter with short native demand-observe and demand-apply actions. Farm scans before obtaining native owner observation; native apply rechecks policy digest, freshness and exact owners before sparse starts/idle withdrawal. No second broker, service or durable desired-state store. Qualify both releases first. Per host, install new Farm runtime first: missing demand-observe/apply capability fails closed for new scaling and preserves existing jobs. Install new QA provider through native lease next; it removes general queue reads, supplies short owner observation/apply, and preserves OS legacy scale. New Farm resumes automatically on its normal tick. Keep the other host serving. No automatic legacy-general fallback or dual scheduler.",
-  "outcome": "CI Runner Farm owns OVH general build queue reads and desired sizing; one shared native resource broker preserves busy jobs, physical floors and OS legacy routing.",
-  "reuse_decisions": [
-    {
-      "decision": "extend",
-      "name": "Existing Farm PHP runtime and native fleet lock",
-      "rationale": "Queue scan and sizing move to the existing controller without a new service."
-    },
-    {
-      "decision": "reuse",
-      "name": "Shared broker and fenced owner lifecycle",
-      "rationale": "Short observe/apply commands revalidate exact policy and owners; no second resource ledger."
-    },
-    {
-      "decision": "replace",
-      "name": "General QA reader and HTTP cache",
-      "rationale": "Port complete authenticated scope, pagination and cache protections into Farm; remove general reader from QA while retaining OS/QA queue primitives."
-    }
-  ],
+  "forecast_commit": "a8840550928e88ea6688d9e4d45f33b5fdb39d67",
+  "reviewed_sha": "d6be29186ed9e1391a13a210b45797ca703c0969",
   "schema": "limetech.ai-review-marker.v2",
-  "stage": "forecast"
+  "stage": "final",
+  "unresolved_proportionality_findings": []
 }
