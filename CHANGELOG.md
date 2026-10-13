@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.11.1](https://github.com/unraid/ci-runner-farm/compare/v1.11.0...v1.11.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* **autoscale:** count documented unassigned queued jobs ([#150](https://github.com/unraid/ci-runner-farm/issues/150)) ([e3e4c11](https://github.com/unraid/ci-runner-farm/commit/e3e4c110d5da6aef7181d1d78d4dabe0180a02c4))
+* **autoscale:** ignore foreign jobs before assignment guard ([#146](https://github.com/unraid/ci-runner-farm/issues/146)) ([dccba16](https://github.com/unraid/ci-runner-farm/commit/dccba164394ed69e80c41729b69cf8e0e901f93a))
+* **scaling:** restore warm builders before queue observation ([#154](https://github.com/unraid/ci-runner-farm/issues/154)) ([a006af1](https://github.com/unraid/ci-runner-farm/commit/a006af1ad794f4f8a70411b1d6128621c6331958))
+* **storage:** reclaim completed runner caches under disk pressure ([#148](https://github.com/unraid/ci-runner-farm/issues/148)) ([5e8453b](https://github.com/unraid/ci-runner-farm/commit/5e8453b456537c88e6f66c9a01f65130ab99353f))
+
 ## [1.11.0](https://github.com/unraid/ci-runner-farm/compare/v1.10.3...v1.11.0) (2026-10-13)
 
 
