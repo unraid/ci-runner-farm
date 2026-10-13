@@ -50,7 +50,7 @@ func Run(arguments []string, output io.Writer) (result error) {
 		return json.NewEncoder(output).Encode(diagnostics)
 	}
 	if config.Mode != "active" {
-		return errors.New("Farm shared capacity is closed for ownership reconciliation")
+		return errors.New("farm shared capacity is closed for ownership reconciliation")
 	}
 	return runAction(ctx, config, &controller, arguments, output)
 }
@@ -117,7 +117,7 @@ func runAction(ctx context.Context, config *hostcapacity.Config, controller *far
 
 func runDemand(ctx context.Context, config *hostcapacity.Config, controller *farmcapacity.Controller, arguments []string, bind farmcapacity.BindOwner, output io.Writer) error {
 	if len(arguments[1]) > 16384 {
-		return errors.New("Farm demand pools exceed the input bound")
+		return errors.New("farm demand pools exceed the input bound")
 	}
 	pools, err := farmcapacity.ParseDemandPools(arguments[1], &controller.Policy)
 	if err != nil {
@@ -132,7 +132,7 @@ func runDemand(ctx context.Context, config *hostcapacity.Config, controller *far
 		return json.NewEncoder(output).Encode(observation)
 	}
 	if len(arguments[2]) > 4096 {
-		return errors.New("Farm demand target exceeds the input bound")
+		return errors.New("farm demand target exceeds the input bound")
 	}
 	decoder := json.NewDecoder(bytes.NewBufferString(arguments[2]))
 	decoder.DisallowUnknownFields()
@@ -141,7 +141,7 @@ func runDemand(ctx context.Context, config *hostcapacity.Config, controller *far
 		return err
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
-		return errors.New("Farm demand target has trailing data")
+		return errors.New("farm demand target has trailing data")
 	}
 	starts, err := controller.ApplyDemandTargets(ctx, pools, records, &request, bind)
 	if err != nil {

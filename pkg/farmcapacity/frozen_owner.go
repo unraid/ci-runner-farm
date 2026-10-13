@@ -46,7 +46,7 @@ func LegacyRegistration(ctx context.Context, id, organization, name string) (run
 }
 
 func registration(ctx context.Context, id, organization, name string, legacy bool) (runnerID int64, runnerName string, returnErr error) {
-	if !idPattern.MatchString(id) || !(namePattern.MatchString(name) || (legacy && legacyNamePattern.MatchString(name))) {
+	if !idPattern.MatchString(id) || (!namePattern.MatchString(name) && (!legacy || !legacyNamePattern.MatchString(name))) {
 		return 0, "", errors.New("invalid native build identity")
 	}
 	const identityScript = `for file in .runner /home/runner/.runner /home/runner/actions-runner/.runner /actions-runner/.runner /runner/.runner; do if [ -f "$file" ]; then cat "$file"; exit; fi; done; exit 1`
@@ -81,7 +81,7 @@ func (o *FrozenOwner) container(ctx context.Context) (*Container, error) {
 	if err != nil {
 		return nil, err
 	}
-	if item.ID != o.ID || item.Name != o.Name || !item.Managed || item.Provider != githubProvider || item.Role != runnerRole || !(ownedBuildPool(item.Pool, item.Name) || (o.Legacy && ownedLegacyBuild(item))) {
+	if item.ID != o.ID || item.Name != o.Name || !item.Managed || item.Provider != githubProvider || item.Role != runnerRole || (!ownedBuildPool(item.Pool, item.Name) && (!o.Legacy || !ownedLegacyBuild(item))) {
 		return nil, errors.New("frozen native owner identity differs")
 	}
 	return item, nil

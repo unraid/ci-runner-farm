@@ -46,7 +46,7 @@ assert header[:6] == b'\x7fELF\x02\x01', 'capacity helper must be little-endian 
 assert struct.unpack_from('<H', header, 18)[0] == 62, 'capacity helper must target amd64'
 assert os.stat(sys.argv[1]).st_mode & 0o111, 'capacity helper must be executable'
 PY
-go version -m "$tmp/extracted/bin/ci-runner-capacity" | grep -qF 'go1.26.2'
+go version -m "$tmp/extracted/bin/ci-runner-capacity" | grep -qF 'go1.26.9'
 
 # Validate the actual generated package-manager action, not only its source
 # template: strict error handling must stop before the success banner when fleet

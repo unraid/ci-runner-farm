@@ -42,7 +42,7 @@ func acquire(ctx context.Context, path string, exclusive bool, host string, owne
 	}
 	canonical, err := filepath.EvalSymlinks(filepath.Dir(initial.LockPath))
 	if err != nil || canonical != filepath.Dir(initial.LockPath) {
-		return nil, errors.New("Farm capacity lock parent is symlinked")
+		return nil, errors.New("farm capacity lock parent is symlinked")
 	}
 	parent, err := os.Stat(canonical)
 	if err != nil {
@@ -50,7 +50,7 @@ func acquire(ctx context.Context, path string, exclusive bool, host string, owne
 	}
 	parentStat, ok := parent.Sys().(*syscall.Stat_t)
 	if !ok || parentStat.Uid != owner || !parent.IsDir() || parent.Mode().Perm()&0o022 != 0 {
-		return nil, errors.New("Farm capacity lock parent is not protected from replacement")
+		return nil, errors.New("farm capacity lock parent is not protected from replacement")
 	}
 	fd, err := unix.Open(initial.LockPath, unix.O_RDWR|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0o600)
 	if err != nil {
@@ -69,7 +69,7 @@ func acquire(ctx context.Context, path string, exclusive bool, host string, owne
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || stat.Uid != owner || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
-		return nil, errors.New("Farm capacity lock is not a private root-owned regular file")
+		return nil, errors.New("farm capacity lock is not a private root-owned regular file")
 	}
 	operation := unix.LOCK_SH
 	if exclusive {
@@ -96,11 +96,11 @@ func acquire(ctx context.Context, path string, exclusive bool, host string, owne
 		return nil, err
 	}
 	if current.LockPath != initial.LockPath || current.Epoch != initial.Epoch {
-		return nil, errors.New("Farm capacity ownership changed while acquiring its lock")
+		return nil, errors.New("farm capacity ownership changed while acquiring its lock")
 	}
 	observed, err := os.Lstat(current.LockPath)
 	if err != nil || !os.SameFile(info, observed) {
-		return nil, errors.New("Farm capacity lock identity changed")
+		return nil, errors.New("farm capacity lock identity changed")
 	}
 	keep = true
 	return &Lease{Config: current, file: file}, nil

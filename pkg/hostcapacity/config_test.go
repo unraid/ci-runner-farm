@@ -108,11 +108,12 @@ func TestHostConfigRejectsUnsafeFilesAndAmbiguousJSON(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if mode == "oversize" {
+				switch mode {
+				case "oversize":
 					data = []byte(strings.Repeat(" ", 65537))
-				} else if mode == "trailing" {
+				case "trailing":
 					data = append(data, []byte("{}")...)
-				} else {
+				default:
 					data = []byte(strings.TrimSuffix(string(data), "}") + `,"unknown":true}`)
 				}
 				if err := os.WriteFile(path, data, 0o600); err != nil {

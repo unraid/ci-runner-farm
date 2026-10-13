@@ -30,11 +30,11 @@ type diagnosticIdentity struct {
 // public registration from the exact exited container's native runner settings.
 // Live, unknown, ambiguous and foreign owners never use this recovery path.
 func exitedRegistration(ctx context.Context, id, organization, name string) (runnerID int64, runnerName string, returnErr error) {
-	if !idPattern.MatchString(id) || !(namePattern.MatchString(name) || legacyNamePattern.MatchString(name)) {
+	if !idPattern.MatchString(id) || (!namePattern.MatchString(name) && !legacyNamePattern.MatchString(name)) {
 		return 0, "", errors.New("invalid exited native owner identity")
 	}
 	item, err := (NativeDocker{}).Inspect(ctx, id)
-	if err != nil || item.ID != id || item.Name != name || !item.Exited || !item.Managed || item.Provider != githubProvider || item.Role != runnerRole || !(ownedBuildPool(item.Pool, item.Name) || ownedLegacyBuild(item)) {
+	if err != nil || item.ID != id || item.Name != name || !item.Exited || !item.Managed || item.Provider != githubProvider || item.Role != runnerRole || (!ownedBuildPool(item.Pool, item.Name) && !ownedLegacyBuild(item)) {
 		return 0, "", errors.New("cannot attest exited native build registration")
 	}
 	// #nosec G204 -- immutable ID is restricted to 64 hexadecimal characters above.

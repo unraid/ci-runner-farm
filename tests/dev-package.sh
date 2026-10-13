@@ -178,7 +178,7 @@ assert header[:6] == b'\x7fELF\x02\x01'
 assert struct.unpack_from('<H', header, 18)[0] == 62
 assert os.stat(sys.argv[1]).st_mode & 0o111
 PY
-go version -m "$extract_dir/bin/ci-runner-capacity" | grep -qF 'go1.26.2'
+go version -m "$extract_dir/bin/ci-runner-capacity" | grep -qF 'go1.26.9'
 
 # A checkout made with umask 0002 can contain group-writable files. The Linux
 # check environment uses umask 0022, so the renderer must preserve source modes

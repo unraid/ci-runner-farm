@@ -31,7 +31,7 @@ func (c *Controller) withdraw(ctx context.Context, name, id string, owner shared
 	if !exists || grant.Fence != owned.Fence {
 		return sharedcapacity.ErrFenceMismatch
 	}
-	if !(retirement && owned.Retiring) && !owned.Maintenance && sharedcapacity.ProtectsMinimum(&snapshot, grant.Request) && (owned.Withdrawal == nil || owned.Withdrawal.Phase == "") {
+	if (!retirement || !owned.Retiring) && !owned.Maintenance && sharedcapacity.ProtectsMinimum(&snapshot, grant.Request) && (owned.Withdrawal == nil || owned.Withdrawal.Phase == "") {
 		item, inspectErr := c.Docker.Inspect(ctx, id)
 		if inspectErr != nil {
 			return inspectErr
