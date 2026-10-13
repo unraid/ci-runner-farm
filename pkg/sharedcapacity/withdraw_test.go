@@ -172,3 +172,71 @@ func TestWithdrawalRemoteBusyAfterIntentRetainsFrozenOwner(t *testing.T) {
 		t.Fatal("ambiguous remote assignment was reported as resumed or changed ownership", owner, withdrawal, saves, err)
 	}
 }
+
+type terminatedWithdrawalOwner struct {
+	*fakeWithdrawalOwner
+	terminated      bool
+	terminalErr     error
+	afterProof      func()
+	terminalRemoves int
+}
+
+func (o *terminatedWithdrawalOwner) Terminated(context.Context) (bool, error) {
+	if o.afterProof != nil {
+		o.afterProof()
+	}
+	return o.terminated, o.terminalErr
+}
+
+func (o *terminatedWithdrawalOwner) RemoveTerminated(ctx context.Context) error {
+	o.terminalRemoves++
+	return o.RemoveFrozen(ctx)
+}
+
+func TestTerminatedWithdrawalDoesNotWaitForListenerPickup(t *testing.T) {
+	owner := &terminatedWithdrawalOwner{fakeWithdrawalOwner: &fakeWithdrawalOwner{}, terminated: true}
+	withdrawal := withdrawalFixture()
+	now := time.Now().UTC()
+	if err := AdvanceWithdrawal(t.Context(), &withdrawal, owner, now, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if !owner.removed || owner.terminalRemoves != 1 || withdrawal.Phase != withdrawRemoved || !withdrawal.WithdrawnAt.Equal(now) {
+		t.Fatal("completed owner did not use exact terminal removal and original timestamp")
+	}
+}
+
+func TestTerminatedWithdrawalRetainsUnknownAndRacingOwners(t *testing.T) {
+	for _, mode := range []string{"running", "unknown", "worker-race", "remote-race", "remote-busy"} {
+		t.Run(mode, func(t *testing.T) {
+			owner := &terminatedWithdrawalOwner{fakeWithdrawalOwner: &fakeWithdrawalOwner{}, terminated: true}
+			switch mode {
+			case "running":
+				owner.terminated = false
+			case "unknown":
+				owner.terminalErr = errors.New("unknown terminal identity")
+			case "worker-race":
+				owner.afterProof = func() { owner.localBusy = true }
+			case "remote-race":
+				owner.afterProof = func() { owner.remoteMissing = false }
+			case "remote-busy":
+				owner.remoteBusy = true
+			}
+			withdrawal := withdrawalFixture()
+			if err := AdvanceWithdrawal(t.Context(), &withdrawal, owner, time.Now(), func() error { return nil }); err == nil || owner.removed || owner.terminalRemoves != 0 {
+				t.Fatal("uncertain or busy owner reached terminal removal")
+			}
+		})
+	}
+}
+
+func TestTerminatedWithdrawalRecoversUncertainRemovalWithoutASecondDelete(t *testing.T) {
+	owner := &terminatedWithdrawalOwner{fakeWithdrawalOwner: &fakeWithdrawalOwner{removeUncertain: true}, terminated: true}
+	withdrawal := withdrawalFixture()
+	now := time.Now().UTC()
+	if err := AdvanceWithdrawal(t.Context(), &withdrawal, owner, now, func() error { return nil }); err == nil || withdrawal.Phase != withdrawRemoveIntent {
+		t.Fatal("uncertain terminal removal lost its durable intent")
+	}
+	if err := AdvanceWithdrawal(t.Context(), &withdrawal, owner, now, func() error { return nil }); err != nil || withdrawal.Phase != withdrawRemoved || owner.terminalRemoves != 1 {
+		t.Fatal("terminal absence was not recovered exactly once")
+	}
+}
