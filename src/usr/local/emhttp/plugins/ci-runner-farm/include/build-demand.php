@@ -285,6 +285,15 @@ class BuildDemand
         return ['queueStartedAt' => (int)$this->started, 'counts' => $counts, 'organization' => $org];
     }
 
+    // Warm recovery uses only the protected profile. It never infers an empty
+    // queue or adds the unknown/busy count repeatedly during an API outage.
+    public static function warmTargets(string $records): array
+    {
+        $targets = [];
+        foreach (self::pools($records) as $pool) $targets[$pool['id']] = max($pool['minimum'], $pool['idle']);
+        return ['schema' => 1, 'targets' => $targets];
+    }
+
     public static function targets(string $records, array $scan, array $observation): array
     {
         $pools = self::pools($records); $now = time(); $start = $scan['queueStartedAt'] ?? null; $observed = $observation['observedAt'] ?? null;
@@ -316,6 +325,8 @@ if (realpath($_SERVER['SCRIPT_FILENAME'] ?? '') === __FILE__) {
             $reader = new BuildDemand($argv[3] . '/build-demand-http.json', $scope['token'], $scope['queue-token']);
             try { $result = $reader->queue($scope, BuildDemand::pools($argv[4])); }
             finally { $reader->save(); }
+        } elseif (($argv[1] ?? '') === 'warm-targets' && count($argv) === 3) {
+            $result = BuildDemand::warmTargets($argv[2]);
         } elseif (($argv[1] ?? '') === 'targets' && count($argv) === 5) {
             $result = BuildDemand::targets($argv[2], BuildDemand::decode($argv[3]), BuildDemand::decode($argv[4]));
         } else throw new RuntimeException('invalid Farm demand command');

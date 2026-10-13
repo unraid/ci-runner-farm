@@ -817,6 +817,9 @@ autoscale_tick() {
   if pool_mode_enabled; then
     validate_runner_mode || return 1
     pool_activate build || return 1
+    # Restore the static warm total before network scans or owned withdrawal
+    # settlement. The normal start still requires the sole broker's admission.
+    restore_warm_capacity || return 1
     shared_capacity_poison_scan || err "shared capacity: poison scan unavailable; preserving existing owner intents"
     if shared_capacity_call rebalance; then :; else
       # Unknown recovery retains its charged grant. Independent starts still
@@ -2097,11 +2100,22 @@ pool_start_target() {
   printf '%s\n' "$target"
 }
 
-# One complete native plan owns both idle retirement and selected sparse starts.
-# Failure returns before creating any new runner; stale plans are never cached.
+# Static warm restoration is additive and independent of queue evidence.
+restore_warm_capacity() {
+  local targets plan
+  [ "$QUEUED_POOLS" = true ] || return 0
+  printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)' || return 0
+  targets="$(php "$SCRIPT_DIR/build-demand.php" warm-targets "$RUNNER_POOLS")" || return 1
+  plan="$(shared_capacity_call demand-warm "$RUNNER_POOLS" "$targets")" \
+    || { err "native warm recovery unavailable; preserving owners"; return 1; }
+  start_native_capacity_plan "$plan"
+}
+
+# Fresh queue evidence owns burst starts and idle retirement after warm recovery.
 start_queued_capacity() {
-  local plan pool idx failed=0 rc scan observation targets
+  local plan scan observation targets
   if printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'; then
+    restore_warm_capacity || return 1
     # Read GitHub before acquiring a short native configuration lease.
     # A missing native capability during rollout preserves existing owners.
     scan="$(php "$SCRIPT_DIR/build-demand.php" scan "$CFGDIR" "$RUNDIR" "$RUNNER_POOLS")" || return 1
@@ -2111,6 +2125,11 @@ start_queued_capacity() {
   else
     plan="$(shared_capacity_call scale "$RUNNER_POOLS")" || { err "queued capacity unavailable; preserving owners"; return 1; }
   fi
+  start_native_capacity_plan "$plan"
+}
+
+start_native_capacity_plan() {
+  local plan="$1" pool idx failed=0 rc
   while IFS='|' read -r pool idx; do
     [ -n "$pool" ] || continue
     case "$pool" in build|build-small|build-large) ;; *) return 1 ;; esac

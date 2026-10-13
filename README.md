@@ -620,8 +620,15 @@ Queued native pools may opt into `QUEUED_POOLS="true"` together with
 `ELASTIC_POOLS="true"` and shared named-pool admission. A compatible
 qa-vm-service native capacity owner is required. It returns exact sparse slots
 from a fresh complete job snapshot and retires idle excess through fenced
-withdrawal. No successful snapshot means no demand-based starts or retirement.
-The standard floor stays warm; zero minimum/headroom lets other classes stop.
+withdrawal. No successful snapshot means no queue-driven burst starts or retirement.
+Before queue scanning, Farm independently restores each class's static warm
+total, `max(minimum, idle)`, through the native additive `demand-warm` plan.
+This path preserves all existing owners and pending ages, prefers old pending
+slots, and still requires normal broker and measured-memory admission for each
+start. It never adds busy/unknown counts repeatedly during an API outage.
+GitHub must be reachable to complete registration; unknown native outcomes
+remain fenced for the next owned retry. A zero minimum and idle target adds
+no warm capacity. Legacy OS and nonqueued behavior remains unchanged.
 GitHub omits requested groups from queued jobs, so uncertain label demand adds
 at most one spare per class per tick; successful pickups drive further growth.
 

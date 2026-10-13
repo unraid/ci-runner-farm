@@ -44,6 +44,7 @@ pool_base_refresh
 mode=good
 php() {
  case "$2" in
+ warm-targets) printf '%s\n' warm-targets >> "$tmp/order"; printf '{}';;
  scan) printf '%s\n' scan >> "$tmp/order"; [ "$mode" != scan-fails ] || return 1; printf '{}';;
  targets) printf '%s\n' targets >> "$tmp/order"; [ "$mode" != targets-fails ] || return 1; printf '{}';;
  *) fail 'unexpected PHP action';;
@@ -51,16 +52,22 @@ php() {
 }
 shared_capacity_call() {
  case "$1" in
+ demand-warm) printf '%s\n' warm >> "$tmp/order"; [ "$mode" != capability-missing ] || return 1; printf 'build|2\n';;
  demand-observe) printf '%s\n' observe >> "$tmp/order"; [ "$mode" != capability-missing ] || return 1; printf '{}';;
  demand-apply) printf '%s\n' apply >> "$tmp/order"; [ "$mode" != apply-unknown ] || return 1; printf 'build|1\n';;
  *) fail 'general demand fell back to QA scale';;
  esac
 }
 start_configured_capacity || fail 'Farm general plan failed'
-[ "$(cat "$tmp/order")" = $'scan\nobserve\ntargets\napply' ] || fail 'network scan held native configuration lease'
+[ "$(cat "$tmp/order")" = $'warm-targets\nwarm\nscan\nobserve\ntargets\napply' ] || fail 'warm recovery or queue lease order differs'
 rm "$tmp/starts"
 for mode in scan-fails capability-missing targets-fails apply-unknown; do
  if start_configured_capacity; then fail "accepted $mode"; fi
- [ ! -e "$tmp/starts" ] || fail "started after $mode"
+ if [ "$mode" = capability-missing ]; then
+  [ ! -e "$tmp/starts" ] || fail "started after unknown native capability"
+ else
+  [ "$(cat "$tmp/starts")" = ci-runner-build-2 ] || fail "failed queue evidence changed warm-only effects"
+  rm "$tmp/starts"
+ fi
 done
 printf 'queued-pools: Farm owns general queue sizing; staged capability/unknown evidence preserves owners\n'

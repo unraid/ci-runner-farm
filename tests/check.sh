@@ -49,6 +49,7 @@ bash tests/shared-capacity.sh
 bash tests/shared-observation.sh
 bash tests/elastic-pools.sh
 bash tests/queued-pools.sh
+bash tests/warm-recovery.sh
 php tests/build-demand.php
 bash tests/shared-host-budget.sh
 bash tests/numeric-config.sh

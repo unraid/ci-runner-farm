@@ -70,6 +70,8 @@ class PageFixture extends BuildDemand {
 }
 $cache = sys_get_temp_dir() . '/farm-demand-' . bin2hex(random_bytes(8));
 try {
+    same(BuildDemand::warmTargets(RECORDS), ['schema'=>1,'targets'=>['build-small'=>0,'build'=>10]]);
+    same(BuildDemand::warmTargets(str_replace('|1|0|10|0|2|4g|', '|1|0|10|1|2|4g|', RECORDS))['targets'], ['build-small'=>1,'build'=>10]);
     $paged = new PageFixture($cache,'g','q');
     $paged->responses=[1=>['total_count'=>101,'jobs'=>array_fill(0,100,['id'=>1])],2=>['total_count'=>101,'jobs'=>[['id'=>101]]]];
     $visited=0;
