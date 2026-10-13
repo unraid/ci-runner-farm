@@ -1,15 +1,8 @@
 {
   "disposition": "PATCH",
-  "expected_structural_delta": "Zero new owners, representations, layers, runtime policies, or lifecycle entrypoints. Change one existing queue predicate and existing test fixtures.",
-  "minimum_design": "Use the existing schema validation and count documented null runner IDs alongside existing integer zero after identity, queued status, and pool-label checks.",
-  "outcome": "A complete authenticated current-attempt GitHub queue with an explicitly unassigned matching job produces bounded builder demand instead of aborting fleet reconciliation.",
-  "reuse_decisions": [
-    {
-      "decision": "extend",
-      "name": "BuildDemand current-attempt queue reader",
-      "rationale": "GitHub documents explicit null as unassigned. Reuse all existing trust, identity, pagination, cache, freshness, and label guards."
-    }
-  ],
+  "forecast_commit": "a4cef436a1814b62c4a8f12f92e9658ba992a14e",
+  "reviewed_sha": "76cf9359435cc3c1cf29941b0bd0d147d5bfd7d3",
   "schema": "limetech.ai-review-marker.v2",
-  "stage": "forecast"
+  "stage": "final",
+  "unresolved_proportionality_findings": []
 }
