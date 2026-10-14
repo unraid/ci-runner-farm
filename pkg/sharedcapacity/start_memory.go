@@ -38,12 +38,13 @@ func pendingStartMemory(snapshot *Snapshot, exclude string) uint64 {
 // grant until its lifecycle owner proves that execution is already running.
 func migrateSharedStarts(snapshot *Snapshot) error {
 	if !snapshot.Policy.SharedMemoryHeadroom {
-		if snapshot.Schema == sharedMemoryLedgerSchema {
+		if sharedMemorySchema(snapshot.Schema) {
 			return errors.New("shared headroom ledger cannot downgrade its protocol")
 		}
 		return nil
 	}
-	if snapshot.Schema == sharedMemoryLedgerSchema && snapshot.Starts != nil {
+	if sharedMemorySchema(snapshot.Schema) && snapshot.Starts != nil {
+		snapshot.Schema = sharedMemoryLedgerSchema
 		return nil
 	}
 	snapshot.Schema = sharedMemoryLedgerSchema
@@ -61,7 +62,7 @@ func validateStartReservations(snapshot *Snapshot) error {
 		}
 		return nil
 	}
-	if snapshot.Schema != sharedMemoryLedgerSchema || snapshot.Starts == nil || len(snapshot.Starts) != len(snapshot.Grants) {
+	if !sharedMemorySchema(snapshot.Schema) || snapshot.Starts == nil || len(snapshot.Starts) != len(snapshot.Grants) {
 		return errors.New("shared start reservation inventory differs from grants")
 	}
 	for id, start := range snapshot.Starts {

@@ -73,7 +73,7 @@ func missingFloorMemory(snapshot *Snapshot) uint64 {
 }
 
 func validateBuildLoans(snapshot *Snapshot) error {
-	if snapshot.Schema != buildMemoryLedgerSchema && snapshot.Schema != sharedMemoryLedgerSchema {
+	if snapshot.Schema != buildMemoryLedgerSchema && !sharedMemorySchema(snapshot.Schema) {
 		return nil
 	}
 	reserve := missingFloorMemory(snapshot)
@@ -82,7 +82,7 @@ func validateBuildLoans(snapshot *Snapshot) error {
 		return errors.New("physical charges exceed the budget or guaranteed floor reserves")
 	}
 	borrowed := borrowedMemory(snapshot)
-	if borrowed > 0 && (snapshot.Policy.BuildMemoryOvercommit == nil || borrowed > snapshot.Policy.BuildMemoryOvercommit.AdditionalMiB) {
+	if borrowed > 0 && (snapshot.Policy.BuildMemoryOvercommit == nil || (snapshot.Schema != sharedMemoryLedgerSchema && borrowed > snapshot.Policy.BuildMemoryOvercommit.AdditionalMiB)) {
 		return errors.New("borrowed build memory exceeds its allowance")
 	}
 	return nil
@@ -114,7 +114,7 @@ func (b *Broker) admissionFunding(snapshot *Snapshot, request Request) (borrowed
 // v5 makes older writers reject this representation rather than ignore it.
 func migrateBuildLoans(snapshot *Snapshot) error {
 	extra := snapshot.Policy.BuildMemoryOvercommit
-	if extra == nil || snapshot.Schema == buildMemoryLedgerSchema || snapshot.Schema == sharedMemoryLedgerSchema {
+	if extra == nil || snapshot.Schema == buildMemoryLedgerSchema || sharedMemorySchema(snapshot.Schema) {
 		return nil
 	}
 	snapshot.Schema = buildMemoryLedgerSchema
@@ -201,8 +201,20 @@ func memoryReadyObserved(snapshot *Snapshot, request Request, exclude string, st
 		return false
 	}
 	reserved := pendingStartMemory(snapshot, exclude)
-	return status.AvailableMiB != nil && *status.AvailableMiB >= extra.MinimumAvailableMiB &&
-		*status.AvailableMiB-extra.MinimumAvailableMiB >= reserved && *status.AvailableMiB-extra.MinimumAvailableMiB-reserved >= cost.MemoryMiB
+	reserve := extra.MinimumAvailableMiB
+	if snapshot.Policy.SharedMemoryHeadroom {
+		floors := missingFloorMemory(snapshot)
+		pool := snapshot.Policy.Pools[request.Pool]
+		if countsAsPhysicalFloor(snapshot, request, cost) && minimumCounts(snapshot)[request.Pool] < pool.Minimum {
+			floors -= pool.Cost.MemoryMiB
+		}
+		if reserve > ^uint64(0)-floors {
+			return false
+		}
+		reserve += floors
+	}
+	return status.AvailableMiB != nil && *status.AvailableMiB >= reserve &&
+		*status.AvailableMiB-reserve >= reserved && *status.AvailableMiB-reserve-reserved >= cost.MemoryMiB
 }
 
 func restoresBuildFloor(snapshot *Snapshot, request Request) bool {

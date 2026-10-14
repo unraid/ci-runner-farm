@@ -24,14 +24,15 @@ var ErrPolicyChanged = errors.New("shared capacity policy changed; reconcile the
 var ErrFenceMismatch = errors.New("shared capacity grant fence differs")
 
 const (
-	hostReserveGuestPool          = "qa-guest"
-	ledgerSchema                  = "shared-capacity-ledger/v1"
-	ownedWaitLedgerSchema         = "shared-capacity-ledger/v2"
-	softCPULedgerSchema           = "shared-capacity-ledger/v3"
-	legacyBuildMemoryLedgerSchema = "shared-capacity-ledger/v4"
-	buildMemoryLedgerSchema       = "shared-capacity-ledger/v5"
-	sharedMemoryLedgerSchema      = "shared-capacity-ledger/v6"
-	reasonPriority                = "priority"
+	hostReserveGuestPool           = "qa-guest"
+	ledgerSchema                   = "shared-capacity-ledger/v1"
+	ownedWaitLedgerSchema          = "shared-capacity-ledger/v2"
+	softCPULedgerSchema            = "shared-capacity-ledger/v3"
+	legacyBuildMemoryLedgerSchema  = "shared-capacity-ledger/v4"
+	buildMemoryLedgerSchema        = "shared-capacity-ledger/v5"
+	sharedMemoryLedgerSchema       = "shared-capacity-ledger/v7"
+	legacySharedMemoryLedgerSchema = "shared-capacity-ledger/v6"
+	reasonPriority                 = "priority"
 )
 
 // Request identifies a workload's admission intent. IDs are stable across retries
@@ -314,7 +315,15 @@ func validateSnapshot(snapshot *Snapshot) error {
 	remaining := snapshot.Policy.commitmentBudget()
 	nonBuildRemaining := snapshot.Policy.Budget.MemoryMiB
 	counts := map[string]uint32{}
+	var totalMemory uint64
 	for id, grant := range snapshot.Grants {
+		if totalMemory > ^uint64(0)-grant.Cost.MemoryMiB {
+			return errors.New("shared capacity memory accounting overflow")
+		}
+		totalMemory += grant.Cost.MemoryMiB
+		if snapshot.Schema == sharedMemoryLedgerSchema {
+			remaining.MemoryMiB = snapshot.Policy.Budget.MemoryMiB
+		}
 		pool, exists := snapshot.Policy.Pools[grant.Pool]
 		if id != grant.ID || !exists || !validGrant(snapshot, &grant, remaining) {
 			return errors.New("shared capacity ledger grant is invalid")
@@ -350,14 +359,14 @@ func validateSnapshot(snapshot *Snapshot) error {
 }
 
 func validPolicySchema(snapshot *Snapshot) bool {
-	return supportedLedgerSchema(snapshot.Schema) && (snapshot.Policy.SharedMemoryHeadroom == (snapshot.Schema == sharedMemoryLedgerSchema)) &&
-		(!snapshot.Policy.SoftCPU() || snapshot.Schema == softCPULedgerSchema || snapshot.Schema == legacyBuildMemoryLedgerSchema || snapshot.Schema == buildMemoryLedgerSchema || snapshot.Schema == sharedMemoryLedgerSchema) &&
-		(snapshot.Policy.BuildMemoryOvercommit == nil || snapshot.Schema == legacyBuildMemoryLedgerSchema || snapshot.Schema == buildMemoryLedgerSchema || snapshot.Schema == sharedMemoryLedgerSchema)
+	return supportedLedgerSchema(snapshot.Schema) && (snapshot.Policy.SharedMemoryHeadroom == (sharedMemorySchema(snapshot.Schema))) &&
+		(!snapshot.Policy.SoftCPU() || snapshot.Schema == softCPULedgerSchema || snapshot.Schema == legacyBuildMemoryLedgerSchema || snapshot.Schema == buildMemoryLedgerSchema || sharedMemorySchema(snapshot.Schema)) &&
+		(snapshot.Policy.BuildMemoryOvercommit == nil || snapshot.Schema == legacyBuildMemoryLedgerSchema || snapshot.Schema == buildMemoryLedgerSchema || sharedMemorySchema(snapshot.Schema))
 }
 
 func validGrant(snapshot *Snapshot, grant *Grant, remaining Resources) bool {
 	cost, err := chargedRequestCost(&snapshot.Policy, grant)
-	if grant.BorrowedMemoryMiB > 0 && ((snapshot.Schema != buildMemoryLedgerSchema && snapshot.Schema != sharedMemoryLedgerSchema) || (grant.Pool != buildPool && !snapshot.Policy.SharedMemoryHeadroom) ||
+	if grant.BorrowedMemoryMiB > 0 && ((snapshot.Schema != buildMemoryLedgerSchema && !sharedMemorySchema(snapshot.Schema)) || (grant.Pool != buildPool && !snapshot.Policy.SharedMemoryHeadroom) ||
 		snapshot.Policy.BuildMemoryOvercommit == nil || grant.BorrowedMemoryMiB > grant.Cost.MemoryMiB ||
 		(len(snapshot.Policy.Pools[grant.Pool].MinimumRequestIDs) > 0 && snapshot.Policy.Pools[grant.Pool].CountsTowardMinimum(grant.ID))) {
 		return false
@@ -567,7 +576,7 @@ func admissionLoan(snapshot *Snapshot, request Request, backfill bool) (uint64, 
 	extra := snapshot.Policy.BuildMemoryOvercommit
 	alreadyBorrowed := borrowedMemory(snapshot)
 	if (target != buildPool && !snapshot.Policy.SharedMemoryHeadroom) || restoresFloor || (len(pool.MinimumRequestIDs) > 0 && pool.CountsTowardMinimum(request.ID)) ||
-		extra == nil || alreadyBorrowed > extra.AdditionalMiB || borrowed > extra.AdditionalMiB-alreadyBorrowed {
+		extra == nil || (!snapshot.Policy.SharedMemoryHeadroom && (alreadyBorrowed > extra.AdditionalMiB || borrowed > extra.AdditionalMiB-alreadyBorrowed)) {
 		return 0, false
 	}
 	return borrowed, true
@@ -688,7 +697,7 @@ func (b *Broker) CancelPending(policy *Policy, expected *Pending, attest func() 
 }
 
 func supportedLedgerSchema(schema string) bool {
-	return schema == ledgerSchema || schema == ownedWaitLedgerSchema || schema == softCPULedgerSchema || schema == legacyBuildMemoryLedgerSchema || schema == buildMemoryLedgerSchema || schema == sharedMemoryLedgerSchema
+	return schema == ledgerSchema || schema == ownedWaitLedgerSchema || schema == softCPULedgerSchema || schema == legacyBuildMemoryLedgerSchema || schema == buildMemoryLedgerSchema || sharedMemorySchema(schema)
 }
 
 // SuspendPending parks only an exact pre-start wait after stopped proof under
@@ -735,15 +744,15 @@ func (b *Broker) ReconcilePolicy(previous, revised *Policy) error {
 		return err
 	}
 	err = b.update(previous, false, func(snapshot *Snapshot) error {
-		if snapshot.Schema == sharedMemoryLedgerSchema && !revised.SharedMemoryHeadroom {
+		if sharedMemorySchema(snapshot.Schema) && !revised.SharedMemoryHeadroom {
 			return errors.New("shared headroom ledger cannot downgrade its protocol")
 		}
 		snapshot.Policy, snapshot.PolicyDigest = *revised, digest
-		if revised.SoftCPU() && snapshot.Schema != buildMemoryLedgerSchema && snapshot.Schema != sharedMemoryLedgerSchema {
+		if revised.SoftCPU() && snapshot.Schema != buildMemoryLedgerSchema && !sharedMemorySchema(snapshot.Schema) {
 			snapshot.Schema = softCPULedgerSchema
 		}
 		if revised.BuildMemoryOvercommit != nil {
-			if snapshot.Schema != buildMemoryLedgerSchema && snapshot.Schema != sharedMemoryLedgerSchema {
+			if snapshot.Schema != buildMemoryLedgerSchema && !sharedMemorySchema(snapshot.Schema) {
 				snapshot.Schema = legacyBuildMemoryLedgerSchema
 			}
 			if err := migrateBuildLoans(snapshot); err != nil {
@@ -776,15 +785,15 @@ func (b *Broker) CheckPolicyChange(previous, revised *Policy) error {
 	if err != nil {
 		return err
 	}
-	if snapshot.Schema == sharedMemoryLedgerSchema && !revised.SharedMemoryHeadroom {
+	if sharedMemorySchema(snapshot.Schema) && !revised.SharedMemoryHeadroom {
 		return errors.New("shared headroom ledger cannot downgrade its protocol")
 	}
 	snapshot.Policy, snapshot.PolicyDigest = *revised, digest
-	if revised.SoftCPU() && snapshot.Schema != buildMemoryLedgerSchema && snapshot.Schema != sharedMemoryLedgerSchema {
+	if revised.SoftCPU() && snapshot.Schema != buildMemoryLedgerSchema && !sharedMemorySchema(snapshot.Schema) {
 		snapshot.Schema = softCPULedgerSchema
 	}
 	if revised.BuildMemoryOvercommit != nil {
-		if snapshot.Schema != buildMemoryLedgerSchema && snapshot.Schema != sharedMemoryLedgerSchema {
+		if snapshot.Schema != buildMemoryLedgerSchema && !sharedMemorySchema(snapshot.Schema) {
 			snapshot.Schema = legacyBuildMemoryLedgerSchema
 		}
 		if err := migrateBuildLoans(&snapshot); err != nil {
@@ -808,8 +817,13 @@ func validateOwnedWait(schema string, pending *Pending) error {
 	if pending.Owner == nil && !pending.Suspended {
 		return nil
 	}
-	if (schema != ownedWaitLedgerSchema && schema != softCPULedgerSchema && schema != legacyBuildMemoryLedgerSchema && schema != buildMemoryLedgerSchema && schema != sharedMemoryLedgerSchema) || !pending.Owner.valid() || pending.Revision == 0 {
+	if (schema != ownedWaitLedgerSchema && schema != softCPULedgerSchema && schema != legacyBuildMemoryLedgerSchema && schema != buildMemoryLedgerSchema && !sharedMemorySchema(schema)) || !pending.Owner.valid() || pending.Revision == 0 {
 		return errors.New("shared capacity owned wait is invalid")
 	}
 	return nil
+}
+
+// v6 is readable only for an identity-preserving upgrade to resident admission.
+func sharedMemorySchema(schema string) bool {
+	return schema == sharedMemoryLedgerSchema || schema == legacySharedMemoryLedgerSchema
 }

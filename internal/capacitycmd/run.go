@@ -20,7 +20,7 @@ import (
 // Run requires the native parent's fleet lock for every owner mutation.
 func Run(arguments []string, output io.Writer) (result error) {
 	if len(arguments) == 1 && arguments[0] == "capabilities" {
-		return json.NewEncoder(output).Encode([]string{"fenced-start-memory-v6", "standalone-owner-init-v1"})
+		return json.NewEncoder(output).Encode([]string{"fenced-start-memory-v6", "resident-memory-v7", "standalone-owner-init-v1"})
 	}
 	if len(arguments) == 1 && arguments[0] == "version" {
 		_, err := fmt.Fprintln(output, "ci-runner-capacity protocol 1")

@@ -640,12 +640,16 @@ contract under its existing shared lease, without opening credentials or the led
 
 The optional host policy field `sharedMemoryHeadroom` enables one physical
 headroom guard for builders and declared consumers. It requires soft CPU
-admission and the existing bounded memory allowance. It does not increase
-that allowance, change workload hard limits or rewrite existing release fences.
+admission and a positive host memory reserve. Running workloads use measured
+resident memory instead of a nominal aggregate commitment allowance. The legacy
+`additionalMiB` field remains for policy and accounting compatibility but does not
+cap admission in this mode. Workload hard limits, class maxima, protected floors
+and release fences remain enforced.
 Ordinary standalone Farm policies do not enable this mode or require QA.
 
 Every new grant atomically reserves its full start cost against a fresh native
-memory sample, after the configured host reserve and other unfinished starts.
+memory sample, after the configured host reserve, unfilled guaranteed floors
+and other unfinished starts.
 The sample must be at most five seconds old. Missing, stale, future or failed
 samples block new starts. A fitting request can use stranded headroom when an
 older request cannot fit; the older request retains its identity and queue age.
@@ -658,11 +662,14 @@ new nonce; an old acknowledgement cannot clear its charge. Exact fenced
 stopped-owner release still removes both the grant and its start reservation.
 Farm confirms builders after registration and routing persistence.
 
-This mode uses ledger protocol v6. Migration initially reserves every existing
+This mode uses ledger protocol v7. Existing v6 start nonces, confirmations and
+pending ages survive migration unchanged. Migration initially reserves every existing
 grant until its owner proves execution is already running. Older writers are
 rejected. All participants must support the start protocol before the ownership
 handoff enables it; installing this SDK alone does not activate the policy.
-The native CLI reports `fenced-start-memory-v6` through `capabilities`.
+The native CLI reports `resident-memory-v7` through `capabilities`. Diagnostics
+report `memoryAdmission: "resident"` and the actual available memory observation;
+`commitmentRemaining` is legacy accounting, not the admission ceiling.
 
 ### Elastic general build classes
 

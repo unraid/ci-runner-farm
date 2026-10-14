@@ -31,6 +31,7 @@ var ErrDiagnosticUnsafe = errors.New("shared capacity diagnostic input is unsafe
 // Diagnostics is a point-in-time observation, never a grant or stopped-workload proof.
 // Fence hashes correlate allocations without disclosing release capabilities.
 type Diagnostics struct {
+	MemoryAdmission     string                 `json:"memoryAdmission"`
 	BuildMemory         *BuildMemoryDiagnostic `json:"buildMemory,omitempty"`
 	Schema              string                 `json:"schema"`
 	ObservedAt          time.Time              `json:"observedAt"`
@@ -43,13 +44,14 @@ type Diagnostics struct {
 	PhysicalMemoryMiB   uint64                 `json:"physicalMemoryMiB"`
 	BorrowedMemoryMiB   uint64                 `json:"borrowedMemoryMiB"`
 	MemoryOvercommitted bool                   `json:"memoryOvercommitted"`
-	CommitmentRemaining Resources              `json:"commitmentRemaining"`
-	AllocatedVCPUs      uint64                 `json:"allocatedVcpus"`
-	CPUOvercommitted    bool                   `json:"cpuOvercommitted"`
-	Pools               []PoolDiagnostic       `json:"pools"`
-	Grants              []GrantDiagnostic      `json:"grants"`
-	Pending             []PendingDiagnostic    `json:"pending"`
-	QueueHead           string                 `json:"queueHead,omitempty"`
+	// CommitmentRemaining is legacy nominal accounting, not the resident admission limit.
+	CommitmentRemaining Resources           `json:"commitmentRemaining"`
+	AllocatedVCPUs      uint64              `json:"allocatedVcpus"`
+	CPUOvercommitted    bool                `json:"cpuOvercommitted"`
+	Pools               []PoolDiagnostic    `json:"pools"`
+	Grants              []GrantDiagnostic   `json:"grants"`
+	Pending             []PendingDiagnostic `json:"pending"`
+	QueueHead           string              `json:"queueHead,omitempty"`
 }
 
 // PoolDiagnostic reports charged allocations and the unfilled guaranteed floor.
@@ -195,6 +197,10 @@ func diagnoseSnapshot(snapshot *Snapshot, digest string, now time.Time) Diagnost
 		PolicyMatches: digest == snapshot.PolicyDigest, Policy: snapshot.Policy,
 		Remaining: snapshot.Policy.Budget, CommitmentRemaining: snapshot.Policy.commitmentBudget(),
 		Pools: []PoolDiagnostic{}, Grants: []GrantDiagnostic{}, Pending: []PendingDiagnostic{},
+	}
+	report.MemoryAdmission = "commitment"
+	if snapshot.Schema == sharedMemoryLedgerSchema {
+		report.MemoryAdmission = "resident"
 	}
 	counts := map[string]uint32{}
 	for _, id := range slices.Sorted(maps.Keys(snapshot.Grants)) {

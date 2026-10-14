@@ -13,6 +13,12 @@ import (
 func sharedHeadroomPolicy(t *testing.T) Policy {
 	t.Helper()
 	p := loanFloorPolicy()
+	// These tests isolate resident start reservations. Guaranteed-floor funding
+	// has separate coverage with the actual host floor policy.
+	for name, pool := range p.Pools {
+		pool.Minimum, pool.MinimumRequestIDs = 0, nil
+		p.Pools[name] = pool
+	}
 	qa := p.Pools["qa"]
 	qa.Cost = Resources{MemoryMiB: 5120, VCPUs: 2}
 	p.Pools["qa"] = qa
@@ -165,6 +171,11 @@ func TestSharedHeadroomMigratesExistingOwnersAndAdmitsFittingQA(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// The older builder is blocked by actual resident memory, not by its legacy
+	// allowance. A smaller QA request may use the same measured headroom.
+	b.ObserveMemory = func() (MemoryObservation, error) {
+		return MemoryObservation{AvailableMiB: revised.BuildMemoryOvercommit.MinimumAvailableMiB + 5120, ObservedAt: b.now()}, nil
 	}
 	d, err = b.Admit(&revised, Request{ID: "qa-headroom-request", Pool: "qa"})
 	if err != nil || !d.Admitted {
