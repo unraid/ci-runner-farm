@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.13.0](https://github.com/unraid/ci-runner-farm/compare/v1.12.0...v1.13.0) (2026-10-14)
+
+
+### Features
+
+* **capacity:** initialize standalone native ownership safely ([#166](https://github.com/unraid/ci-runner-farm/issues/166)) ([ace5589](https://github.com/unraid/ci-runner-farm/commit/ace55898aeddd1f30d65ccec40cdb8a939cb88a7))
+* **capacity:** pin consumer policy through outer operations ([#163](https://github.com/unraid/ci-runner-farm/issues/163)) ([930f19f](https://github.com/unraid/ci-runner-farm/commit/930f19f6d0653ada570e006630f5d8fdef05b0e3))
+* **capacity:** preserve warm recovery in Farm controller ([#159](https://github.com/unraid/ci-runner-farm/issues/159)) ([3b89bfc](https://github.com/unraid/ci-runner-farm/commit/3b89bfcced74b36f91b35b0af2ca960cac73a7c6))
+
+
+### Bug Fixes
+
+* **capacity:** admit shared workloads against resident memory ([#167](https://github.com/unraid/ci-runner-farm/issues/167)) ([0968814](https://github.com/unraid/ci-runner-farm/commit/09688146ccfef5174ea2b81b69bd0a1ddda98f26))
+* **capacity:** release completed builder grants promptly ([#161](https://github.com/unraid/ci-runner-farm/issues/161)) ([4239ea3](https://github.com/unraid/ci-runner-farm/commit/4239ea3976a11d9faf7ff666b456ff26755ad214))
+* fence optional shared memory admission across workload starts ([#164](https://github.com/unraid/ci-runner-farm/issues/164)) ([c7927f7](https://github.com/unraid/ci-runner-farm/commit/c7927f7991f0731a4465798e7ec6860c0132e236))
+* route Farm-owned hosts through the native controller ([#165](https://github.com/unraid/ci-runner-farm/issues/165)) ([a5e2d35](https://github.com/unraid/ci-runner-farm/commit/a5e2d353c2e7475c3a57d80ddd5cb9bbe04c810a))
+
 ## [1.12.0](https://github.com/unraid/ci-runner-farm/compare/v1.11.1...v1.12.0) (2026-10-13)
 
 
