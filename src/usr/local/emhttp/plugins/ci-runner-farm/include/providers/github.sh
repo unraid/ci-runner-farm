@@ -32,6 +32,9 @@ github_confgen() {
   # an old container can remain online with the broken hierarchy.
   local runtime_salt='' kvm_gid cache_spec
   [ "$DIND" = true ] && runtime_salt='github-dind-cgroupns-v1'
+  if [ "$DIND" = true ] && [ "$EPHEMERAL" = false ]; then
+    runtime_salt="${runtime_salt}-job-cache-cleanup-v1"
+  fi
   # The explicit store contract must replace existing slots through the normal
   # drain lifecycle. Farms without a pnpm-store mount keep their fingerprint.
   for cache_spec in $CACHE_MOUNTS; do
@@ -615,6 +618,32 @@ github_build_args() {
     ARGS+=( -v "$CACHE_ROOT/docker/$name:/var/lib/docker" )
     ARGS+=( -v "$CACHE_ROOT/dind-daemon.json:/etc/docker/daemon.json:ro" )
     ARGS+=( -v "$CACHE_ROOT/dind-logs/$name:/var/log/dind" )
+    if [ "$EPHEMERAL" = false ]; then
+      local cleanup_script="$PROVIDER_DIR/../runner-job-cleanup.sh" cleanup_destination=/opt/ci-runner-farm/job-completed.sh
+      [ -r "$cleanup_script" ] && [ -x "$cleanup_script" ] \
+        || { err "persistent DinD job cleanup hook is missing or not executable"; return 1; }
+      for cache_spec in $CACHE_MOUNTS; do
+        if crf_mount_destinations_overlap "$cleanup_destination" "${cache_spec#*:}"; then
+          err "cache mount overlaps the job cleanup hook"; return 1
+        fi
+      done
+      local image_hook
+      image_hook="$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image")" \
+        || { err "could not inspect the image job completion hook"; return 1; }
+      image_hook="$(printf '%s\n' "$image_hook" | sed -n '/^ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/p')"
+      if [ -n "$image_hook" ]; then
+        image_hook="${image_hook#ACTIONS_RUNNER_HOOK_JOB_COMPLETED=}"
+        case "$image_hook" in
+          *$'\n'*|"$cleanup_destination") err "invalid or recursive image job completion hook"; return 1 ;;
+          /*.sh|/*.ps1) ;;
+          '') ;;
+          *) err "image job completion hook must be an absolute .sh or .ps1 path"; return 1 ;;
+        esac
+      fi
+      ARGS+=( -e "CRF_IMAGE_JOB_COMPLETED_HOOK=$image_hook" )
+      ARGS+=( -v "$cleanup_script:$cleanup_destination:ro"
+        -e "ACTIONS_RUNNER_HOOK_JOB_COMPLETED=$cleanup_destination" -e CRF_JOB_CLEANUP_DIND=1 )
+    fi
   elif [ "$SHARE_DOCKER_SOCK" = "true" ]; then
     ARGS+=( -v /var/run/docker.sock:/var/run/docker.sock )
   fi

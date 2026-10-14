@@ -662,6 +662,27 @@ supported recovery and runner replacement; no local-directory fallback is used.
 
 ### Retired Docker storage
 
+Persistent GitHub DinD runners also receive a synchronous completed-job hook.
+The wrapper runs the image’s existing completion hook first and preserves its
+exit status. Images can use an absolute `.sh` or `.ps1` hook path.
+It removes only unreferenced local Buildx cache volumes whose names end with
+that job's exact `-<run-id>-<attempt>0_state` suffix. Stable builder caches,
+custom-labeled volumes, other jobs, package caches and referenced volumes stay
+intact. The pass has a 30-second limit and makes no GitHub API requests. A
+Farm cleanup error is logged without changing the job result. Existing runners
+receive the hook through the normal config-generation replacement after their
+current job finishes.
+
+Workflows still own reusable cache export and import. Configure Buildx with a
+repository/image/platform scope using GitHub Actions or OCI registry caches.
+The shared filesystem is available for explicit repository caches. Do not
+share writable Docker graph directories or BuildKit daemon state between
+independent daemons. Exported layer caches do not automatically preserve
+`RUN --mount=type=cache` compiler stores. Retain a stable builder with bounded
+garbage collection or explicitly persist those stores when the workflow needs
+them. Old abandoned run-specific volumes need a separate verified cleanup;
+the completed-job hook never guesses ownership of historical data.
+
 GitHub Docker-in-Docker stores persist between runner jobs. Without cleanup,
 completed runners can retain large image and build caches. The lifecycle and
 autoscale ticks reclaim completed stores when the dataset has less than 15%

@@ -59,6 +59,7 @@ start = text.index('find "$PLGDIR" -type d -exec chmod 0755 {} +')
 end = text.index('# Config defaults', start)
 subprocess.run(['bash', '-euc', 'PLGDIR="$1"\n' + text[start:end], 'install-mode', sys.argv[2]], check=True)
 assert pathlib.Path(sys.argv[2], 'bin/ci-runner-capacity').stat().st_mode & 0o111, 'installed capacity controller must remain executable'
+assert pathlib.Path(sys.argv[2], 'include/runner-job-cleanup.sh').stat().st_mode & 0o111, 'installed job hook must remain executable'
 PYMODE
 
 # Validate the actual generated package-manager action, not only its source
