@@ -37,7 +37,7 @@ func Run(arguments []string, output io.Writer) (result error) {
 		return runMetadata(lease.Config, arguments[0], output)
 	}
 	if os.Geteuid() != 0 || !validArguments(arguments) {
-		return errors.New("root and initialize, start|prepare-release|release|refresh-queued <name> <id>, demand-observe <pools>, demand-apply|demand-warm <pools> <targets>, or rebalance|retire|status are required")
+		return errors.New("root and initialize, start|prepare-release|release|refresh-queued|reconcile-idle <name> <id>, demand-observe <pools>, demand-apply|demand-warm <pools> <targets>, or rebalance|retire|status are required")
 	}
 	if err := verifyFleetLock(); err != nil {
 		return err
@@ -81,7 +81,7 @@ func validArguments(arguments []string) bool {
 	if len(arguments) == 2 {
 		return arguments[0] == "demand-observe"
 	}
-	return len(arguments) == 3 && (arguments[0] == "start" || arguments[0] == "prepare-release" || arguments[0] == "release" || arguments[0] == "refresh-queued" || arguments[0] == "demand-apply" || arguments[0] == "demand-warm")
+	return len(arguments) == 3 && (arguments[0] == "start" || arguments[0] == "prepare-release" || arguments[0] == "release" || arguments[0] == "refresh-queued" || arguments[0] == "reconcile-idle" || arguments[0] == "demand-apply" || arguments[0] == "demand-warm")
 }
 
 func verifyFleetLock() error {
@@ -120,6 +120,12 @@ func runAction(ctx context.Context, config *hostcapacity.Config, controller *far
 		return controller.Release(ctx, arguments[1], arguments[2])
 	case "refresh-queued":
 		return controller.PrepareQueuedReplacement(ctx, arguments[1], arguments[2])
+	case "reconcile-idle":
+		err := controller.ReconcileIdle(ctx, arguments[1], arguments[2], bind)
+		if errors.Is(err, sharedcapacity.ErrWithdrawalWaiting) || errors.Is(err, sharedcapacity.ErrWorkloadBusy) {
+			return farmcapacity.ErrQueued
+		}
+		return err
 	case "rebalance":
 		return controller.Rebalance(ctx, bind)
 	case "retire":

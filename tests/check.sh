@@ -48,6 +48,7 @@ bash tests/nightly-channel.sh
 python3 tests/test-nightly-migration.py
 bash tests/pool-runtime.sh
 bash tests/shared-capacity.sh
+bash tests/shared-config-reconcile.sh
 bash tests/resume-queued.sh
 bash tests/shared-observation.sh
 bash tests/elastic-pools.sh

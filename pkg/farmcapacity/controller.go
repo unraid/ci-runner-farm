@@ -65,6 +65,7 @@ type receipt struct {
 	DockerRoot          string                           `json:"dockerRoot,omitempty"`
 	CacheCaptured       bool                             `json:"cacheCaptured,omitempty"`
 	Retiring            bool                             `json:"retiring,omitempty"`
+	PreserveCache       bool                             `json:"preserveCache,omitempty"`
 	Maintenance         bool                             `json:"maintenance,omitempty"`
 	Fence               string                           `json:"fence"`
 	ReleasePending      bool                             `json:"releasePending,omitempty"`
@@ -229,14 +230,10 @@ func (c *Controller) Release(ctx context.Context, name, id string) error {
 	if err := prove(); err != nil {
 		return err
 	}
-	if owned.DockerRoot != "" {
-		if c.RepairCache == nil {
-			return errors.New("native cache repair capability is required")
-		}
-		if err := c.RepairCache(ctx, name, owned.DockerRoot); err != nil {
-			return err
-		}
+	if err := c.repairReleasedCache(ctx, name, owned); err != nil {
+		return err
 	}
+
 	// A missing fenced grant requires intent that predates this observation.
 	if _, charged := snapshot.Grants[requestID]; !charged && owned.Fence != "" && !completedRelease(requestID, owned, &snapshot) {
 		return errors.New("build allocation disappeared before release")

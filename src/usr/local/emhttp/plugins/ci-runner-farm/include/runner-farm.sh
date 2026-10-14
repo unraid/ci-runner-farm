@@ -831,6 +831,10 @@ autoscale_tick() {
     # Queued starts can return healthy waiting before settlement frees grants.
     # Retry warm restoration before a queue cooldown can defer burst planning.
     restore_warm_capacity || return 1
+    if shared_capacity_native_required; then
+      reconcile_stale_runners || err "shared capacity: config migration deferred; preserving native owners"
+      restore_warm_capacity || return 1
+    fi
     # Preserve the broad queue cooldown without coupling it to owner recovery.
     if [ "$QUEUED_POOLS" = true ] && printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'; then
       php "$SCRIPT_DIR/build-demand.php" begin "$CFGDIR" "$RUNDIR" "$RUNNER_POOLS" >/dev/null || return 75
@@ -1004,6 +1008,7 @@ autoscale_status() {
 lifecycle_tick() {
   shared_capacity_require_starts_open || return 0
   crf_storage_pressure_cleanup
+  replenish_fixed_native_capacity || return 1
   replenish_fixed_github_capacity || return 1
   # Shared idle withdrawal owns local admission closure and exact worker proof.
   # Legacy log-derived idle recycling cannot race a frozen owner.
@@ -1026,6 +1031,24 @@ lifecycle_tick() {
   log "lifecycle: replacing positively exited $candidate"
   cmd_recycle "$candidate" >/dev/null \
     || { err "lifecycle: could not recycle $candidate; will retry"; return 1; }
+}
+
+# Native fixed fleets share the existing durable registration cadence. The
+# lifecycle daemon runs frequently, so record the gate before any remote reads.
+replenish_fixed_native_capacity() {
+  [ "$AUTOSCALE" != true ] && shared_capacity_native_required || return 0
+  validate_runner_mode && pool_activate build || return 1
+  php "$SCRIPT_DIR/build-demand.php" begin-recovery "$CFGDIR" "$RUNDIR" "$RUNNER_POOLS" >/dev/null || return 0
+  if shared_capacity_call rebalance; then :; else
+    [ "$?" -eq 75 ] || return 1
+  fi
+  reconcile_stale_runners || return 1
+  if [ "$QUEUED_POOLS" = true ]; then
+    # A queued profile retains its warm floor without a queue scan here.
+    restore_warm_capacity
+  else
+    start_configured_capacity
+  fi
 }
 
 # Fixed fleets have no autoscale tick to restore a removed completed slot.
@@ -2351,7 +2374,11 @@ cmd_mirror_up() {
 # the first unsafe slot rather than walking through and quiescing the whole fleet.
 reconcile_stale_runners() {
   shared_capacity_require_starts_open || return 0
-  shared_capacity_enabled && return 0
+  if shared_capacity_enabled; then
+    shared_capacity_native_required || return 0
+    reconcile_shared_stale_runners
+    return $?
+  fi
   # Re-read settings and secret files only after the caller holds fleet.lock.
   # Otherwise a drain waiting for the lock can recreate per-slot files from a
   # token that was cleared/rotated while it waited.
@@ -2384,6 +2411,30 @@ reconcile_stale_runners() {
     return 0                                          # one per pass; the drain/tick loop re-invokes
   done
   return 0
+}
+
+# Native shared owners must freeze and recheck both local and remote idle
+# evidence. Legacy recycle uses a snapshot and cannot supply that guarantee.
+reconcile_shared_stale_runners() {
+  reload_locked_snapshot || return 1
+  local names c snapshot id provider role index generation current pool rc
+  names="$(managed_names)" || return 1
+  for c in $names; do
+    snapshot="$(managed_runner_snapshot "$c")" || return 1
+    IFS='|' read -r id provider role index generation <<< "$snapshot"
+    [ "$provider" = github ] && [ "$role" = runner ] || continue
+    pool="$(runner_pool "$c")" || return 1
+    shared_capacity_build_pool "$pool" || continue
+    current="$(expected_runner_confgen "$c")" || return 1
+    [ "$generation" != "$current" ] || continue
+    [ "$(runner_state "$c")" = idle ] || continue
+    log "reconcile: requesting fenced idle replacement of stale native owner $c"
+    if shared_capacity_call reconcile-idle "$c" "$id"; then return 0; else rc=$?; fi
+    # Frozen settlement or a job-pickup race retains its charged owner. The
+    # existing rebalance loop recovers that intent before another replacement.
+    [ "$rc" -eq 75 ] && return 0
+    return "$rc"
+  done
 }
 
 # Detached worker behind the Settings "Apply" button: migrate every stale runner onto the

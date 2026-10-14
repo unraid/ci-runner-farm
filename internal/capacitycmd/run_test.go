@@ -106,3 +106,14 @@ func TestWarmDemandPrintsAdditivePlanWithoutBindingOrAdmission(t *testing.T) {
 		t.Fatal("warm planning changed admission or output", output.String(), docker.calls, err)
 	}
 }
+
+func TestIdleReconciliationRequiresExactOwnerArguments(t *testing.T) {
+	if !validArguments([]string{"reconcile-idle", "slot", "identity"}) {
+		t.Fatal("native idle reconciliation is unavailable")
+	}
+	for _, args := range [][]string{{"reconcile-idle"}, {"reconcile-idle", "slot"}, {"reconcile-idle", "slot", "identity", "extra"}} {
+		if validArguments(args) {
+			t.Fatal("incomplete reconciliation arguments accepted")
+		}
+	}
+}
