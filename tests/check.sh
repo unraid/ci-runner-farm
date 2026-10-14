@@ -68,6 +68,7 @@ bash tests/shared-cache.sh
 bash tests/retired-docker-cache.sh
 bash tests/completed-docker-cache.sh
 bash tests/job-docker-cache.sh
+bash tests/job-cache-pressure.sh
 bash tests/pnpm-cache.sh
 bash tests/lease-selfheal.sh
 bash tests/ownership-safety.sh

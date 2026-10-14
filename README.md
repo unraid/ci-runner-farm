@@ -765,6 +765,25 @@ garbage collection or explicitly persist those stores when the workflow needs
 them. Old abandoned run-specific volumes need a separate verified cleanup;
 the completed-job hook never guesses ownership of historical data.
 
+Persistent DinD farms can also opt specific reusable Buildx builders into
+storage-pressure eviction. Set the engine-only `DOCKER_CACHE_BUILDERS` to a
+comma-separated list, for example `project-builder,project-fedora-builder`.
+Use only builders whose volumes contain disposable build cache, never artifacts
+or other durable data. Up to 32 names are accepted. The list order is the
+eviction preference; it is not a last-used timestamp.
+
+After a job completes, the hook checks the Docker store's filesystem against
+`DOCKER_CACHE_MIN_FREE_PERCENT` (15% by default). Below that free-space floor,
+it can remove at most one listed builder's local, unreferenced state volume.
+All container references, including stopped containers, prevent removal.
+Labels, driver options, nonlocal volumes, changed daemon identity and unknown
+space information preserve the cache. Docker arbitrates the final non-forced
+removal. Warm caches stay intact above the floor or when the list is empty.
+This runs inside the existing 30-second job cleanup budget and preserves the
+original image hook's exit status. Changing the policy uses normal idle runner
+configuration replacement; running jobs are not interrupted. This is a
+free-space reclamation policy, not a hard per-runner disk quota.
+
 GitHub Docker-in-Docker stores persist between runner jobs. Without cleanup,
 completed runners can retain large image and build caches. The lifecycle and
 autoscale ticks reclaim completed stores when the dataset has less than 15%
