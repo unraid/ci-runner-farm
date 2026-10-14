@@ -2,13 +2,13 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name          "ci-runner-farm">
 <!ENTITY author        "Lime Technology">
-<!ENTITY version       "2026.10.13.1737.105-1.11.1">
-<!ENTITY pluginVersion "1.11.1">
-<!ENTITY releaseTag    "v1.11.1">
+<!ENTITY version       "2026.10.14.1051.118-1.13.0">
+<!ENTITY pluginVersion "1.13.0">
+<!ENTITY releaseTag    "v1.13.0">
 <!ENTITY pluginURL     "https://github.com/unraid/ci-runner-farm/releases/latest/download/ci-runner-farm.plg">
-<!ENTITY packageName   "ci-runner-farm-2026.10.13.1737.105-1.11.1.tgz">
-<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/v1.11.1/ci-runner-farm-2026.10.13.1737.105-1.11.1.tgz">
-<!ENTITY packageMD5    "020a4f6a87e4f10f46db7ab981abc941">
+<!ENTITY packageName   "ci-runner-farm-2026.10.14.1051.118-1.13.0.tgz">
+<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/v1.13.0/ci-runner-farm-2026.10.14.1051.118-1.13.0.tgz">
+<!ENTITY packageMD5    "47acd7f762a7389934a3b53b67134dee">
 <!ENTITY plgdir        "/usr/local/emhttp/plugins/&name;">
 <!ENTITY cfgdir        "/boot/config/plugins/&name;">
 ]>
@@ -22,11 +22,15 @@
 
 <CHANGES>
 ### &version;
+### Features
+* **capacity:** initialize standalone native ownership safely ([#166](https://github.com/unraid/ci-runner-farm/issues/166)) ([ace5589](https://github.com/unraid/ci-runner-farm/commit/ace55898aeddd1f30d65ccec40cdb8a939cb88a7))
+* **capacity:** pin consumer policy through outer operations ([#163](https://github.com/unraid/ci-runner-farm/issues/163)) ([930f19f](https://github.com/unraid/ci-runner-farm/commit/930f19f6d0653ada570e006630f5d8fdef05b0e3))
+* **capacity:** preserve warm recovery in Farm controller ([#159](https://github.com/unraid/ci-runner-farm/issues/159)) ([3b89bfc](https://github.com/unraid/ci-runner-farm/commit/3b89bfcced74b36f91b35b0af2ca960cac73a7c6))
 ### Bug Fixes
-* **autoscale:** count documented unassigned queued jobs ([#150](https://github.com/unraid/ci-runner-farm/issues/150)) ([e3e4c11](https://github.com/unraid/ci-runner-farm/commit/e3e4c110d5da6aef7181d1d78d4dabe0180a02c4))
-* **autoscale:** ignore foreign jobs before assignment guard ([#146](https://github.com/unraid/ci-runner-farm/issues/146)) ([dccba16](https://github.com/unraid/ci-runner-farm/commit/dccba164394ed69e80c41729b69cf8e0e901f93a))
-* **scaling:** restore warm builders before queue observation ([#154](https://github.com/unraid/ci-runner-farm/issues/154)) ([a006af1](https://github.com/unraid/ci-runner-farm/commit/a006af1ad794f4f8a70411b1d6128621c6331958))
-* **storage:** reclaim completed runner caches under disk pressure ([#148](https://github.com/unraid/ci-runner-farm/issues/148)) ([5e8453b](https://github.com/unraid/ci-runner-farm/commit/5e8453b456537c88e6f66c9a01f65130ab99353f))
+* **capacity:** admit shared workloads against resident memory ([#167](https://github.com/unraid/ci-runner-farm/issues/167)) ([0968814](https://github.com/unraid/ci-runner-farm/commit/09688146ccfef5174ea2b81b69bd0a1ddda98f26))
+* **capacity:** release completed builder grants promptly ([#161](https://github.com/unraid/ci-runner-farm/issues/161)) ([4239ea3](https://github.com/unraid/ci-runner-farm/commit/4239ea3976a11d9faf7ff666b456ff26755ad214))
+* fence optional shared memory admission across workload starts ([#164](https://github.com/unraid/ci-runner-farm/issues/164)) ([c7927f7](https://github.com/unraid/ci-runner-farm/commit/c7927f7991f0731a4465798e7ec6860c0132e236))
+* route Farm-owned hosts through the native controller ([#165](https://github.com/unraid/ci-runner-farm/issues/165)) ([a5e2d35](https://github.com/unraid/ci-runner-farm/commit/a5e2d353c2e7475c3a57d80ddd5cb9bbe04c810a))
 </CHANGES>
 
 <!-- plugin package: Unraid downloads it to flash and verifies the MD5 -->
@@ -43,15 +47,15 @@ PLGDIR="/usr/local/emhttp/plugins/ci-runner-farm"
 CFGDIR="/boot/config/plugins/ci-runner-farm"
 mkdir -p "$CFGDIR" "$PLGDIR"
 # Sweep any older package versions off flash, keeping this build's package.
-find "$CFGDIR" -maxdepth 1 -name 'ci-runner-farm-*.tgz' ! -name 'ci-runner-farm-2026.10.13.1737.105-1.11.1.tgz' -delete 2>/dev/null || true
+find "$CFGDIR" -maxdepth 1 -name 'ci-runner-farm-*.tgz' ! -name 'ci-runner-farm-2026.10.14.1051.118-1.13.0.tgz' -delete 2>/dev/null || true
 # Extract ONLY into the plugin dir; --no-same-owner forces root ownership;
 # --no-overwrite-dir leaves existing dir metadata alone. System dirs untouched.
 # The .tgz is kept on flash so the on-boot reinstall works without a download.
-tar -xzf "$CFGDIR/ci-runner-farm-2026.10.13.1737.105-1.11.1.tgz" --no-same-owner --no-overwrite-dir -C "$PLGDIR"
+tar -xzf "$CFGDIR/ci-runner-farm-2026.10.14.1051.118-1.13.0.tgz" --no-same-owner --no-overwrite-dir -C "$PLGDIR"
 chown -R root:root "$PLGDIR"
 find "$PLGDIR" -type d -exec chmod 0755 {} +
 find "$PLGDIR" -type f -exec chmod 0644 {} +
-chmod 0755 "$PLGDIR/include/runner-farm.sh"
+chmod 0755 "$PLGDIR/include/runner-farm.sh" "$PLGDIR/include/runner-job-cleanup.sh" "$PLGDIR/bin/ci-runner-capacity"
 [ -d "$PLGDIR/nchan" ] && find "$PLGDIR/nchan" -type f -exec chmod 0755 {} +
 # Unraid's emhttp_event executes these on Docker service start/stop — must be +x
 [ -d "$PLGDIR/event" ] && find "$PLGDIR/event" -type f -exec chmod 0755 {} +
@@ -111,7 +115,7 @@ fi
 ( nohup "$PLGDIR/include/runner-farm.sh" boot-autostart >>"$CFGDIR/boot.log" 2>&1 & ) || true
 echo ""
 echo "+=============================================================+"
-echo "| ci-runner-farm 2026.10.13.1737.105-1.11.1 installed.                         "
+echo "| ci-runner-farm 2026.10.14.1051.118-1.13.0 installed.                         "
 echo "| Settings > Utilities > CI Runner Farm                        "
 echo "| Select GitHub or GitLab, save its token, then Start.         "
 echo "+=============================================================+"
