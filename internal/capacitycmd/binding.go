@@ -61,5 +61,8 @@ func recordAndPublish(ctx context.Context, controller *farmcapacity.Controller, 
 		return err
 	}
 	owner := &farmcapacity.FrozenOwner{ID: id, Name: name, RunnerID: runnerID, RunnerName: runnerName, Organization: config.Organization, TokenPath: config.TokenPath}
-	return controller.PublishRouting(ctx, owner)
+	if err := controller.PublishRouting(ctx, owner); err != nil {
+		return err
+	}
+	return controller.ConfirmStarted(ctx, name, id)
 }

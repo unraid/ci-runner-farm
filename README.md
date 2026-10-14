@@ -591,6 +591,17 @@ bug reports: <https://github.com/unraid/ci-runner-farm/issues>
 
 ### Shared host budget consumers
 
+Farm runs independently. Installing or operating Farm does not require QA Lab,
+its binary, its configuration or its service. Most installations need only the
+normal runner settings. Shared host admission is an optional integration for
+hosts that also run other workloads.
+
+With this integration enabled, Farm owns the host policy and admission ledger.
+QA Lab can participate as a consumer through the public SDK. A standalone host
+does not configure a QA consumer. An installed consumer that is unavailable
+does not prevent Farm from using capacity within the protected shared policy.
+Its existing allocations remain charged until their owner proves they stopped.
+
 The public `pkg/hostcapacity` SDK provides `WithConsumer` for a host participant.
 Its `Binding` selects Farm's protected config path, ownership epoch and declared
 consumer name. The participant stores no independent copy of the shared policy.
@@ -608,7 +619,37 @@ The callback receives a private policy snapshot; changing that snapshot does
 not change the host policy. The participant still verifies actual workload
 limits and proves that its own stopped owners can release their fenced grants.
 This SDK does not activate a host or migrate its existing ledger. The current
-QA bridge remains active until the participant and ownership handoff are deployed.
+QA bridge remains active on legacy shared deployments until the participant
+and ownership handoff are deployed. The independent integration described here
+is not yet active on those deployments.
+
+### Shared physical headroom
+
+The optional host policy field `sharedMemoryHeadroom` enables one physical
+headroom guard for builders and declared consumers. It requires soft CPU
+admission and the existing bounded memory allowance. It does not increase
+that allowance, change workload hard limits or rewrite existing release fences.
+Ordinary standalone Farm policies do not enable this mode or require QA.
+
+Every new grant atomically reserves its full start cost against a fresh native
+memory sample, after the configured host reserve and other unfinished starts.
+The sample must be at most five seconds old. Missing, stale, future or failed
+samples block new starts. A fitting request can use stranded headroom when an
+older request cannot fit; the older request retains its identity and queue age.
+
+Owners must call `ReserveStart` immediately before dispatch, persist the start
+nonce, and call `ConfirmStarted` only after durable state/receipt commit and
+fresh proof of the exact running owner. Reservations never expire on timeout
+or restart. Unknown outcomes retain their charge. A restarted execution gets a
+new nonce; an old acknowledgement cannot clear its charge. Exact fenced
+stopped-owner release still removes both the grant and its start reservation.
+Farm confirms builders after registration and routing persistence.
+
+This mode uses ledger protocol v6. Migration initially reserves every existing
+grant until its owner proves execution is already running. Older writers are
+rejected. All participants must support the start protocol before the ownership
+handoff enables it; installing this SDK alone does not activate the policy.
+The native CLI reports `fenced-start-memory-v6` through `capabilities`.
 
 ### Elastic general build classes
 

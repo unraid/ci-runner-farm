@@ -60,15 +60,16 @@ type Docker interface {
 }
 
 type receipt struct {
-	ID                  string                     `json:"containerId"`
-	DockerRoot          string                     `json:"dockerRoot,omitempty"`
-	CacheCaptured       bool                       `json:"cacheCaptured,omitempty"`
-	Retiring            bool                       `json:"retiring,omitempty"`
-	Maintenance         bool                       `json:"maintenance,omitempty"`
-	Fence               string                     `json:"fence"`
-	ReleasePending      bool                       `json:"releasePending,omitempty"`
-	ReplacementPrepared bool                       `json:"replacementPrepared,omitempty"`
-	Withdrawal          *sharedcapacity.Withdrawal `json:"withdrawal,omitempty"`
+	Start               *sharedcapacity.StartReservation `json:"start,omitempty"`
+	ID                  string                           `json:"containerId"`
+	DockerRoot          string                           `json:"dockerRoot,omitempty"`
+	CacheCaptured       bool                             `json:"cacheCaptured,omitempty"`
+	Retiring            bool                             `json:"retiring,omitempty"`
+	Maintenance         bool                             `json:"maintenance,omitempty"`
+	Fence               string                           `json:"fence"`
+	ReleasePending      bool                             `json:"releasePending,omitempty"`
+	ReplacementPrepared bool                             `json:"replacementPrepared,omitempty"`
+	Withdrawal          *sharedcapacity.Withdrawal       `json:"withdrawal,omitempty"`
 }
 
 // Controller is called only while the native farm's fleet lock is held.
@@ -148,6 +149,19 @@ func (c *Controller) Start(ctx context.Context, name, id string) error {
 	}
 	if owned.Withdrawal != nil && owned.Withdrawal.Phase != "" {
 		return errors.New("build is owned by idle withdrawal; finish recovery before start")
+	}
+	if c.Policy.SharedMemoryHeadroom {
+		start, err := c.Broker.ReserveStart(&c.Policy, request.ID, owned.Fence)
+		if errors.Is(err, sharedcapacity.ErrMemoryHeadroom) {
+			return ErrQueued
+		}
+		if err != nil {
+			return err
+		}
+		owned.Start = &start
+		if err := c.save(name, owned); err != nil {
+			return err
+		}
 	}
 	return c.Docker.Start(ctx, id)
 }

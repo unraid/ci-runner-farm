@@ -132,7 +132,12 @@ func (b *Broker) annotateBuildMemory(snapshot *Snapshot, report *Diagnostics) {
 		return
 	}
 	status := b.BuildMemoryStatus(&snapshot.Policy)
+	status.PendingStartMiB = pendingStartMemory(snapshot, "")
 	report.BuildMemory = &status
+	if snapshot.Policy.SharedMemoryHeadroom {
+		annotateSharedHeadroom(snapshot, report, status, b.now())
+		return
+	}
 	for index := range report.Pending {
 		pending := &report.Pending[index]
 		if (pending.Reason != diagnosticWouldAdmit && pending.Reason != memoryObservationRequired) || pending.Pool != buildPool || restoresBuildFloor(snapshot, pending.Request) {
@@ -257,7 +262,7 @@ func diagnosticReason(snapshot *Snapshot, pending *Pending, report *Diagnostics)
 		}
 	}
 	remaining := report.Remaining
-	if pending.Pool == buildPool {
+	if pending.Pool == buildPool || snapshot.Policy.SharedMemoryHeadroom {
 		remaining = report.CommitmentRemaining
 	}
 	if constraint == "" && !snapshot.Policy.fitsHost(remaining, cost) {
@@ -265,6 +270,12 @@ func diagnosticReason(snapshot *Snapshot, pending *Pending, report *Diagnostics)
 	}
 	if constraint == "" && !canAdmit(snapshot, pending.Request) {
 		constraint = "floor_reserve"
+	}
+	if snapshot.Policy.SharedMemoryHeadroom {
+		if constraint != "" {
+			return diagnosticBudget, constraint
+		}
+		return memoryObservationRequired, memoryHeadroom
 	}
 	if report.QueueHead != pending.ID {
 		if !canBackfill(snapshot, pending.Request, report.QueueHead) {
@@ -287,4 +298,35 @@ func diagnosticCost(policy *Policy, request Request) Resources {
 		return policy.Pools[request.Pool].Cost
 	}
 	return request.Resources
+}
+
+// Diagnostics reuse the admission decision and one bounded physical sample.
+// Release fences and start nonces remain private to lifecycle owners.
+func annotateSharedHeadroom(snapshot *Snapshot, report *Diagnostics, status BuildMemoryDiagnostic, now time.Time) {
+	if !report.PolicyMatches {
+		return
+	}
+	for index := range report.Pending {
+		pending := &report.Pending[index]
+		if pending.Reason == "owner_wait_ended" {
+			continue
+		}
+		_, reason := sharedFundingObserved(snapshot, pending.Request, now, status)
+		switch reason {
+		case "":
+			pending.Reason, pending.Constraint = diagnosticWouldAdmit, ""
+		case memoryPressure:
+			pending.Reason, pending.Constraint = memoryPressure, memoryHeadroom
+			if status.AvailableMiB == nil {
+				pending.Reason = memoryObservationRequired
+			}
+		case reasonPriority:
+			pending.Reason = reasonPriority
+		case diagnosticBudget:
+			pending.Reason = diagnosticBudget
+			if pending.Constraint == "" {
+				pending.Constraint = "host_budget"
+			}
+		}
+	}
 }

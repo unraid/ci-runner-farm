@@ -73,7 +73,7 @@ func missingFloorMemory(snapshot *Snapshot) uint64 {
 }
 
 func validateBuildLoans(snapshot *Snapshot) error {
-	if snapshot.Schema != buildMemoryLedgerSchema {
+	if snapshot.Schema != buildMemoryLedgerSchema && snapshot.Schema != sharedMemoryLedgerSchema {
 		return nil
 	}
 	reserve := missingFloorMemory(snapshot)
@@ -91,6 +91,9 @@ func validateBuildLoans(snapshot *Snapshot) error {
 // admissionFunding keeps queue fairness, ledger funding, and the fresh resident
 // memory guard in the same native admission transaction.
 func (b *Broker) admissionFunding(snapshot *Snapshot, request Request) (borrowed uint64, reason string) {
+	if snapshot.Policy.SharedMemoryHeadroom {
+		return b.sharedAdmissionFunding(snapshot, request)
+	}
 	head := queueHead(snapshot, b.now())
 	backfill := head != request.ID && canBackfill(snapshot, request, head)
 	if head != request.ID && !backfill {
@@ -111,7 +114,7 @@ func (b *Broker) admissionFunding(snapshot *Snapshot, request Request) (borrowed
 // v5 makes older writers reject this representation rather than ignore it.
 func migrateBuildLoans(snapshot *Snapshot) error {
 	extra := snapshot.Policy.BuildMemoryOvercommit
-	if extra == nil || snapshot.Schema == buildMemoryLedgerSchema {
+	if extra == nil || snapshot.Schema == buildMemoryLedgerSchema || snapshot.Schema == sharedMemoryLedgerSchema {
 		return nil
 	}
 	snapshot.Schema = buildMemoryLedgerSchema
@@ -151,11 +154,19 @@ func migrateBuildLoans(snapshot *Snapshot) error {
 	if deficit > 0 {
 		return errors.New("legacy build loans would borrow a protected floor")
 	}
+	if snapshot.Policy.SharedMemoryHeadroom {
+		if err := migrateSharedStarts(snapshot); err != nil {
+			return err
+		}
+	}
 	return validateSnapshot(snapshot)
 }
 
 func (p *Policy) validateBuildMemory() error {
 	extra := p.BuildMemoryOvercommit
+	if p.SharedMemoryHeadroom && (extra == nil || !p.SoftCPU()) {
+		return errors.New("shared headroom requires a bounded allowance and soft CPU admission")
+	}
 	if extra == nil {
 		return nil
 	}
@@ -167,20 +178,31 @@ func (p *Policy) validateBuildMemory() error {
 }
 
 func (b *Broker) memoryReady(snapshot *Snapshot, request Request) bool {
-	extra := snapshot.Policy.BuildMemoryOvercommit
-	if request.Pool != buildPool || extra == nil {
+	return b.memoryReadyExcluding(snapshot, request, "")
+}
+
+func (b *Broker) memoryReadyExcluding(snapshot *Snapshot, request Request, exclude string) bool {
+	if snapshot.Policy.BuildMemoryOvercommit == nil || (!snapshot.Policy.SharedMemoryHeadroom && (request.Pool != buildPool || restoresBuildFloor(snapshot, request))) {
 		return true
 	}
-	if restoresBuildFloor(snapshot, request) {
+	return memoryReadyObserved(snapshot, request, exclude, b.BuildMemoryStatus(&snapshot.Policy))
+}
+
+func memoryReadyObserved(snapshot *Snapshot, request Request, exclude string, status BuildMemoryDiagnostic) bool {
+	extra := snapshot.Policy.BuildMemoryOvercommit
+	if (request.Pool != buildPool && !snapshot.Policy.SharedMemoryHeadroom) || extra == nil {
+		return true
+	}
+	if !snapshot.Policy.SharedMemoryHeadroom && restoresBuildFloor(snapshot, request) {
 		return true
 	}
 	cost, err := RequestCost(&snapshot.Policy, request)
 	if err != nil {
 		return false
 	}
-	status := b.BuildMemoryStatus(&snapshot.Policy)
+	reserved := pendingStartMemory(snapshot, exclude)
 	return status.AvailableMiB != nil && *status.AvailableMiB >= extra.MinimumAvailableMiB &&
-		*status.AvailableMiB-extra.MinimumAvailableMiB >= cost.MemoryMiB
+		*status.AvailableMiB-extra.MinimumAvailableMiB >= reserved && *status.AvailableMiB-extra.MinimumAvailableMiB-reserved >= cost.MemoryMiB
 }
 
 func restoresBuildFloor(snapshot *Snapshot, request Request) bool {
@@ -192,6 +214,7 @@ func restoresBuildFloor(snapshot *Snapshot, request Request) bool {
 // BuildMemoryDiagnostic separates measured headroom from configured commitments.
 // Unavailable observations block burst starts but never authorize withdrawal.
 type BuildMemoryDiagnostic struct {
+	PendingStartMiB     uint64    `json:"pendingStartMiB,omitempty"`
 	State               string    `json:"state"`
 	AvailableMiB        *uint64   `json:"availableMiB,omitempty"`
 	ObservedAt          time.Time `json:"observedAt"`
