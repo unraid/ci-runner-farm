@@ -16,8 +16,11 @@ import (
 // Policy changes and ownership handoffs take an exclusive lease. Participants
 // take shared leases before loading policy and retain them through effects.
 type Lease struct {
-	Config *Config
-	file   *os.File
+	Config    *Config
+	file      *os.File
+	path      string
+	owner     uint32
+	exclusive bool
 }
 
 // Close releases this participant's policy lease.
@@ -103,5 +106,5 @@ func acquire(ctx context.Context, path string, exclusive bool, host string, owne
 		return nil, errors.New("farm capacity lock identity changed")
 	}
 	keep = true
-	return &Lease{Config: current, file: file}, nil
+	return &Lease{Config: current, file: file, path: path, owner: owner, exclusive: exclusive}, nil
 }

@@ -20,7 +20,7 @@ import (
 // Run requires the native parent's fleet lock for every owner mutation.
 func Run(arguments []string, output io.Writer) (result error) {
 	if len(arguments) == 1 && arguments[0] == "capabilities" {
-		return json.NewEncoder(output).Encode([]string{"fenced-start-memory-v6"})
+		return json.NewEncoder(output).Encode([]string{"fenced-start-memory-v6", "standalone-owner-init-v1"})
 	}
 	if len(arguments) == 1 && arguments[0] == "version" {
 		_, err := fmt.Fprintln(output, "ci-runner-capacity protocol 1")
@@ -37,14 +37,14 @@ func Run(arguments []string, output io.Writer) (result error) {
 		return runMetadata(lease.Config, arguments[0], output)
 	}
 	if os.Geteuid() != 0 || !validArguments(arguments) {
-		return errors.New("root and start|prepare-release|release|refresh-queued <name> <id>, demand-observe <pools>, demand-apply|demand-warm <pools> <targets>, or rebalance|retire|status are required")
+		return errors.New("root and initialize, start|prepare-release|release|refresh-queued <name> <id>, demand-observe <pools>, demand-apply|demand-warm <pools> <targets>, or rebalance|retire|status are required")
 	}
 	if err := verifyFleetLock(); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	lease, err := hostcapacity.Acquire(ctx, hostcapacity.ConfigPath, false)
+	lease, err := hostcapacity.Acquire(ctx, hostcapacity.ConfigPath, arguments[0] == "initialize")
 	if err != nil {
 		return err
 	}
@@ -54,6 +54,12 @@ func Run(arguments []string, output io.Writer) (result error) {
 		Broker: sharedcapacity.Broker{Path: config.LedgerPath}, Policy: config.Policy,
 		ReceiptRoot: config.ReceiptRoot, Docker: farmcapacity.NativeDocker{},
 		RepairCache: farmcapacity.RepairNativeCache, Poisoned: farmcapacity.NativePoisoned,
+	}
+	if arguments[0] == "initialize" {
+		if err := initializeStandalone(ctx, config, &controller); err != nil {
+			return err
+		}
+		return lease.Activate()
 	}
 	if arguments[0] == "status" {
 		diagnostics, err := controller.Broker.Diagnose(&controller.Policy)
@@ -70,7 +76,7 @@ func Run(arguments []string, output io.Writer) (result error) {
 
 func validArguments(arguments []string) bool {
 	if len(arguments) == 1 {
-		return arguments[0] == "rebalance" || arguments[0] == "retire" || arguments[0] == "status"
+		return arguments[0] == "initialize" || arguments[0] == "rebalance" || arguments[0] == "retire" || arguments[0] == "status"
 	}
 	if len(arguments) == 2 {
 		return arguments[0] == "demand-observe"

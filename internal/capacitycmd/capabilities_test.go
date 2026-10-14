@@ -11,7 +11,7 @@ func TestCapabilitiesDoNotRequireQAConfigurationOrHostLeases(t *testing.T) {
 	if err := Run([]string{"capabilities"}, &output); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "fenced-start-memory-v6") {
+	if !strings.Contains(output.String(), "fenced-start-memory-v6") || !strings.Contains(output.String(), "standalone-owner-init-v1") {
 		t.Fatal("native start protocol not declared", output.String())
 	}
 }
