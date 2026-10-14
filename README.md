@@ -844,3 +844,21 @@ Until the new native actions exist, scaling fails closed and running jobs
 continue. Normal ticks resume after upgrade. Keep the other host serving and
 verify live registrations, exact grants and unchanged busy jobs before the
 second host. Related to [QUA-203](https://linear.app/lime-technology/issue/QUA-203).
+
+#### Expand allocation pools
+
+A root operator can increase pool minima and maxima without replacing active
+owners. Prepare a private, root-owned JSON request containing the complete
+`previous` and `revised` allocation policies. Only monotonic changes to existing
+pool limits are accepted. Budgets, costs, priorities, reserves, classes and
+ownership epoch remain unchanged.
+
+With the existing native fleet lock held on descriptor 8, run
+`ci-runner-capacity expand-pools <expected-epoch> <absolute-request-path>`.
+The controller takes the exclusive shared policy lease, validates the existing
+ledger and publishes a durable closed transition before changing its policy.
+It reopens admission only after both the ledger and protected configuration
+match the reviewed destination. After interruption, reuse the exact request;
+an unrelated closure or different transition is rejected. This operation
+starts no workloads. Consumers still materialize their own reviewed capacity
+plans, and every subsequent start uses normal physical memory admission.

@@ -14,7 +14,7 @@ import (
 // lease remains held. The caller first persists every owner's allocation and
 // receipt. A native start closure remains separate and is not removed here.
 func (l *Lease) Activate() error {
-	if l == nil || !l.exclusive || l.file == nil || l.Config == nil || l.Config.Mode != "closed" {
+	if l == nil || !l.exclusive || l.file == nil || l.Config == nil || l.Config.Mode != "closed" || l.Config.PoolExpansion != nil {
 		return errors.New("activation requires a live exclusive closed policy lease")
 	}
 	held, err := l.file.Stat()

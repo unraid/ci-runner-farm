@@ -38,6 +38,7 @@ type Config struct {
 	LockPath         string                `json:"lockPath"`
 	Mode             string                `json:"mode"`
 	Policy           sharedcapacity.Policy `json:"policy"`
+	PoolExpansion    *PoolExpansion        `json:"poolExpansion,omitempty"`
 	Consumers        map[string]Consumer   `json:"consumers,omitempty"`
 	ScanRepositories []string              `json:"scanRepositories,omitempty"`
 }
@@ -48,6 +49,17 @@ var repositoryNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}
 
 // Validate rejects incomplete ownership, unbounded budgets and class ambiguity.
 func (c *Config) Validate(host string) error {
+	if c.PoolExpansion != nil {
+		if c.Mode != "closed" {
+			return errors.New("pool expansion must remain closed")
+		}
+		if err := c.PoolExpansion.Validate(); err != nil {
+			return err
+		}
+		if !samePolicy(c.Policy, c.PoolExpansion.Previous) && !samePolicy(c.Policy, c.PoolExpansion.Revised) {
+			return errors.New("pool expansion policy identity changed")
+		}
+	}
 	if (c.Mode != "active" && c.Mode != "closed") || c.Schema != 1 || c.Host == "" || c.Host != host || !epochPattern.MatchString(c.Epoch) || !organizationPattern.MatchString(c.Organization) {
 		return errors.New("farm host capacity identity is invalid")
 	}
