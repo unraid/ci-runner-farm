@@ -1,3 +1,4 @@
+// Package capacitycmd exposes Farm's protected native admission commands.
 package capacitycmd
 
 import (
