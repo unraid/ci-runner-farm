@@ -623,6 +623,19 @@ QA bridge remains active on legacy shared deployments until the participant
 and ownership handoff are deployed. The independent integration described here
 is not yet active on those deployments.
 
+The engine selects the packaged Farm controller when Farm's protected
+`host-capacity.json` or durable `shared-capacity.owner` marker is present. That
+path reads no QA configuration and calls no QA executable. Missing or invalid
+native owner configuration fails closed, including when only the marker remains.
+The legacy bridge continues protecting existing owners before migration.
+
+The Farm host contract can declare `scanRepositories`, a bounded list of unique
+repositories within its organization. Native poison detection uses that explicit
+inventory when `GH_REPOS` is empty. An undeclared inventory fails visibly instead
+of treating an empty group repository response as a complete scan. Native
+`build-limits` and `scan-repositories` queries read only the protected Farm
+contract under its existing shared lease, without opening credentials or the ledger.
+
 ### Shared physical headroom
 
 The optional host policy field `sharedMemoryHeadroom` enables one physical

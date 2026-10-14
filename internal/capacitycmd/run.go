@@ -26,6 +26,16 @@ func Run(arguments []string, output io.Writer) (result error) {
 		_, err := fmt.Fprintln(output, "ci-runner-capacity protocol 1")
 		return err
 	}
+	if len(arguments) == 1 && (arguments[0] == "build-limits" || arguments[0] == "scan-repositories") {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		lease, err := hostcapacity.Acquire(ctx, hostcapacity.ConfigPath, false)
+		if err != nil {
+			return err
+		}
+		defer func() { result = errors.Join(result, lease.Close()) }()
+		return runMetadata(lease.Config, arguments[0], output)
+	}
 	if os.Geteuid() != 0 || !validArguments(arguments) {
 		return errors.New("root and start|prepare-release|release|refresh-queued <name> <id>, demand-observe <pools>, demand-apply|demand-warm <pools> <targets>, or rebalance|retire|status are required")
 	}

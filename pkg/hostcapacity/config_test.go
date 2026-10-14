@@ -50,6 +50,10 @@ func TestHostConfigRequiresExplicitBoundedOwnership(t *testing.T) {
 		func(c *Config) { c.ReceiptRoot = c.LedgerPath },
 		func(c *Config) { c.Consumers = map[string]Consumer{"other": {Pools: []string{"build"}}} },
 		func(c *Config) { c.Policy.Pools["unowned"] = c.Policy.Pools["build"] },
+		func(c *Config) { c.ScanRepositories = []string{"other-org/repo"} },
+		func(c *Config) { c.ScanRepositories = []string{"test-org/repo", "test-org/repo"} },
+		func(c *Config) { c.ScanRepositories = []string{"test-org/../repo"} },
+		func(c *Config) { c.ScanRepositories = []string{"test-org/repo\nsecond"} },
 	} {
 		config := testConfig(testRoot(t))
 		change(&config)

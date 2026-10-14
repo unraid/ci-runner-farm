@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"syscall"
 
 	"github.com/unraid/ci-runner-farm/pkg/sharedcapacity"
@@ -27,21 +28,23 @@ type Consumer struct {
 // Config is root-owned operator policy, independent of any consumer's settings.
 // Epoch binds participants to one explicit ownership handoff.
 type Config struct {
-	Schema       int                   `json:"schema"`
-	Host         string                `json:"host"`
-	Epoch        string                `json:"epoch"`
-	Organization string                `json:"organization"`
-	LedgerPath   string                `json:"ledgerPath"`
-	ReceiptRoot  string                `json:"receiptRoot"`
-	TokenPath    string                `json:"tokenPath"`
-	LockPath     string                `json:"lockPath"`
-	Mode         string                `json:"mode"`
-	Policy       sharedcapacity.Policy `json:"policy"`
-	Consumers    map[string]Consumer   `json:"consumers,omitempty"`
+	Schema           int                   `json:"schema"`
+	Host             string                `json:"host"`
+	Epoch            string                `json:"epoch"`
+	Organization     string                `json:"organization"`
+	LedgerPath       string                `json:"ledgerPath"`
+	ReceiptRoot      string                `json:"receiptRoot"`
+	TokenPath        string                `json:"tokenPath"`
+	LockPath         string                `json:"lockPath"`
+	Mode             string                `json:"mode"`
+	Policy           sharedcapacity.Policy `json:"policy"`
+	Consumers        map[string]Consumer   `json:"consumers,omitempty"`
+	ScanRepositories []string              `json:"scanRepositories,omitempty"`
 }
 
 var epochPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 var organizationPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
+var repositoryNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$`)
 
 // Validate rejects incomplete ownership, unbounded budgets and class ambiguity.
 func (c *Config) Validate(host string) error {
@@ -58,6 +61,17 @@ func (c *Config) Validate(host string) error {
 	}
 	if err := c.Policy.Validate(); err != nil {
 		return err
+	}
+	seenRepositories := map[string]bool{}
+	for _, repository := range c.ScanRepositories {
+		parts := strings.Split(repository, "/")
+		if len(parts) != 2 || parts[0] != c.Organization || !repositoryNamePattern.MatchString(parts[1]) || seenRepositories[repository] {
+			return errors.New("farm scan repository must be unique and belong to its organization")
+		}
+		seenRepositories[repository] = true
+	}
+	if len(c.ScanRepositories) > 256 {
+		return errors.New("farm scan repository inventory exceeds its bound")
 	}
 	if _, exists := c.Policy.Pools["build"]; !exists {
 		return errors.New("farm capacity requires its build allocation class")
