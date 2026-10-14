@@ -2064,6 +2064,8 @@ cmd_resume_queued() {
   current_generation="$(crf_confgen)" || return 1
   [ -n "$current_generation" ] || return 1
   if [ "$generation" != "$current_generation" ]; then
+    provision_base || return 1
+    firewall_prepare_replacement || return 1
     shared_capacity_call refresh-queued "$name" "$id" || return 1
     provider_call start_one "$idx" "$name"
     return $?
