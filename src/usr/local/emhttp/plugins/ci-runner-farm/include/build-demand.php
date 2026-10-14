@@ -81,7 +81,7 @@ class BuildDemand
         } finally { fclose($file); }
     }
 
-    public static function credentials(string $directory): array
+    public static function credentials(string $directory, bool $requireQueue = true): array
     {
         $values = [];
         foreach (explode("\n", self::protectedRead($directory . '/ci-runner-farm.cfg', 262144, false)) as $line) {
@@ -95,7 +95,8 @@ class BuildDemand
         self::check(($values['CI_PROVIDER'] ?? '') === 'github' && ($values['GH_SCOPE'] ?? '') === 'org' &&
             preg_match('/\A[A-Za-z0-9][A-Za-z0-9-]*\z/', $values['GH_OWNER'] ?? '') === 1 &&
             ($values['RUNNER_GROUP'] ?? '') !== '' && !preg_match('/[\x00-\x1f$`\\\\]/', implode('', $values)), 'invalid native Farm scope');
-        foreach (['token', 'queue-token'] as $name) {
+        $values['queue-token'] = '';
+        foreach ($requireQueue ? ['token', 'queue-token'] : ['token'] as $name) {
             $value = trim(self::protectedRead($directory . '/' . $name, 65536, true));
             self::check($value !== '' && !preg_match('/\s/', $value), 'invalid native Farm credential');
             $values[$name] = $value;
@@ -358,8 +359,9 @@ if (realpath($_SERVER['SCRIPT_FILENAME'] ?? '') === __FILE__) {
         umask(0077);
         ini_set("memory_limit", "128M");
         if (in_array($argv[1] ?? '', ['begin', 'begin-recovery', 'scan'], true) && count($argv) === 5) {
-            BuildDemand::check(posix_geteuid() === 0 && function_exists('curl_multi_init'), 'general demand requires native root PHP curl runtime');
-            $scope = BuildDemand::credentials($argv[2]);
+            BuildDemand::check(posix_geteuid() === 0 && (($argv[1] === 'begin-recovery') || function_exists('curl_multi_init')),
+                'general demand requires its native root PHP runtime');
+            $scope = BuildDemand::credentials($argv[2], $argv[1] !== 'begin-recovery');
             $reader = new BuildDemand($argv[3] . '/build-demand-http.json', $scope['token'], $scope['queue-token']);
             try {
                 if ($argv[1] === 'begin-recovery') { $reader->beginRecovery(); $result = ['recoveryReady' => true]; }

@@ -130,6 +130,34 @@ try {
     chmod($cache,0644); rejects(fn()=>new BuildDemand($cache,'g','q')); unlink($cache);
     symlink('/dev/null',$cache); rejects(fn()=>new BuildDemand($cache,'g','q')); unlink($cache);
     if (posix_geteuid() === 0) {
+        $credentialDir = $cache . '-credentials';
+        mkdir($credentialDir, 0700);
+        file_put_contents($credentialDir . '/ci-runner-farm.cfg', "CI_PROVIDER=github\nGH_SCOPE=org\nGH_OWNER=example\nRUNNER_GROUP=Default\n");
+        chmod($credentialDir . '/ci-runner-farm.cfg', 0600);
+        file_put_contents($credentialDir . '/token', 'native-token');
+        chmod($credentialDir . '/token', 0600);
+        try {
+            same(BuildDemand::credentials($credentialDir, false)['token'], 'native-token');
+            same(BuildDemand::credentials($credentialDir, false)['queue-token'], '');
+            rejects(fn()=>BuildDemand::credentials($credentialDir));
+            mkdir($credentialDir . '/runtime', 0700);
+            $command = implode(' ', array_map('escapeshellarg', [PHP_BINARY,
+                __DIR__ . '/../src/usr/local/emhttp/plugins/ci-runner-farm/include/build-demand.php',
+                'begin-recovery', $credentialDir, $credentialDir . '/runtime', RECORDS]));
+            exec($command . ' 2>/dev/null', $output, $status);
+            same($status, 0);
+            same(json_decode(implode("\n", $output), true), ['recoveryReady'=>true]);
+            exec($command . ' 2>/dev/null', $ignored, $status);
+            same($status, 1); // A fresh process still observes the recovery cadence.
+        } finally {
+            if (is_dir($credentialDir . '/runtime')) {
+                @unlink($credentialDir . '/runtime/build-demand-http.json');
+                rmdir($credentialDir . '/runtime');
+            }
+            unlink($credentialDir . '/token');
+            unlink($credentialDir . '/ci-runner-farm.cfg');
+            rmdir($credentialDir);
+        }
         $reader = new BuildDemand($cache,'g','q');
         $reader->begin();
         // A fresh process cannot turn a failed/restarted pass into another scan.
