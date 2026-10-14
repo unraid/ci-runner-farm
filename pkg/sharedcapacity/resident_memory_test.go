@@ -100,3 +100,25 @@ func TestResidentMemoryProtectsUnfilledFloor(t *testing.T) {
 		t.Fatal("the floor could not use its own reservation", decision, err)
 	}
 }
+
+func TestResidentPendingDiagnosticsIgnoreLegacyCommitmentBalance(t *testing.T) {
+	policy := sharedHeadroomPolicy(t)
+	pending := Pending{Request: Request{ID: "guest", Pool: "qa"}}
+	snapshot := Snapshot{Schema: sharedMemoryLedgerSchema, Policy: policy}
+	report := Diagnostics{PolicyMatches: true, CommitmentRemaining: Resources{}, Remaining: Resources{}, Pools: []PoolDiagnostic{{Name: "qa", Granted: 0}}}
+	reason, constraint := diagnosticReason(&snapshot, &pending, &report)
+	if reason != memoryObservationRequired || constraint != memoryHeadroom {
+		t.Fatalf("resident diagnostics used nominal balance: %s %s", reason, constraint)
+	}
+	report.Pools[0].Granted = policy.Pools["qa"].Maximum
+	reason, constraint = diagnosticReason(&snapshot, &pending, &report)
+	if reason != diagnosticBudget || constraint != "pool_maximum" {
+		t.Fatalf("resident diagnostics lost pool ceiling: %s %s", reason, constraint)
+	}
+	report.Pools[0].Granted = 0
+	snapshot.Schema = legacySharedMemoryLedgerSchema
+	reason, constraint = diagnosticReason(&snapshot, &pending, &report)
+	if reason != diagnosticBudget || constraint != "host_budget" {
+		t.Fatalf("legacy commitment diagnostic changed: %s %s", reason, constraint)
+	}
+}

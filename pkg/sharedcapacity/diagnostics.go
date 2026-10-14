@@ -271,10 +271,10 @@ func diagnosticReason(snapshot *Snapshot, pending *Pending, report *Diagnostics)
 	if pending.Pool == buildPool || snapshot.Policy.SharedMemoryHeadroom {
 		remaining = report.CommitmentRemaining
 	}
-	if constraint == "" && !snapshot.Policy.fitsHost(remaining, cost) {
+	if snapshot.Schema != sharedMemoryLedgerSchema && constraint == "" && !snapshot.Policy.fitsHost(remaining, cost) {
 		constraint = "host_budget"
 	}
-	if constraint == "" && !canAdmit(snapshot, pending.Request) {
+	if snapshot.Schema != sharedMemoryLedgerSchema && constraint == "" && !canAdmit(snapshot, pending.Request) {
 		constraint = "floor_reserve"
 	}
 	if snapshot.Policy.SharedMemoryHeadroom {
