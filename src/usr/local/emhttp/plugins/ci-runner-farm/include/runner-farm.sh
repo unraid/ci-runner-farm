@@ -179,6 +179,8 @@ IMAGE_DRAIN_TIMEOUT GITLAB_SHUTDOWN_TIMEOUT GITLAB_SHM_SIZE DOCKER_CACHE_MIN_FRE
 # lines ourselves and assign via printf -v — a literal string set, never eval'd —
 # and only for keys on the allowlist above.
 load_cfg() {
+  # Omitting the optional policy is an explicit opt-out on daemon reload.
+  DOCKER_CACHE_BUILDERS=""
   [ -f "$CFG" ] || return 0
   local line key val
   while IFS= read -r line || [ -n "$line" ]; do
