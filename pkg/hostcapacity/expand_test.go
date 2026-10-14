@@ -28,8 +28,8 @@ func expandedPolicy(t *testing.T, previous sharedcapacity.Policy) sharedcapacity
 }
 
 func TestPoolExpansionPreservesOwnersAndRecoversLedgerCommit(t *testing.T) {
-	for _, interrupted := range []bool{false, true} {
-		t.Run(map[bool]string{false: "normal", true: "after-ledger"}[interrupted], func(t *testing.T) {
+	for _, stage := range []string{"normal", "before-ledger", "after-ledger"} {
+		t.Run(stage, func(t *testing.T) {
 			root := testRoot(t)
 			path := filepath.Join(root, "host-capacity.json")
 			config := testConfig(root)
@@ -51,14 +51,19 @@ func TestPoolExpansionPreservesOwnersAndRecoversLedgerCommit(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if len(before.Pending) != 1 {
+				t.Fatal("pending owner fixture was not queued")
+			}
 			expansion := PoolExpansion{Previous: config.Policy, Revised: expandedPolicy(t, config.Policy)}
-			if interrupted {
+			if stage != "normal" {
 				closed := config
 				closed.Mode = "closed"
 				closed.PoolExpansion = &expansion
 				writeConfig(t, path, closed)
-				if err := broker.ReconcilePolicy(&expansion.Previous, &expansion.Revised); err != nil {
-					t.Fatal(err)
+				if stage == "after-ledger" {
+					if err := broker.ReconcilePolicy(&expansion.Previous, &expansion.Revised); err != nil {
+						t.Fatal(err)
+					}
 				}
 			}
 			lease, err := acquire(context.Background(), path, true, config.Host, uint32(os.Geteuid()))
