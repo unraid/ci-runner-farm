@@ -589,6 +589,27 @@ runtime provider.
 Canonical releases use release-please and GitHub Release assets. Questions and
 bug reports: <https://github.com/unraid/ci-runner-farm/issues>
 
+### Shared host budget consumers
+
+The public `pkg/hostcapacity` SDK provides `WithConsumer` for a host participant.
+Its `Binding` selects Farm's protected config path, ownership epoch and declared
+consumer name. The participant stores no independent copy of the shared policy.
+Farm provides the ledger path, allocation classes and guest overhead under a
+shared policy lease.
+
+Acquire the participant's configuration and owner/capacity locks first. Put
+both the provider or listener effect and its state/receipt commit inside the
+`WithConsumer` callback. Pass its context to nested operations so they reuse
+the same lease. A different ownership binding or a context retained after the
+outer callback returns is rejected. Policy changes and ownership handoffs use
+the existing exclusive host lease and wait for the entire callback.
+
+The callback receives a private policy snapshot; changing that snapshot does
+not change the host policy. The participant still verifies actual workload
+limits and proves that its own stopped owners can release their fenced grants.
+This SDK does not activate a host or migrate its existing ledger. The current
+QA bridge remains active until the participant and ownership handoff are deployed.
+
 ### Elastic general build classes
 
 For shared GitHub pools, `ELASTIC_POOLS="true"` makes each class ceiling a
