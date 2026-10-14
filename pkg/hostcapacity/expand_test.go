@@ -158,3 +158,39 @@ func TestPoolExpansionRejectsUnrelatedClosureAndChangedLock(t *testing.T) {
 		})
 	}
 }
+
+func TestPoolExpansionNormalizesEmptyOptionalSlices(t *testing.T) {
+	root := testRoot(t)
+	path := filepath.Join(root, "host-capacity.json")
+	config := testConfig(root)
+	writeConfig(t, path, config)
+	broker := sharedcapacity.Broker{Path: config.LedgerPath}
+	if err := broker.Initialize(&config.Policy, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	expansion := PoolExpansion{Previous: config.Policy, Revised: expandedPolicy(t, config.Policy)}
+	pool := expansion.Revised.Pools["build"]
+	pool.MinimumRequestIDs = []string{}
+	expansion.Revised.Pools["build"] = pool
+	lease, err := acquire(t.Context(), path, true, config.Host, uint32(os.Geteuid()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.ExpandPools(expansion); err != nil {
+		t.Fatal("optional empty slice stranded expansion", err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatal(err)
+	}
+	retry, err := acquire(t.Context(), path, true, config.Host, uint32(os.Geteuid()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer retry.Close()
+	if err := retry.ExpandPools(expansion); err != nil {
+		t.Fatal("same unnormalized request did not replay", err)
+	}
+	if retry.Config.Mode != "active" || retry.Config.PoolExpansion != nil {
+		t.Fatal("expansion remained closed")
+	}
+}

@@ -59,6 +59,17 @@ func (e *PoolExpansion) Validate() error {
 // lease used by all consumers. A crash leaves a closed, resumable transition.
 // The caller retains its native fleet lock; this method starts no workloads.
 func (l *Lease) ExpandPools(expansion PoolExpansion) error {
+	// Decode into a zero value: decoding into the populated request retains
+	// omitted optional slices and would not normalize their representation.
+	data, err := json.Marshal(expansion)
+	if err != nil {
+		return err
+	}
+	var normalized PoolExpansion
+	if err := json.Unmarshal(data, &normalized); err != nil {
+		return err
+	}
+	expansion = normalized
 	if err := expansion.Validate(); err != nil {
 		return err
 	}
