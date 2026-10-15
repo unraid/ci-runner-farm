@@ -20,7 +20,7 @@ fi
 [[ "${GITHUB_RUN_ID:-}" =~ ^[1-9][0-9]*$ ]] && [[ "${GITHUB_RUN_ATTEMPT:-}" =~ ^[1-9][0-9]*$ ]] || exit "$image_status"
 
 case "${1:-}" in
-  --cleanup|--prune) ;;
+  --cleanup|--prune|--workspace) ;;
   *)
     # Hook failure must not fail a completed build. Bound both the whole pass
     # and each Docker call; unknown cleanup stays visible in the job log.
@@ -30,26 +30,62 @@ case "${1:-}" in
     if ! timeout -k 2 120 bash "$0" --prune; then
       echo '[ci-runner-farm] job Docker prune incomplete; retained unpruned state' >&2
     fi
+    if ! timeout -k 2 120 bash "$0" --workspace; then
+      echo '[ci-runner-farm] job workspace cleanup incomplete; retained remaining checkouts' >&2
+    fi
     exit "$image_status"
     ;;
 esac
-
-# A workflow's remote Docker context must never redirect host maintenance.
-unset DOCKER_HOST DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH
-local_docker() { timeout -k 1 5 docker --host unix:///var/run/docker.sock "$@"; }
-[ "$(local_docker info --format '{{.DockerRootDir}}')" = /var/lib/docker ] || exit 1
 
 minimum="${CRF_DOCKER_CACHE_MIN_FREE_PERCENT:-15}"
 [[ "$minimum" =~ ^(0|[1-9][0-9]?|100)$ ]] || exit 1
 cache_pressure() {
   local filesystem usage total available
-  filesystem="$(timeout -k 1 3 df -Pk /var/lib/docker)" || return 2
+  filesystem="$(timeout -k 1 3 df -Pk "${1:-/var/lib/docker}")" || return 2
   usage="$(printf '%s\n' "$filesystem" | awk 'NR==2 {print $2 "|" $4}')"
   IFS='|' read -r total available <<< "$usage"
   [[ "$total" =~ ^[1-9][0-9]{0,14}$ && "$available" =~ ^(0|[1-9][0-9]{0,14})$ ]] || return 2
   [ "$available" -le "$total" ] || return 2
   [ "$((available * 100 / total))" -lt "$minimum" ]
 }
+
+if [ "$1" = --workspace ]; then
+  # Persistent runners keep a checkout of every repository they have served.
+  # Under storage pressure keep only this job's repository; the next job of
+  # any other repository checks it out again. Each tree is first renamed out
+  # of the runner's namespace, so an interrupted removal never leaves a partial
+  # checkout behind; later passes finish removing renamed trees.
+  work="${RUNNER_WORKDIR:-}"
+  [[ "$work" =~ ^/[A-Za-z0-9_./-]+$ && "$work" != / && "$work" != *..* ]] || exit 1
+  [ -d "$work" ] && [ ! -L "$work" ] || exit 1
+  current="${GITHUB_WORKSPACE:-}"
+  case "$current" in "$work"/?*) current="${current#"$work"/}"; current="${current%%/*}" ;; *) current='' ;; esac
+  incomplete=0
+  if [ -n "$current" ]; then
+    if cache_pressure "$work"; then
+      for tree in "$work"/*; do
+        name="${tree##*/}"
+        [ -d "$tree" ] && [ ! -L "$tree" ] || continue
+        # Runner-owned state (_actions, _temp, _tool, ...) is never a checkout.
+        case "$name" in _*|"$current") continue ;; esac
+        mv -- "$tree" "$work/_crf-trash-$$-$RANDOM-$name" || incomplete=1
+      done
+    else
+      [ "$?" -eq 1 ] || incomplete=1
+    fi
+  fi
+  for tree in "$work"/_crf-trash-*; do
+    [ -d "$tree" ] && [ ! -L "$tree" ] || continue
+    rm -rf --one-file-system -- "$tree" || incomplete=1
+    [ ! -e "$tree" ] && printf '[ci-runner-farm] removed idle workspace checkout under storage pressure\n'
+  done
+  exit "$incomplete"
+fi
+
+# A workflow's remote Docker context must never redirect host maintenance.
+unset DOCKER_HOST DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH
+local_docker() { timeout -k 1 5 docker --host unix:///var/run/docker.sock "$@"; }
+[ "$(local_docker info --format '{{.DockerRootDir}}')" = /var/lib/docker ] || exit 1
 
 if [ "$1" = --prune ]; then
   # A persistent DinD store outlives every job, so anything a job leaves behind

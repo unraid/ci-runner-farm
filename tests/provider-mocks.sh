@@ -38,7 +38,7 @@ docker() { [ "$1 $2" = 'image inspect' ]; }
 host() { printf 'mockhost\n'; }
 runner_host_service_ipv4() { printf '192.0.2.10\n'; }
 github_kvm_gid() { return 1; }
-legacy_confgen="$(printf '%s\0' github-dind-cgroupns-v1-job-cache-cleanup-v2 "$GH_SCOPE" "$GH_OWNER" "$GH_REPOS" "$RUNNER_GROUP" "$RUNNER_LABELS" \
+legacy_confgen="$(printf '%s\0' github-dind-cgroupns-v1-job-cache-cleanup-v3 "$GH_SCOPE" "$GH_OWNER" "$GH_REPOS" "$RUNNER_GROUP" "$RUNNER_LABELS" \
   "$EPHEMERAL" "$RUNNER_CPUS" "$RUNNER_MEMORY" "$WORK_TMPFS_SIZE" "$CACHE_MOUNTS" \
   "$USER_SHARE_MOUNTS" \
   "$DIND" "$SHARE_DOCKER_SOCK" "$RUN_AS_ROOT" "$IMAGE_SOURCE" "$IMAGE" \

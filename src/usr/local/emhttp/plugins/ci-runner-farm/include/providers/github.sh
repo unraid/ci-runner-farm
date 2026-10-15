@@ -44,7 +44,7 @@ github_confgen() {
   local runtime_salt='' kvm_gid cache_spec
   [ "$DIND" = true ] && runtime_salt='github-dind-cgroupns-v1'
   if [ "$DIND" = true ] && [ "$EPHEMERAL" = false ]; then
-    runtime_salt="${runtime_salt}-job-cache-cleanup-v2"
+    runtime_salt="${runtime_salt}-job-cache-cleanup-v3"
     [ -z "${DOCKER_CACHE_BUILDERS:-}" ] || runtime_salt="${runtime_salt}-cache-pressure-v1-${DOCKER_CACHE_MIN_FREE_PERCENT:-15}-${DOCKER_CACHE_BUILDERS}"
   fi
   # The explicit store contract must replace existing slots through the normal
