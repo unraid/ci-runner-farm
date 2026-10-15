@@ -6,7 +6,7 @@ hook="$PWD/src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-job-cleanu
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 mkdir "$tmp/bin"
 export PATH="$tmp/bin:$PATH" PRUNE_TEST_LOG="$tmp/calls"
-export GITHUB_ACTIONS=true GITHUB_RUN_ID=123456 GITHUB_RUN_ATTEMPT=1 CRF_JOB_CLEANUP_DIND=1
+export GITHUB_ACTIONS=true GITHUB_RUN_ID=123456 GITHUB_RUN_ATTEMPT=1 CRF_JOB_CLEANUP_DIND=1 CRF_JOB_PRUNE=1
 export DOCKER_HOST=tcp://foreign.example DOCKER_CONTEXT=foreign
 exited=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 builder=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
@@ -61,4 +61,6 @@ run wrong-root; [ ! -s "$PRUNE_TEST_LOG" ]
 # Prune failure is reported but never fails the completed job.
 run prune-error; grep -q 'prune incomplete' "$tmp/output"
 CRF_JOB_CLEANUP_DIND=0 run pressure; [ ! -s "$PRUNE_TEST_LOG" ]
+# Pruning is opt-in: without it the hook leaves the daemon untouched.
+CRF_JOB_PRUNE='' run pressure; [ ! -s "$PRUNE_TEST_LOG" ]
 echo 'job Docker prune: between-job reclaim, builders kept, unused images only under pressure PASS'

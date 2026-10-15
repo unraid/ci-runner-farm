@@ -92,6 +92,15 @@ echo 'job Docker cache: exact job scope, preserved references/custom volumes, lo
  grep -qx 'CRF_DOCKER_CACHE_MIN_FREE_PERCENT=0' <<< "$args"
  if grep -q CRF_DOCKER_CACHE_BUILDERS <<< "$args"; then exit 1; fi
  [ "$(github_confgen)" != "$default_generation" ]
+ # Job pruning is opt-in; enabling it reaches the hook and replaces slots.
+ DOCKER_CACHE_MIN_FREE_PERCENT=15
+ github_build_args 1 test-runner
+ if printf '%s\n' "${ARGS[@]}" | grep -q CRF_JOB_PRUNE; then exit 1; fi
+ DOCKER_JOB_PRUNE=true
+ github_build_args 1 test-runner
+ printf '%s\n' "${ARGS[@]}" | grep -qx 'CRF_JOB_PRUNE=1'
+ [ "$(github_confgen)" != "$default_generation" ]
+ DOCKER_JOB_PRUNE=false
  DIND=true; EPHEMERAL=false; SHARE_DOCKER_SOCK=false
  IMAGE_HOOK_INSPECT_FAIL=1
  if github_build_args 1 test-runner >/dev/null 2>&1; then exit 1; fi

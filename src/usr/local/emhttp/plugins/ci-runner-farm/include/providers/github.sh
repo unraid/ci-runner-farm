@@ -45,6 +45,8 @@ github_confgen() {
   [ "$DIND" = true ] && runtime_salt='github-dind-cgroupns-v1'
   if [ "$DIND" = true ] && [ "$EPHEMERAL" = false ]; then
     runtime_salt="${runtime_salt}-job-cache-cleanup-v3"
+    # Opting in must replace existing slots; the default keeps the fingerprint.
+    [ "${DOCKER_JOB_PRUNE:-false}" != true ] || runtime_salt="${runtime_salt}-job-prune-v1"
     # Existing slots must pick up a changed threshold. The default keeps the
     # prior fingerprint so an upgrade does not recycle every persistent slot.
     if [ -n "${DOCKER_CACHE_BUILDERS:-}" ]; then
@@ -668,6 +670,7 @@ github_build_args() {
         github_validate_docker_cache_policy || return 1
         ARGS+=( -e "CRF_DOCKER_CACHE_BUILDERS=$DOCKER_CACHE_BUILDERS" )
       fi
+      [ "${DOCKER_JOB_PRUNE:-false}" != true ] || ARGS+=( -e CRF_JOB_PRUNE=1 )
     fi
   elif [ "$SHARE_DOCKER_SOCK" = "true" ]; then
     ARGS+=( -v /var/run/docker.sock:/var/run/docker.sock )
