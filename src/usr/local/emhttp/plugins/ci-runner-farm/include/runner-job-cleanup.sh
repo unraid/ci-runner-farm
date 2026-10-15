@@ -62,13 +62,14 @@ if [ "$1" = --prune ]; then
   [[ "$api" =~ ^1\.([1-9][0-9]{0,2})$ ]] || exit 1
   api_minor="${BASH_REMATCH[1]}"
   stopped="$(local_docker ps -a --no-trunc --filter status=exited --filter status=created --filter status=dead --format '{{.ID}} {{.Names}}')" || exit 1
-  count=0
+  count=0 incomplete=0
   while read -r id name; do
     [[ "$id" =~ ^[0-9a-f]{64}$ ]] || continue
     case "$name" in buildx_buildkit_*) continue ;; esac
     count=$((count + 1)); [ "$count" -le 64 ] || break
-    # Never force removal: a container restarted meanwhile stays.
-    local_docker rm -v "$id" >/dev/null || true
+    # Never force removal: a container restarted meanwhile stays, reported
+    # as incomplete after the remaining best-effort pruning.
+    local_docker rm -v "$id" >/dev/null || incomplete=1
   done <<< "$stopped"
   # Since API 1.42 volume prune removes only anonymous volumes. Older daemons
   # would also remove unused named volumes, which may be deliberate caches.
@@ -83,7 +84,7 @@ if [ "$1" = --prune ]; then
   else
     [ "$?" -eq 1 ] || exit 1
   fi
-  exit 0
+  exit "$incomplete"
 fi
 volumes="$(local_docker volume ls --format '{{.Name}}')" || exit 1
 count=0

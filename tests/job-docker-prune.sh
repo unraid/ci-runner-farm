@@ -30,7 +30,7 @@ case "$1 $2" in
  'info --format') [ "$PRUNE_TEST_MODE" != wrong-root ] && echo /var/lib/docker || echo /foreign ;;
  'version --format') [ "$PRUNE_TEST_MODE" = old-api ] && echo 1.41 || echo 1.56 ;;
  'ps -a') printf '%s %s\n' "$PRUNE_EXITED" job-leftover "$PRUNE_BUILDER" buildx_buildkit_warm0 not-an-id odd ;;
- 'rm -v') echo "rm $3" >> "$PRUNE_TEST_LOG" ;;
+ 'rm -v') echo "rm $3" >> "$PRUNE_TEST_LOG"; [ "$PRUNE_TEST_MODE" != rm-error ] ;;
  'volume ls') ;;
  'volume prune'|'image prune'|'builder prune')
   echo "$*" >> "$PRUNE_TEST_LOG"; [ "$PRUNE_TEST_MODE" != prune-error ] ;;
@@ -55,6 +55,8 @@ grep -q 'prune incomplete' "$tmp/output"
 run old-api; [ "$(cat "$PRUNE_TEST_LOG")" = "rm $exited
 image prune -f
 builder prune -f" ]
+# A container removal failure still prunes the rest but is reported.
+run rm-error; [ "$(cat "$PRUNE_TEST_LOG")" = "$base" ]; grep -q 'prune incomplete' "$tmp/output"
 run wrong-root; [ ! -s "$PRUNE_TEST_LOG" ]
 # Prune failure is reported but never fails the completed job.
 run prune-error; grep -q 'prune incomplete' "$tmp/output"
