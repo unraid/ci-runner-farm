@@ -47,6 +47,10 @@ grep -qF 'ci-runner-farm-nightly.tgz' .github/workflows/nightly.yml
 grep -qF 'ci-runner-farm-nightly.json' .github/workflows/nightly.yml
 grep -qF 'release_base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/nightly"' .github/workflows/nightly.yml
 grep -qF 'contents: write' .github/workflows/nightly.yml
+# A rebuild of an already published commit changes the nightly version and
+# digests in place, which breaks consumers pinned to the current manifest.
+if grep -qE '^[[:space:]]*schedule:' .github/workflows/nightly.yml; then exit 1; fi
+grep -qF 'steps.published.outputs.publish' .github/workflows/nightly.yml
 grep -qF 'self-hosted-runner:' .github/actionlint.yaml
 grep -qF -- '- unraid' .github/actionlint.yaml
 grep -qF -- '- build' .github/actionlint.yaml
