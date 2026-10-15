@@ -89,6 +89,11 @@ func TestNativeProcessIdleRequiresListenerAndNoWorker(t *testing.T) {
 		{"PID COMMAND\n0 Runner.Listener\n", false, false},
 		{"COMMAND\nRunner.Listener\n", false, false},
 		{"PID COMMAND\n123 Runner.Listener\n124 Runner.Listener\n", false, false},
+		// Commands with spaces and zombies keep a provable identity.
+		{"PID COMMAND\n123 Runner.Listener\n125 Web Content\n126 node <defunct>\n", true, true},
+		{"PID COMMAND\n125 Web Content\n123 Runner.Listener\n124 Runner.Worker\n", false, true},
+		{"PID COMMAND\n123 Runner.Listener\n124 Runner.Worker <defunct>\n", false, true},
+		{"PID COMMAND\n123 Runner.Listener <defunct>\n", false, false},
 	} {
 		idle, err := nativeProcessesIdle(item.data)
 		if idle != item.idle || (err == nil) != item.known {

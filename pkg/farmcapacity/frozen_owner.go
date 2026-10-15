@@ -173,17 +173,20 @@ func nativeProcessesIdle(data string) (bool, error) {
 		if len(fields) == 0 || (len(fields) == 2 && fields[0] == "PID" && fields[1] == "COMMAND") {
 			continue
 		}
-		if len(fields) != 2 {
+		// comm may contain spaces ("Web Content") and zombies render as
+		// "name <defunct>", so the command is everything after the PID.
+		if len(fields) < 2 {
 			return false, errors.New("native process identity is incomplete")
 		}
 		pid, err := strconv.ParseUint(fields[0], 10, 64)
 		if err != nil || pid == 0 {
 			return false, errors.New("native process PID is unproved")
 		}
-		switch fields[1] {
-		case "Runner.Worker":
+		// A zombie worker still marks a job that has not settled.
+		if fields[1] == "Runner.Worker" {
 			return false, nil
-		case "Runner.Listener":
+		}
+		if strings.Join(fields[1:], " ") == "Runner.Listener" {
 			listeners++
 		}
 	}
