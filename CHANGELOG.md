@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.14.0](https://github.com/unraid/ci-runner-farm/compare/v1.13.0...v1.14.0) (2026-10-15)
+
+
+### Features
+
+* **capacity:** expand shared pools without resetting active owners ([#171](https://github.com/unraid/ci-runner-farm/issues/171)) ([8b788b4](https://github.com/unraid/ci-runner-farm/commit/8b788b4b9b408c2f390bfa6a6f364844f6cbba51))
+
+
+### Bug Fixes
+
+* **cache:** drop idle workspace checkouts under storage pressure ([#173](https://github.com/unraid/ci-runner-farm/issues/173)) ([0d0c345](https://github.com/unraid/ci-runner-farm/commit/0d0c3458afb8809cf4bdca1bafcfdfe368ac3453))
+* **cache:** prune persistent DinD stores between jobs ([#172](https://github.com/unraid/ci-runner-farm/issues/172)) ([e166498](https://github.com/unraid/ci-runner-farm/commit/e166498327906577d50d706c520eb972867ced46))
+* **cache:** reclaim opted-in unused builder caches under pressure ([#170](https://github.com/unraid/ci-runner-farm/issues/170)) ([bd6d478](https://github.com/unraid/ci-runner-farm/commit/bd6d4789867a00b7ada44cdc586f617b1ad52bb0))
+* **capacity:** drain owners above a lowered class ceiling ([#175](https://github.com/unraid/ci-runner-farm/issues/175)) ([1f4aa86](https://github.com/unraid/ci-runner-farm/commit/1f4aa8656fa6c701ef5069f90c1153bcd8567fa0))
+* **capacity:** parse runner process names that contain spaces ([#174](https://github.com/unraid/ci-runner-farm/issues/174)) ([e82212a](https://github.com/unraid/ci-runner-farm/commit/e82212a1d4a5667b9dd4e388c5e76e9bae21a36e))
+* **capacity:** reconcile idle native runners without clearing warm caches ([#168](https://github.com/unraid/ci-runner-farm/issues/168)) ([9606597](https://github.com/unraid/ci-runner-farm/commit/96065971e02b008bbc7fee234f1f14264ac8da15))
+* **capacity:** stop timing windows from discarding demand ticks ([#176](https://github.com/unraid/ci-runner-farm/issues/176)) ([05e6e06](https://github.com/unraid/ci-runner-farm/commit/05e6e06d01e5e9a39a72613dd103689160e7b183))
+
 ## [1.13.0](https://github.com/unraid/ci-runner-farm/compare/v1.12.0...v1.13.0) (2026-10-14)
 
 
