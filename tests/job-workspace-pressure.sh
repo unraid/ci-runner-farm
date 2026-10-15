@@ -6,7 +6,7 @@ hook="$PWD/src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-job-cleanu
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 mkdir "$tmp/bin"
 export PATH="$tmp/bin:$PATH"
-export GITHUB_ACTIONS=true GITHUB_RUN_ID=123456 GITHUB_RUN_ATTEMPT=1 CRF_JOB_CLEANUP_DIND=1
+export GITHUB_ACTIONS=true GITHUB_RUN_ID=123456 GITHUB_RUN_ATTEMPT=1 CRF_JOB_CLEANUP_DIND=1 CRF_JOB_PRUNE=1
 export RUNNER_WORKDIR="$tmp/work" GITHUB_WORKSPACE="$tmp/work/core/core"
 cat > "$tmp/bin/df" <<'MOCK'
 #!/usr/bin/env bash
@@ -45,4 +45,5 @@ for root in '' / relative "$tmp/work/../work" "$tmp/work/linked"; do
 done
 [ "$(left)" = "$kept" ]
 seed; CRF_JOB_CLEANUP_DIND=0 run pressure; [ "$(left)" = "$kept" ]
+seed; CRF_JOB_PRUNE='' run pressure; [ "$(left)" = "$kept" ]
 echo 'job workspace pressure: only the current checkout kept, runner state and links preserved PASS'

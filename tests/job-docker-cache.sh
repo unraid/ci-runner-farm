@@ -73,11 +73,34 @@ echo 'job Docker cache: exact job scope, preserved references/custom volumes, lo
    grep -qx 'ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/opt/ci-runner-farm/job-completed.sh' <<< "$args"
    grep -qx 'CRF_IMAGE_JOB_COMPLETED_HOOK=/usr/local/bin/original.sh' <<< "$args"
    grep -qx 'CRF_JOB_CLEANUP_DIND=1' <<< "$args"
+   grep -qx 'CRF_DOCKER_CACHE_MIN_FREE_PERCENT=15' <<< "$args"
    grep -q ':\/opt\/ci-runner-farm\/job-completed.sh:ro$' <<< "$args"
   else
    if grep -q ACTIONS_RUNNER_HOOK_JOB_COMPLETED <<< "$args"; then exit 1; fi
   fi
  done
+ # The opt-out reaches the hook without a builder allowlist, and changing it
+ # replaces existing slots. The default keeps the previous fingerprint.
+ DIND=true; EPHEMERAL=false; SHARE_DOCKER_SOCK=false; DOCKER_CACHE_BUILDERS=''
+ DOCKER_CACHE_MIN_FREE_PERCENT=15
+ default_generation="$(github_confgen)"
+ unset DOCKER_CACHE_MIN_FREE_PERCENT
+ [ "$(github_confgen)" = "$default_generation" ]
+ DOCKER_CACHE_MIN_FREE_PERCENT=0
+ github_build_args 1 test-runner
+ args="$(printf '%s\n' "${ARGS[@]}")"
+ grep -qx 'CRF_DOCKER_CACHE_MIN_FREE_PERCENT=0' <<< "$args"
+ if grep -q CRF_DOCKER_CACHE_BUILDERS <<< "$args"; then exit 1; fi
+ [ "$(github_confgen)" != "$default_generation" ]
+ # Job pruning is opt-in; enabling it reaches the hook and replaces slots.
+ DOCKER_CACHE_MIN_FREE_PERCENT=15
+ github_build_args 1 test-runner
+ if printf '%s\n' "${ARGS[@]}" | grep -q CRF_JOB_PRUNE; then exit 1; fi
+ DOCKER_JOB_PRUNE=true
+ github_build_args 1 test-runner
+ printf '%s\n' "${ARGS[@]}" | grep -qx 'CRF_JOB_PRUNE=1'
+ [ "$(github_confgen)" != "$default_generation" ]
+ DOCKER_JOB_PRUNE=false
  DIND=true; EPHEMERAL=false; SHARE_DOCKER_SOCK=false
  IMAGE_HOOK_INSPECT_FAIL=1
  if github_build_args 1 test-runner >/dev/null 2>&1; then exit 1; fi
