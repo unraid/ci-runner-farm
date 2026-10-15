@@ -48,6 +48,61 @@ func TestDemandRetiresIdleExtraAndKeepsWarmStandardFloor(t *testing.T) {
 	}
 }
 
+func TestDemandDrainsIdleOwnerAboveLoweredCeiling(t *testing.T) {
+	c, owners, bind, _ := demandFixture(t)
+	// Five owners exist; the ceiling was lowered to four, with a full warm
+	// buffer, so only the owner above the ceiling may be withdrawn.
+	pools := []DemandPool{{ID: buildPool, Minimum: 4, Maximum: 4, Idle: 4}}
+	starts, err := c.DemandStarts(context.Background(), pools, map[string]int{buildPool: 0}, bind)
+	if err != nil || len(starts[buildPool]) != 0 {
+		t.Fatal(starts, err)
+	}
+	docker, ok := c.Docker.(*fakeDocker)
+	if !ok {
+		t.Fatal("fixture owner differs")
+	}
+	for id, owner := range owners {
+		surplus := strings.HasSuffix(docker.containers[id].Name, "-5")
+		if owner.frozen != surplus {
+			t.Fatalf("%s frozen=%v surplus=%v", docker.containers[id].Name, owner.frozen, surplus)
+		}
+	}
+}
+
+func TestDemandBusyOwnerAboveLoweredCeilingCountsAgainstIt(t *testing.T) {
+	c, owners, bind, _ := demandFixture(t)
+	docker, ok := c.Docker.(*fakeDocker)
+	if !ok {
+		t.Fatal("fixture owner differs")
+	}
+	for id, item := range docker.containers {
+		switch {
+		case strings.HasSuffix(item.Name, "-5"):
+			owners[id].busy = true
+		case strings.HasSuffix(item.Name, "-4"):
+			delete(docker.containers, id)
+			owned, err := c.load(item.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if checkErr := c.Broker.Release(&c.Policy, "build:"+item.Name, owned.Fence, func(sharedcapacity.Grant) error { return nil }); checkErr != nil {
+				t.Fatal(checkErr)
+			}
+		}
+	}
+	// Slot 4 is free, but the busy owner above the ceiling already fills it.
+	pools := []DemandPool{{ID: buildPool, Minimum: 3, Maximum: 4}}
+	starts, err := c.DemandStarts(context.Background(), pools, map[string]int{buildPool: 999}, bind)
+	if err != nil || len(starts[buildPool]) != 0 {
+		t.Fatal(starts, err)
+	}
+	for _, owner := range owners {
+		if owner.busy && owner.frozen {
+			t.Fatal("busy surplus owner frozen")
+		}
+	}
+}
+
 func TestDemandSparseBusyOwnerDoesNotImposeIndexFloor(t *testing.T) {
 	c, owners, bind, _ := demandFixture(t)
 	docker, ok := c.Docker.(*fakeDocker)

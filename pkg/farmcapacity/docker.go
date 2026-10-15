@@ -153,6 +153,23 @@ func (d NativeDocker) RemoveCreated(ctx context.Context, id string) error {
 	return nil
 }
 
+// ManagedNames lists every native managed container name without inspecting
+// each one, so demand can find owners above a lowered class ceiling.
+func (d NativeDocker) ManagedNames(ctx context.Context) ([]string, error) {
+	const label = "net.unraid.ci-runner-farm.managed=true"
+	output, err := exec.CommandContext(ctx, "docker", "ps", "-a", "--filter", "label="+label, "--format", "{{.Names}}").Output()
+	if err != nil {
+		return nil, errors.New("native managed names are unavailable")
+	}
+	names := []string{}
+	for name := range strings.SplitSeq(strings.TrimSpace(string(output)), "\n") {
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
 // Owned includes every native managed identity, so adoption cannot miss an
 // inert replacement, stopped container or unsupported managed provider.
 func (d NativeDocker) Owned(ctx context.Context) ([]Container, error) {

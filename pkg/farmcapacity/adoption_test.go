@@ -23,6 +23,17 @@ func (d *fakeDocker) Owned(context.Context) ([]Container, error) {
 	return result, nil
 }
 
+func (d *fakeDocker) ManagedNames(context.Context) ([]string, error) {
+	if d.inspectErr != nil {
+		return nil, d.inspectErr
+	}
+	names := []string{}
+	for _, item := range d.containers {
+		names = append(names, item.Name)
+	}
+	return names, nil
+}
+
 func TestAdoptionChargesExistingBusyBuilderBeforeOpeningStarts(t *testing.T) {
 	c, d, id := fixture(t)
 	d.containers[id].Running = true

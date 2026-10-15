@@ -48,7 +48,9 @@ func (c *Controller) ObserveDemand(ctx context.Context, pools []DemandPool, reco
 		if observeErr != nil {
 			return nil, observeErr
 		}
-		result.Retained[pool.ID] = retained
+		// Busy owners above a lowered ceiling are retained too; the target
+		// contract bounds retained by the ceiling, which they already fill.
+		result.Retained[pool.ID] = min(retained, pool.Maximum)
 	}
 	result.ObservedAt = c.now().Unix()
 	return result, nil

@@ -92,7 +92,7 @@ func parseDemandPool(f []string, policy *sharedcapacity.Policy) (DemandPool, err
 	default:
 		return DemandPool{}, errors.New("demand memory must use m or g")
 	}
-	if p.Maximum < 1 || p.Maximum > 64 || p.Minimum > p.Maximum || p.Idle > p.Maximum || p.Maximum > int(policy.Pools[buildPool].Maximum) {
+	if p.Maximum < 1 || p.Maximum > maxDemandSlotIndex || p.Minimum > p.Maximum || p.Idle > p.Maximum || p.Maximum > int(policy.Pools[buildPool].Maximum) {
 		return DemandPool{}, errors.New("demand ceiling exceeds protected policy")
 	}
 	if _, e := sharedcapacity.RequestCost(policy, sharedcapacity.Request{Pool: buildPool, Resources: sharedcapacity.Resources{MemoryMiB: p.MemoryMiB, VCPUs: p.CPUs}}); e != nil {
@@ -127,11 +127,17 @@ func (c *Controller) DemandStarts(ctx context.Context, pools []DemandPool, queue
 	return starts, nil
 }
 
+// maxDemandSlotIndex is the native per-class slot bound.
+const maxDemandSlotIndex = 64
+
 type demandSlot struct {
 	index       int
 	item        *Container
 	binding     OwnerBinding
 	idle, inert bool
+	// surplus marks an owner above a lowered class ceiling. It is never kept
+	// or restarted; it drains as soon as it is idle or still inert.
+	surplus bool
 }
 
 func (c *Controller) demandPoolStarts(ctx context.Context, pool *DemandPool, queued int, bind BindOwner) ([]int, error) {
@@ -154,7 +160,7 @@ func (c *Controller) applyDemandTarget(ctx context.Context, pool *DemandPool, ta
 		if !slot.idle && !slot.inert {
 			continue
 		}
-		if floor[slot.index] || keep > 0 {
+		if !slot.surplus && (floor[slot.index] || keep > 0) {
 			if !floor[slot.index] {
 				keep--
 			}
@@ -212,45 +218,103 @@ func (c *Controller) demandFloorSlots(pool *DemandPool, slots []demandSlot, occu
 func (c *Controller) observeDemandSlots(ctx context.Context, pool *DemandPool, bind BindOwner) (slots []demandSlot, occupied map[int]bool, retained int, returnErr error) {
 	slots = []demandSlot{}
 	occupied = map[int]bool{}
+	surplus, err := c.surplusDemandIndices(ctx, pool)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	indices := make([]int, 0, pool.Maximum+len(surplus))
 	for index := 1; index <= pool.Maximum; index++ {
-		name := demandSlotName(pool.ID, index)
-		item, err := c.Docker.Inspect(ctx, name)
-		if errors.Is(err, ErrContainerMissing) {
+		indices = append(indices, index)
+	}
+	indices = append(indices, surplus...)
+	for _, index := range indices {
+		slot, found, slotErr := c.observeDemandSlot(ctx, pool, index, bind)
+		if slotErr != nil {
+			return nil, nil, 0, slotErr
+		}
+		if !found {
 			continue
 		}
-		if err != nil {
-			return nil, nil, 0, err
-		}
-		if validationErr := c.validate(item, name); validationErr != nil {
-			return nil, nil, 0, validationErr
-		}
 		occupied[index] = true
-		slot := demandSlot{index: index, item: item}
-		owned, err := c.demandReceipt(ctx, name, item)
-		if err != nil {
-			return nil, nil, 0, err
-		}
-		if owned.ID != item.ID {
-			return nil, nil, 0, errors.New("demand owner identity changed")
-		}
-		if owned.Fence == "" && item.NeverStarted && !item.Running && !owned.ReleasePending {
-			slot.inert = true
-		} else if !item.Paused && item.Running && (owned.Withdrawal == nil || owned.Withdrawal.Phase == "") && !owned.ReleasePending {
-			binding, e := c.bindWithdrawalOwner(ctx, name, owned, bind)
-			if e == nil {
-				idle, idleErr := binding.Owner.Idle(ctx)
-				if idleErr == nil && idle {
-					slot.idle = true
-					slot.binding = binding
-				}
-			}
-		}
+		// Busy surplus owners still use capacity, so they count against the
+		// ceiling and suppress new starts until they drain.
 		if !slot.idle && !slot.inert {
 			retained++
 		}
 		slots = append(slots, slot)
 	}
 	return slots, occupied, retained, nil
+}
+
+func (c *Controller) observeDemandSlot(ctx context.Context, pool *DemandPool, index int, bind BindOwner) (slot demandSlot, found bool, err error) {
+	name := demandSlotName(pool.ID, index)
+	item, err := c.Docker.Inspect(ctx, name)
+	if errors.Is(err, ErrContainerMissing) {
+		return demandSlot{}, false, nil
+	}
+	if err != nil {
+		return demandSlot{}, false, err
+	}
+	if validationErr := c.validate(item, name); validationErr != nil {
+		return demandSlot{}, false, validationErr
+	}
+	slot = demandSlot{index: index, item: item, surplus: index > pool.Maximum}
+	owned, err := c.demandReceipt(ctx, name, item)
+	if err != nil {
+		return demandSlot{}, false, err
+	}
+	if owned.ID != item.ID {
+		return demandSlot{}, false, errors.New("demand owner identity changed")
+	}
+	if owned.Fence == "" && item.NeverStarted && !item.Running && !owned.ReleasePending {
+		slot.inert = true
+	} else if !item.Paused && item.Running && (owned.Withdrawal == nil || owned.Withdrawal.Phase == "") && !owned.ReleasePending {
+		binding, e := c.bindWithdrawalOwner(ctx, name, owned, bind)
+		if e == nil {
+			idle, idleErr := binding.Owner.Idle(ctx)
+			if idleErr == nil && idle {
+				slot.idle = true
+				slot.binding = binding
+			}
+		}
+	}
+	return slot, true, nil
+}
+
+// namedDocker lists managed container names in one Docker call.
+type namedDocker interface {
+	ManagedNames(context.Context) ([]string, error)
+}
+
+// surplusDemandIndices finds owners of this class above its configured
+// ceiling, which remain after the ceiling is lowered. Without a name listing
+// the class keeps its previous, ceiling-bounded observation.
+func (c *Controller) surplusDemandIndices(ctx context.Context, pool *DemandPool) ([]int, error) {
+	docker, ok := c.Docker.(namedDocker)
+	if !ok {
+		return nil, nil
+	}
+	names, err := docker.ManagedNames(ctx)
+	if err != nil {
+		return nil, err
+	}
+	prefix := strings.TrimSuffix(demandSlotName(pool.ID, 0), "0")
+	seen := map[int]bool{}
+	indices := []int{}
+	for _, name := range names {
+		suffix, found := strings.CutPrefix(name, prefix)
+		if !found {
+			continue
+		}
+		index, parseErr := strconv.Atoi(suffix)
+		if parseErr != nil || strconv.Itoa(index) != suffix || index <= pool.Maximum || index > maxDemandSlotIndex || seen[index] {
+			continue
+		}
+		seen[index] = true
+		indices = append(indices, index)
+	}
+	slices.Sort(indices)
+	return indices, nil
 }
 
 func (c *Controller) demandReceipt(_ context.Context, name string, item *Container) (*receipt, error) {
