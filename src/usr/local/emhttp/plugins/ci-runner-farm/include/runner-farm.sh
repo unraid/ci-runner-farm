@@ -927,6 +927,8 @@ autoscale_daemon() {
     load_cfg
     reload_secret_files
     [ "$AUTOSCALE" = "true" ] || { log "autoscale disabled -> daemon exit"; rm -f "$AUTOSCALE_PID"; break; }
+    # Timestamp each tick so autoscale.log lines can be correlated with jobs.
+    log "autoscale tick $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     with_fleet_lock try autoscale_tick
     sleep "${AUTOSCALE_INTERVAL:-30}"
   done

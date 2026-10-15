@@ -7,6 +7,14 @@ require_once __DIR__ . "/encoding.php";
 class BuildDemand
 {
     private const CACHE_LIMIT = 16777216;
+    // The daemon ticks every AUTOSCALE_INTERVAL (300s on queued hosts). A gate
+    // equal to the interval defers alternate ticks on scheduling jitter.
+    private const POLL_SECONDS = 285;
+    // A full organization scan takes ~20s idle and longer under load; owner
+    // observation on a busy host adds tens of seconds more.
+    private const SCAN_SECONDS = 120;
+    private const QUEUE_SECONDS = 180;
+    private const OBSERVATION_SECONDS = 60;
     private array $cache = ['items' => [], 'cooldown' => 0];
     private string $scope;
     private string $recoveryScope;
@@ -32,7 +40,7 @@ class BuildDemand
         if ($plan !== null) {
             self::check(is_array($plan) && is_string($plan['scope'] ?? null) && is_int($plan['attemptedAt'] ?? null) &&
                 $plan['attemptedAt'] <= time(), 'invalid background poll receipt');
-            self::check($plan['scope'] !== $this->scope || time() - $plan['attemptedAt'] >= 300, 'background GitHub poll deferred');
+            self::check($plan['scope'] !== $this->scope || time() - $plan['attemptedAt'] >= self::POLL_SECONDS, 'background GitHub poll deferred');
         }
         $this->fresh();
         $this->cache['plan'] = ['scope' => $this->scope, 'attemptedAt' => time()];
@@ -47,7 +55,7 @@ class BuildDemand
         if ($plan !== null) {
             self::check(is_array($plan) && is_string($plan['scope'] ?? null) && is_int($plan['attemptedAt'] ?? null) &&
                 $plan['attemptedAt'] <= time(), 'invalid native recovery receipt');
-            self::check($plan['scope'] !== $this->recoveryScope || time() - $plan['attemptedAt'] >= 300, 'background native recovery deferred');
+            self::check($plan['scope'] !== $this->recoveryScope || time() - $plan['attemptedAt'] >= self::POLL_SECONDS, 'background native recovery deferred');
         }
         $this->cache['recoveryPlan'] = ['scope' => $this->recoveryScope, 'attemptedAt' => time()];
         $this->save();
@@ -126,7 +134,7 @@ class BuildDemand
 
     private function fresh(): void
     {
-        self::check(microtime(true) >= $this->started && microtime(true) - $this->started <= 60, 'stale general queue snapshot');
+        self::check(microtime(true) >= $this->started && microtime(true) - $this->started <= self::SCAN_SECONDS, 'stale general queue snapshot');
         self::check(time() >= $this->cache['cooldown'], 'GitHub queue reader cooldown');
     }
 
@@ -336,8 +344,8 @@ class BuildDemand
     public static function targets(string $records, array $scan, array $observation): array
     {
         $pools = self::pools($records); $now = time(); $start = $scan['queueStartedAt'] ?? null; $observed = $observation['observedAt'] ?? null;
-        self::check(($observation['schema'] ?? 0) === 1 && is_int($start) && $start > 0 && $start <= $now && $now - $start <= 60 &&
-            is_int($observed) && $observed >= $start && $observed <= $now && $now - $observed <= 15 &&
+        self::check(($observation['schema'] ?? 0) === 1 && is_int($start) && $start > 0 && $start <= $now && $now - $start <= self::QUEUE_SECONDS &&
+            is_int($observed) && $observed >= $start && $observed <= $now && $now - $observed <= self::OBSERVATION_SECONDS &&
             preg_match('/\A[a-f0-9]{64}\z/', $observation['policyDigest'] ?? '') === 1 &&
             ($observation['poolsDigest'] ?? '') === hash('sha256', ($scan['organization'] ?? '') . "\0" . $records) &&
             is_array($scan['counts'] ?? null) && is_array($observation['retained'] ?? null) &&

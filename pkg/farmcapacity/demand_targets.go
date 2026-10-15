@@ -90,9 +90,16 @@ func (c *Controller) ApplyDemandTargets(ctx context.Context, pools []DemandPool,
 	return starts, nil
 }
 
+// Freshness bounds match build-demand.php: a busy host's queue scan and owner
+// observation routinely exceed the former 15s/60s windows.
+const (
+	demandObservationSeconds = 60
+	demandQueueSeconds       = 180
+)
+
 func demandTargetsFresh(now int64, request *DemandTargets) bool {
-	return request != nil && request.ObservedAt > 0 && request.ObservedAt <= now && now-request.ObservedAt <= 15 &&
-		request.QueueStartedAt > 0 && request.QueueStartedAt <= request.ObservedAt && now-request.QueueStartedAt <= 60
+	return request != nil && request.ObservedAt > 0 && request.ObservedAt <= now && now-request.ObservedAt <= demandObservationSeconds &&
+		request.QueueStartedAt > 0 && request.QueueStartedAt <= request.ObservedAt && now-request.QueueStartedAt <= demandQueueSeconds
 }
 
 // policyDigest preserves the original QA JSON/SHA-256 observation identity.

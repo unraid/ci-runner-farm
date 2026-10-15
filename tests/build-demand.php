@@ -108,7 +108,7 @@ try {
     same(BuildDemand::targets(RECORDS,$scan,$observation)['targets'],['build-small'=>0,'build'=>10]);
     foreach (['stale','policy','pool','missing','negative','extra'] as $mode) {
         $bad=$observation; $queue=$scan;
-        if ($mode==='stale') $queue['queueStartedAt']=time()-61;
+        if ($mode==='stale') $queue['queueStartedAt']=time()-181;
         if ($mode==='policy') $bad['policyDigest']='';
         if ($mode==='pool') $bad['poolsDigest']=str_repeat('b',64);
         if ($mode==='missing') unset($queue['counts']['build-small']);
@@ -163,7 +163,11 @@ try {
         // A fresh process cannot turn a failed/restarted pass into another scan.
         rejects(fn()=>(new BuildDemand($cache,'g','q'))->begin());
         $stored=json_decode(file_get_contents($cache),true);
-        $stored['plan']['attemptedAt']=time()-300;
+        $stored['plan']['attemptedAt']=time()-280;
+        file_put_contents($cache,json_encode($stored));
+        rejects(fn()=>(new BuildDemand($cache,'g','q'))->begin());
+        // A tick that lands slightly early on a 300s interval still polls.
+        $stored['plan']['attemptedAt']=time()-290;
         file_put_contents($cache,json_encode($stored));
         (new BuildDemand($cache,'g','q'))->begin();
         unlink($cache);

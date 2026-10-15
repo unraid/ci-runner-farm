@@ -27,11 +27,11 @@ func TestFarmTargetsRejectStalePolicyAndIncompleteClassesBeforeEffects(t *testin
 			case "scope":
 				bad.PoolsDigest = "changed-scope"
 			case "expired-observation":
-				bad.ObservedAt = now.Add(-16 * time.Second).Unix()
+				bad.ObservedAt = now.Add(-(demandObservationSeconds + 1) * time.Second).Unix()
 			case "future":
 				bad.ObservedAt = now.Add(time.Second).Unix()
 			case "queue":
-				bad.QueueStartedAt = now.Add(-61 * time.Second).Unix()
+				bad.QueueStartedAt = now.Add(-(demandQueueSeconds + 1) * time.Second).Unix()
 			case "partial":
 				delete(bad.Targets, smallClassPool)
 			case "extra":
