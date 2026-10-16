@@ -30,7 +30,7 @@ $defaults = [
   'GITLAB_ALLOWED_IMAGES'=>'', 'GITLAB_ALLOWED_SERVICES'=>'', 'GITLAB_PULL_POLICY'=>'auto', 'GITLAB_SHM_SIZE'=>'0',
   'RUNNER_GROUP'=>'', 'RUNNER_COUNT'=>'4', 'RUNNER_LABELS'=>'self-hosted,unraid,build',
   'RUNNER_MODE'=>'single', 'RUNNER_POOLS'=>'',
-  'RUNNER_CPUS'=>'', 'RUNNER_MEMORY'=>'16g', 'EPHEMERAL'=>'false', 'RUN_AS_ROOT'=>'false',
+  'RUNNER_CPUS'=>'', 'CPU_PINNING'=>'false', 'RUNNER_MEMORY'=>'16g', 'EPHEMERAL'=>'false', 'RUN_AS_ROOT'=>'false',
   'IMAGE_SOURCE'=>'builtin', 'IMAGE'=>'', 'REGISTRY_SERVER'=>'', 'REGISTRY_USERNAME'=>'',
   'CACHE_ROOT'=>'/mnt/cache/github-runner', 'WORK_TMPFS_SIZE'=>'8g',
   'USER_SHARE_MOUNTS'=>'',
@@ -306,6 +306,16 @@ _(CPUs per runner)_:
 
 :crf_cpus_plug:
 > Hard CPU cap per runner. Leave blank for uncapped — the Linux scheduler time-shares CPU fairly across all runners, so a lone build can use the whole box.
+:end
+
+_(Pin runner CPUs)_:
+: <select name="CPU_PINNING">
+  <option value="false" <?=crf_sel($cfg,'CPU_PINNING','false','false')?>>false (runners may run on any host CPU)</option>
+  <option value="true" <?=crf_sel($cfg,'CPU_PINNING','true','false')?>>true (pin each runner to its own CPUs)</option>
+  </select>
+
+:crf_cpu_pinning_plug:
+> GitHub only. Pins each runner to a set of host CPUs equal to its CPU limit so tools see the right CPU count; CPU limits and accounting are unchanged. Needs a whole-number CPU limit; runners without one start unpinned.
 :end
 
 _(Memory per runner)_:
@@ -680,7 +690,7 @@ function crfFieldVisible(name,on){
 function crfProviderChange(){
   const sel=document.getElementsByName('CI_PROVIDER')[0], provider=sel&&sel.value==='gitlab'?'gitlab':'github';
   document.querySelectorAll('[data-provider]').forEach(el=>{el.style.display=el.dataset.provider===provider?'':'none';});
-  ['GH_SCOPE','GH_OWNER','GH_REPOS','RUNNER_GROUP','RUNNER_LABELS','RUN_AS_ROOT','WORK_TMPFS_SIZE'].forEach(n=>crfFieldVisible(n,provider==='github'));
+  ['GH_SCOPE','GH_OWNER','GH_REPOS','RUNNER_GROUP','RUNNER_LABELS','RUN_AS_ROOT','WORK_TMPFS_SIZE','CPU_PINNING'].forEach(n=>crfFieldVisible(n,provider==='github'));
   ['GITLAB_URL','GITLAB_RUNNER_IMAGE','GITLAB_PROJECTS','GITLAB_SHUTDOWN_TIMEOUT','GITLAB_ALLOWED_IMAGES','GITLAB_ALLOWED_SERVICES','GITLAB_PULL_POLICY','GITLAB_SHM_SIZE'].forEach(n=>crfFieldVisible(n,provider==='gitlab'));
   const ephemeral=document.getElementsByName('EPHEMERAL')[0], gitlabEphemeral=document.getElementById('crfs-gitlab-ephemeral');
   if(ephemeral)ephemeral.style.display=provider==='github'?'':'none';

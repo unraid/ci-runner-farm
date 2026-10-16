@@ -500,6 +500,27 @@ The watchdog runs independently of autoscaling, so fixed-size fleets receive
 the same protection. GitLab keeps its manager-owned lifecycle path and exposes
 no candidate to this watchdog.
 
+### CPU pinning
+
+A CPU limit (`--cpus`) caps a runner's CPU time, but tools that size their
+parallelism from the CPU affinity mask (`nproc`, `make -j`, test and bundler
+worker pools) still see every host CPU, start that many workers, and spend
+most scheduling periods throttled. `CPU_PINNING="true"` (off by default,
+GitHub only) also gives each runner with a whole-number CPU limit a cpuset of
+that many host CPUs, so the runner and containers started by its nested Docker
+daemon see the right CPU count. The CPU limit and capacity accounting are
+unchanged.
+
+Placement reads the host topology from sysfs. It prefers whole physical cores
+spread across L3 cache domains, then their SMT sibling threads, and picks the
+CPUs least used by the farm's other live containers; overcommitted runners
+share the least-loaded CPUs. The chosen cpuset is recorded in the
+`net.unraid.ci-runner-farm.cpuset` label. A fractional or missing CPU limit, a
+limit larger than the host, or unreadable topology logs a warning and starts
+that runner unpinned. Turning the setting on or off changes the configuration
+fingerprint of pinnable slots, so they are recreated like any other baked
+setting; with it off, existing fingerprints are unchanged.
+
 ![Fleet state and controls](docs/images/fleet.png)
 
 ## CLI

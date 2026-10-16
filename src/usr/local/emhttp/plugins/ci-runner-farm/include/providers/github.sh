@@ -37,6 +37,12 @@ github_kvm_gid() {
   stat -c '%g' /dev/kvm
 }
 
+# CPU pinning applies to a slot only when it is enabled and the slot has a
+# whole-number CPU limit to size its cpuset from.
+github_cpu_pinning_applies() {
+  [ "${CPU_PINNING:-false}" = true ] && [[ "$RUNNER_CPUS" =~ ^[1-9][0-9]{0,3}$ ]]
+}
+
 github_confgen() {
   # Include the DinD runtime contract in the fingerprint. Changing Docker's
   # cgroup namespace for existing slots must drain and recreate them; otherwise
@@ -55,6 +61,10 @@ github_confgen() {
     esac
   done
   [ -z "$SHARED_CACHE_ROOT" ] || runtime_salt="${runtime_salt}-shared-cache-v1-${SHARED_CACHE_ROOT}"
+  # Enabling CPU pinning recreates slots that can be pinned through the normal
+  # drain. The chosen cpuset is placement, not configuration, so it stays out;
+  # farms without pinning keep their fingerprint.
+  github_cpu_pinning_applies && runtime_salt="${runtime_salt}-cpu-pinning-v1"
   case ",$RUNNER_LABELS," in
     *,kvm,*)
       kvm_gid="$(github_kvm_gid 2>/dev/null || true)"
@@ -619,6 +629,14 @@ github_build_args() {
       --label net.unraid.ci-runner-farm.shared-cache=ci-shared-cache-v1 )
   fi
   [ -n "$RUNNER_CPUS" ]   && ARGS+=( --cpus="$RUNNER_CPUS" )
+  if [ "${CPU_PINNING:-false}" = true ]; then
+    # Keep --cpus: capacity accounting reads each runner's CPU cost from it.
+    # Placement failure is never fatal; the runner then starts unpinned.
+    local cpuset
+    if cpuset="$(crf_cpu_pinning_cpuset "$RUNNER_CPUS" "$name")" && [ -n "$cpuset" ]; then
+      ARGS+=( --cpuset-cpus="$cpuset" --label "net.unraid.ci-runner-farm.cpuset=${cpuset}" )
+    fi
+  fi
   [ -n "$RUNNER_MEMORY" ] && ARGS+=( --memory="$RUNNER_MEMORY" )
   [ "$NETWORK_ISOLATION" != "off" ] && ARGS+=( --network "$RUNNER_NETWORK" )
   if [ "$DIND" = "true" ]; then

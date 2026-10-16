@@ -64,6 +64,7 @@ bash tests/secret-write.sh
 bash tests/utf8-safety.sh
 bash tests/log-redaction.sh
 bash tests/provider-mocks.sh
+bash tests/cpu-pinning.sh
 bash tests/shared-cache.sh
 bash tests/retired-docker-cache.sh
 bash tests/completed-docker-cache.sh
