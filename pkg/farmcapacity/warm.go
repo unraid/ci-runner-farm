@@ -80,11 +80,12 @@ func (c *Controller) warmPoolStarts(ctx context.Context, pool *DemandPool, targe
 			return nil, errors.New("warm owner identity changed")
 		}
 		occupied[index] = true
-		if item.Running && !item.Paused && !owned.ReleasePending && (owned.Withdrawal == nil || owned.Withdrawal.Phase == "") {
+		switch {
+		case item.Running && !item.Paused && !owned.ReleasePending && (owned.Withdrawal == nil || owned.Withdrawal.Phase == ""):
 			running++
-		} else if owned.Fence == "" && item.NeverStarted && !item.Running && !owned.ReleasePending {
+		case owned.Fence == "" && item.NeverStarted && !item.Running && !owned.ReleasePending:
 			inert = append(inert, demandSlot{index: index, item: item, inert: true})
-		} else if grantedNeverStarted(name, item, owned, snapshot) {
+		case grantedNeverStarted(name, item, owned, snapshot):
 			granted = append(granted, index)
 		}
 	}
