@@ -38,6 +38,7 @@ bash tests/runner-pools.sh
 bash tests/autoscale-queue.sh
 bash tests/imageupdate-drift.sh
 bash tests/github-liveness.sh
+bash tests/github-rate-budget.sh
 bash tests/lifecycle-enforcement.sh
 bash tests/runner-recommendations.sh
 bash tests/runner-history.sh

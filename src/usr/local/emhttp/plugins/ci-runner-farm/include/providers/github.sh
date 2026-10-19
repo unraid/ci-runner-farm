@@ -301,14 +301,102 @@ github_repo_for_index() {
   echo "${arr[$(( (idx-1) % n ))]}"
 }
 
+# GitHub REST budget. The farm PAT's hourly limit is shared by every host that
+# holds it and by anything else the account runs, so two rules keep background
+# polling from starving runner registration:
+# - GETs are conditional. Each response is kept with its ETag under
+#   $RUNDIR/gh-etag, and GitHub does not count a 304 against the limit, so an
+#   unchanged run list or job list costs nothing to re-read.
+# - Every response records the core x-ratelimit headers in $RUNDIR/gh-ratelimit.
+#   Background readers (poison scan, Fleet queue and run counts) skip GitHub
+#   while fewer than GH_API_RESERVE requests remain before the reset.
+GH_API_RESERVE="${CRF_GH_API_RESERVE:-500}"
+GH_ETAG_MAX_BYTES=262144
+
+gh_header_value() {
+  awk -v name="$2" 'tolower($1) == name ":" { sub(/^[^:]*:[[:space:]]*/, ""); value = $0 } END { print value }' "$1" 2>/dev/null \
+    | tr -d '\r'
+}
+
+gh_rate_record() {
+  local headers="$1" remaining reset resource tmpf
+  resource="$(gh_header_value "$headers" x-ratelimit-resource)"
+  [ -z "$resource" ] || [ "$resource" = core ] || return 0
+  remaining="$(gh_header_value "$headers" x-ratelimit-remaining)"
+  reset="$(gh_header_value "$headers" x-ratelimit-reset)"
+  case "$remaining" in ''|*[!0-9]*) return 0 ;; esac
+  case "$reset" in ''|*[!0-9]*) return 0 ;; esac
+  tmpf="$(mktemp "$RUNDIR/gh-ratelimit.XXXXXX" 2>/dev/null)" || return 0
+  if ! { printf '%s %s\n' "$remaining" "$reset" > "$tmpf" && mv -f "$tmpf" "$RUNDIR/gh-ratelimit"; }; then
+    rm -f "$tmpf"
+  fi
+}
+
+gh_rate_allows_background() {
+  local remaining reset
+  [ -f "$RUNDIR/gh-ratelimit" ] || return 0
+  read -r remaining reset < "$RUNDIR/gh-ratelimit" 2>/dev/null || return 0
+  case "$remaining" in ''|*[!0-9]*) return 0 ;; esac
+  case "$reset" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$(date +%s)" -ge "$reset" ] && return 0
+  [ "$remaining" -ge "$GH_API_RESERVE" ]
+}
+
+# Cache entry: line 1 the request path (guards against key collisions), line 2
+# the ETag, then the body.
+gh_etag_file() {
+  printf '%s/gh-etag/%s\n' "$RUNDIR" "$(printf '%s' "$1" | cksum | awk '{ print $1 "-" $2 }')"
+}
+
+gh_etag_store() {
+  local cache="$1" path="$2" headers="$3" body="$4" etag tmpf
+  etag="$(gh_header_value "$headers" etag)"
+  if [ -z "$etag" ] || [ "$(wc -c < "$body")" -gt "$GH_ETAG_MAX_BYTES" ]; then
+    rm -f "$cache"; return 0
+  fi
+  mkdir -p "${cache%/*}" 2>/dev/null || return 0
+  tmpf="$(mktemp "$cache.XXXXXX" 2>/dev/null)" || return 0
+  if ! { { printf '%s\n%s\n' "$path" "$etag"; cat "$body"; } > "$tmpf" && mv -f "$tmpf" "$cache"; }; then
+    rm -f "$tmpf"
+  fi
+}
+
+gh_etag_prune() {
+  find "$RUNDIR/gh-etag" -type f -mmin +1440 -delete 2>/dev/null || true
+}
+
 # Long-lived PATs remain host-side; curl reads credentials from stdin so they do
 # not appear in /proc/<pid>/cmdline.
 gh_api() {
   [ -n "$ACCESS_TOKEN" ] || return 1
-  printf 'header = "Authorization: Bearer %s"\n' "$ACCESS_TOKEN" \
-    | curl -fsSL -m 10 -X "$1" --config - \
-      -H "Accept: application/vnd.github+json" \
-      "https://api.github.com$2" 2>/dev/null
+  local method="$1" path="$2" work cache="" etag="" code rc=0
+  local conditional=()
+  work="$(mktemp -d "${TMPDIR:-/tmp}/crf-gh.XXXXXX" 2>/dev/null)" || return 1
+  if [ "$method" = GET ]; then
+    cache="$(gh_etag_file "$path")"
+    # Snapshot the entry so a concurrent refresh cannot pair this ETag with
+    # another body.
+    if cp "$cache" "$work/cached" 2>/dev/null && [ "$(head -1 "$work/cached")" = "$path" ]; then
+      etag="$(sed -n 2p "$work/cached")"
+      [ -z "$etag" ] || conditional=(-H "If-None-Match: $etag")
+    fi
+  fi
+  code="$(printf 'header = "Authorization: Bearer %s"\n' "$ACCESS_TOKEN" \
+    | curl -sSL -m "${GH_API_TIMEOUT:-10}" -X "$method" --config - \
+      -H "Accept: application/vnd.github+json" "${conditional[@]}" \
+      -D "$work/headers" -o "$work/body" -w '%{http_code}' \
+      "https://api.github.com$path" 2>/dev/null)" || code=000
+  gh_rate_record "$work/headers"
+  case "$code" in
+    304)
+      if [ -n "$etag" ]; then tail -n +3 "$work/cached"; touch "$cache" 2>/dev/null || true; else rc=1; fi ;;
+    2??)
+      cat "$work/body" 2>/dev/null
+      [ -z "$cache" ] || [ "$code" != 200 ] || gh_etag_store "$cache" "$path" "$work/headers" "$work/body" ;;
+    *) rc=1 ;;
+  esac
+  rm -rf "$work"
+  return "$rc"
 }
 
 github_registration_token() {
@@ -371,10 +459,7 @@ github_fetch_all() {
   for r in $GH_REPOS; do
     [ -n "$r" ] || continue
     n=$((n+1))
-    printf 'header = "Authorization: Bearer %s"\n' "$ACCESS_TOKEN" \
-      | curl -s --max-time "$timeout" --config - \
-        -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/repos/${r}${suffix}" > "$outdir/$n" 2>/dev/null &
+    GH_API_TIMEOUT="$timeout" gh_api GET "/repos/${r}${suffix}" > "$outdir/$n" 2>/dev/null &
     [ $((n % maxpar)) -eq 0 ] && wait
   done
   wait
@@ -414,9 +499,11 @@ github_public_repo_problem() {
 # step output exists only in the uploaded GitHub job log. So detection reads
 # what the jobs themselves saw — recent failed workflow runs, their jobs that
 # ran on THIS host's slots, and each such job's log — looking for the lease
-# signatures. Rate-bounded and cached so an idle fleet costs one runs listing
-# per repo per POISON_SCAN_INTERVAL, and log downloads happen at most once per
-# failed job ever (the seen cache).
+# signatures. Rate-bounded and cached: an idle fleet revalidates one runs
+# listing per repo per POISON_SCAN_INTERVAL (a free 304 while nothing new has
+# failed), job lists revalidate the same way, log downloads happen at most once
+# per failed job ever (the seen cache), and the whole scan pauses while the
+# credential is below GH_API_RESERVE.
 GITHUB_POISON_SIGNATURE='failed to solve: lease "[^"]*": not found|failed to stat parent: stat /var/lib/buildkit/runc-overlayfs/snapshots/snapshots/[0-9]+/fs: no such file or directory'
 
 # IDs of recent failed workflow runs for one repo, newest first. The pretty
@@ -490,10 +577,15 @@ github_build_poison_scan() {
   [ -f "$stampf" ] && read -r last < "$stampf"
   case "$last" in ''|*[!0-9]*) last=0 ;; esac
   [ $((now - last)) -lt "$POISON_SCAN_INTERVAL" ] && return 0
+  gh_rate_allows_background || return 0
   echo "$now" > "$stampf"
+  gh_etag_prune
   # GNU date on Unraid; an environment without epoch -d support just drops the
-  # created filter and lets the seen cache bound the rework instead.
-  cutoff="$(date -u -d "@$((now - POISON_SCAN_LOOKBACK))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+  # created filter and lets the seen cache bound the rework instead. The cutoff
+  # is rounded down to the hour so each repo's run-list URL stays the same for
+  # an hour and revalidates with a free 304. The lookback is therefore 30-90
+  # minutes; the seen cache keeps the longer window from repeating work.
+  cutoff="$(date -u -d "@$(( (now - POISON_SCAN_LOOKBACK) / 3600 * 3600 ))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
   [ -f "$seenf" ] || : > "$seenf"
   for repo in $GH_REPOS; do
     [ -n "$repo" ] || continue
@@ -734,6 +826,8 @@ github_remove_runner() {
 github_queued_refresh() {
   [ -z "$ACCESS_TOKEN" ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
   [ -n "$ACCESS_TOKEN" ] || { echo "github $(date +%s) -1" > "$RUNDIR/queued.cache"; return 0; }
+  # Keep the last count (its age is visible) rather than spend the reserve.
+  gh_rate_allows_background || return 0
   local total=0 got=0 r n body tmpd i=0
   tmpd="$(mktemp -d 2>/dev/null)"
   [ -n "$tmpd" ] || { echo "github $(date +%s) -1" > "$RUNDIR/queued.cache"; return 0; }
@@ -753,6 +847,7 @@ github_queued_refresh() {
 github_stats_refresh() {
   [ -z "$ACCESS_TOKEN" ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
   [ -n "$ACCESS_TOKEN" ] || { echo "github $(date +%s) 0 0 0 0 -1" > "$RUNDIR/stats.cache"; return 0; }
+  gh_rate_allows_background || return 0
   local ok=0 fail=0 cancel=0 other=0 total got=0 r body c tmpd i=0
   tmpd="$(mktemp -d 2>/dev/null)"
   [ -n "$tmpd" ] || { echo "github $(date +%s) 0 0 0 0 -1" > "$RUNDIR/stats.cache"; return 0; }
