@@ -1,25 +1,8 @@
 {
   "disposition": "PATCH",
-  "expected_structural_delta": "No new modules, owners, representations or layers. One predicate helper in warm.go, a narrow deferral branch in Controller.Start, and one focused test file.",
-  "minimum_design": "Extend the existing warm planner (pkg/farmcapacity/warm.go WarmStarts) to also return the broker's current queue-head inert owner and fenced granted owners whose container never started, and have Controller.Start defer (ErrQueued) a failed Docker start of an owner that already held its grant. No new owner, store, or protocol.",
-  "outcome": "A native queued farm never strands the broker queue head or a charged never-started builder after a Docker restart, and one persistently failing builder start cannot stall queue-driven planning for the whole farm.",
-  "reuse_decisions": [
-    {
-      "decision": "extend",
-      "name": "Warm planner WarmStarts/warmPoolStarts",
-      "rationale": "It is already the only routine retry path for queued native owners; adding the head and granted cases there keeps one planner."
-    },
-    {
-      "decision": "reuse",
-      "name": "Broker Diagnose QueueHead and Status grants",
-      "rationale": "Existing read-only broker views identify the head and the exact grant fence without new state."
-    },
-    {
-      "decision": "reuse",
-      "name": "ErrQueued / exit 75 deferral",
-      "rationale": "Existing shell contract already treats 75 as a non-failing deferral and preserves receipts and grants."
-    }
-  ],
+  "forecast_commit": "1e9cfaf3eeed9d328be00bf236876bd9f74924fe",
+  "reviewed_sha": "59bdb688e9b33b5000ed88ab4c2fa1df4d710e97",
   "schema": "limetech.ai-review-marker.v2",
-  "stage": "forecast"
+  "stage": "final",
+  "unresolved_proportionality_findings": []
 }
