@@ -1,6 +1,7 @@
 package farmcapacity
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -86,7 +87,11 @@ func TestWarmRecoveryDoesNotRetryNonHeadQueuedOwnersAboveWarmTarget(t *testing.T
 	}
 }
 
-func TestWarmRecoveryRetriesGrantedOwnerThatNeverStarted(t *testing.T) {
+// grantedNeverStartedFixture leaves slot 5 as a charged owner whose Docker start
+// failed before a Docker restart: it stays Created with its grant and start
+// reservation until it is retried.
+func grantedNeverStartedFixture(t *testing.T) (*Controller, *fakeDocker, *Container, string) {
+	t.Helper()
 	c, _, _, _ := demandFixture(t)
 	canonicalWarmTestPath(t, c)
 	docker, ok := c.Docker.(*fakeDocker)
@@ -99,10 +104,13 @@ func TestWarmRecoveryRetriesGrantedOwnerThatNeverStarted(t *testing.T) {
 			id = candidate
 		}
 	}
-	// A charged start whose Docker start failed before a Docker restart stays
-	// Created. Its grant and start reservation remain until it is retried.
 	item := docker.containers[id]
 	item.Running, item.NeverStarted, item.RoutingGated, item.RegistrationIssuedAt = false, true, true, c.now().Unix()
+	return c, docker, item, id
+}
+
+func TestWarmRecoveryRetriesGrantedOwnerThatNeverStarted(t *testing.T) {
+	c, _, item, id := grantedNeverStartedFixture(t)
 	pools := []DemandPool{{ID: buildPool, Minimum: 4, Maximum: 8, Idle: 4}}
 	starts, err := c.WarmStarts(t.Context(), pools, &WarmTargets{Schema: 1, Targets: map[string]int{buildPool: 4}})
 	if err != nil || !slices.Equal(starts[buildPool], []int{5}) {
@@ -124,5 +132,68 @@ func TestWarmRecoveryRetriesGrantedOwnerThatNeverStarted(t *testing.T) {
 	after, err := c.Broker.Status(&c.Policy)
 	if err != nil || after.Grants["build:"+item.Name].Fence != before.Grants["build:"+item.Name].Fence {
 		t.Fatal("retry changed the existing grant", err)
+	}
+}
+
+func TestRetainedGrantStartFailureDefersWithoutLosingGrant(t *testing.T) {
+	c, docker, item, id := grantedNeverStartedFixture(t)
+	before, err := c.Broker.Status(&c.Policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A start that keeps failing for one owner must defer like a queued start
+	// instead of failing the tick, while keeping its grant for a later retry.
+	docker.startErr = errors.New("bind source path does not exist")
+	err = c.Start(t.Context(), item.Name, id)
+	if !errors.Is(err, ErrQueued) || !strings.Contains(err.Error(), "bind source path does not exist") {
+		t.Fatal("retained grant start failure was not deferred with its cause", err)
+	}
+	after, err := c.Broker.Status(&c.Policy)
+	if err != nil || after.Grants["build:"+item.Name].Fence != before.Grants["build:"+item.Name].Fence {
+		t.Fatal("deferred start changed the retained grant", err)
+	}
+	docker.startErr = nil
+	if err := c.Start(t.Context(), item.Name, id); err != nil || !item.Running {
+		t.Fatal("deferred owner did not start once Docker recovered", err)
+	}
+}
+
+func TestFreshAdmissionStartFailureIsNotDeferred(t *testing.T) {
+	c, docker, id := warmRetryFixture(t)
+	// Only an owner that already held its grant is deferred; a start failure
+	// right after a new admission keeps failing the tick as before.
+	docker.startErr = errors.New("unknown Docker start outcome")
+	err := c.Start(t.Context(), demandSlotName(buildPool, 6), id)
+	if err == nil || errors.Is(err, ErrQueued) {
+		t.Fatal("fresh admission start failure was deferred", err)
+	}
+}
+
+func TestWarmRecoveryDoesNotRetryGrantedOwnersUnderRecovery(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*receipt, *Container)
+	}{
+		{"release pending", func(r *receipt, _ *Container) { r.ReleasePending = true }},
+		{"retiring", func(r *receipt, _ *Container) { r.Retiring = true }},
+		{"withdrawing", func(r *receipt, _ *Container) { r.Withdrawal = &sharedcapacity.Withdrawal{Phase: "prepared"} }},
+		{"paused", func(_ *receipt, item *Container) { item.Paused = true }},
+		{"fence differs from grant", func(r *receipt, _ *Container) { r.Fence = "stale-fence" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _, item, _ := grantedNeverStartedFixture(t)
+			owned, err := c.load(item.Name)
+			if err != nil || owned == nil {
+				t.Fatal("granted receipt missing", err)
+			}
+			tc.mutate(owned, item)
+			if err := c.save(item.Name, owned); err != nil {
+				t.Fatal(err)
+			}
+			starts, err := c.WarmStarts(t.Context(), []DemandPool{{ID: buildPool, Minimum: 4, Maximum: 8, Idle: 4}}, &WarmTargets{Schema: 1, Targets: map[string]int{buildPool: 4}})
+			if err != nil || slices.Contains(starts[buildPool], 5) {
+				t.Fatal("granted owner under recovery was retried", starts, err)
+			}
+		})
 	}
 }

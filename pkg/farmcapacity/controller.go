@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -164,7 +165,17 @@ func (c *Controller) Start(ctx context.Context, name, id string) error {
 			return err
 		}
 	}
-	return c.Docker.Start(ctx, id)
+	if err := c.Docker.Start(ctx, id); err != nil {
+		// Warm recovery retries a charged owner that never started on every
+		// pass. Defer its failed start like a queued one so one broken
+		// container cannot fail every tick and stall queue-driven planning;
+		// the receipt, grant and reservation are retained exactly as before.
+		if decision.Reason == "existing" && container.NeverStarted {
+			return errors.Join(ErrQueued, fmt.Errorf("retained grant start failed: %w", err))
+		}
+		return err
+	}
+	return nil
 }
 
 // PrepareRelease preserves exact removal intent before the native owner disappears.
