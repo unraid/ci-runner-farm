@@ -103,6 +103,9 @@ func (b *Broker) Diagnose(active *Policy) (Diagnostics, error) {
 		if bucket == nil {
 			return ErrUninitialized
 		}
+		if bucket.Get([]byte("retirement")) != nil {
+			return ErrRetired
+		}
 		data := bucket.Get([]byte("snapshot"))
 		if len(data) == 0 {
 			return ErrUninitialized

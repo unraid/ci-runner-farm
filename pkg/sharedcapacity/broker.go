@@ -257,6 +257,9 @@ var ErrUninitialized = errors.New("shared capacity ledger is uninitialized")
 
 func readSnapshot(bucket *bolt.Bucket, policy *Policy, digest string, initialize bool) (Snapshot, error) {
 	var snapshot Snapshot
+	if bucket.Get([]byte("retirement")) != nil {
+		return snapshot, ErrRetired
+	}
 	data := bucket.Get([]byte("snapshot"))
 	if data == nil {
 		if !initialize {
