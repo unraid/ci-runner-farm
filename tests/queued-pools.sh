@@ -72,6 +72,28 @@ for mode in scan-fails capability-missing targets-fails apply-unknown; do
 done
 printf 'queued-pools: Farm owns general queue sizing; staged capability/unknown evidence preserves owners\n'
 
+# Native ownership, rather than a general-build label, selects the native
+# demand protocol. OS profiles keep their original route and warm floor.
+RUNNER_POOLS="${RUNNER_POOLS/general-build/os-build}"
+pool_base_refresh
+touch "$CRF_CFGDIR/host-capacity.json"
+rm -f "$tmp/order"
+mode=good
+start_configured_capacity || fail 'native OS plan used legacy scale'
+[ "$(cat "$tmp/order")" = $'warm-targets\nwarm\nscan\nobserve\ntargets\napply' ] || fail 'native OS demand order differs'
+rm "$tmp/starts"
+mode=scan-fails
+if start_configured_capacity; then fail 'native OS accepted failed queue scan'; fi
+[ "$(cat "$tmp/starts")" = ci-runner-build-2 ] || fail 'native OS queue failure stranded warm floor'
+rm "$tmp/starts"
+mode=capability-missing
+if start_configured_capacity; then fail 'native OS bypassed missing demand capability'; fi
+[ ! -e "$tmp/starts" ] || fail 'native OS started after unknown warm outcome'
+rm "$CRF_CFGDIR/host-capacity.json"
+RUNNER_POOLS="${RUNNER_POOLS/os-build/general-build}"
+pool_base_refresh
+printf 'queued-pools: native OS routing retains warm recovery and fail-closed demand\n'
+
 # Full planning (including native reads) stops before effects during cooldown.
 mode=deferred
 php() {

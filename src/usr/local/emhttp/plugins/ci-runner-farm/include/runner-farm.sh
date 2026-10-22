@@ -2172,7 +2172,8 @@ pool_start_target() {
 restore_warm_capacity() {
   local targets plan
   [ "$QUEUED_POOLS" = true ] || return 0
-  printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)' || return 0
+  shared_capacity_native_required ||
+    printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)' || return 0
   targets="$(php "$SCRIPT_DIR/build-demand.php" warm-targets "$RUNNER_POOLS")" || return 1
   plan="$(shared_capacity_call demand-warm "$RUNNER_POOLS" "$targets")" \
     || { err "native warm recovery unavailable; preserving owners"; return 1; }
@@ -2182,7 +2183,8 @@ restore_warm_capacity() {
 # Fresh queue evidence owns burst starts and idle retirement after warm recovery.
 start_queued_capacity() {
   local plan scan observation targets
-  if printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'; then
+  if shared_capacity_native_required ||
+    printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'; then
     restore_warm_capacity || return 1
     # Read GitHub before acquiring a short native configuration lease.
     # A missing native capability during rollout preserves existing owners.

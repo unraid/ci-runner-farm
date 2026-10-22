@@ -841,9 +841,9 @@ These commands do not impose a size limit on active Docker stores. Keep
 build headroom when budgeting a shared filesystem; its configured object maximum
 does not reserve free disk space.
 
-### General build queue ownership
+### Native build queue ownership
 
-For shared OVH general pools, CI Runner Farm reads the native private runner
+For Farm-owned build pools, CI Runner Farm reads the native private runner
 group's queues and computes desired class targets. The host-side registration
 credential attests the local group; a separate root-owned mode-0600
 `queue-token` provides read-only Actions and Metadata access. Neither credential
@@ -856,8 +856,10 @@ Farm performs its bounded GitHub scan before the short native
 existing shared resource broker remains the sole allocator. Native apply checks
 policy, organization and pool identities, snapshot age and all class bounds,
 then reobserves exact owners. Busy, unknown and guaranteed floor slots remain
-protected by the existing fenced lifecycle. OS-specific pools retain their
-existing queue path.
+protected by the existing fenced lifecycle. Native OS profiles use this same
+protocol with their configured routing labels. Their configured warm floor is
+restored independently of queue scans. Provider-owned OS profiles retain the
+legacy provider queue path.
 
 Qualify both Farm and provider packages before rollout. Install Farm first on
 one host, then upgrade that host's compatible provider through its native lease.
