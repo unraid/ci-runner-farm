@@ -826,7 +826,8 @@ autoscale_tick() {
     pool_activate build || return 1
     # Bound native registration reads across restarts independently of queue
     # quota. A queue-reader cooldown must not strand completed owner grants.
-    if [ "$QUEUED_POOLS" = true ] && printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'; then
+    if [ "$QUEUED_POOLS" = true ] && (shared_capacity_native_required ||
+      printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'); then
       php "$SCRIPT_DIR/build-demand.php" begin-recovery "$CFGDIR" "$RUNDIR" "$RUNNER_POOLS" >/dev/null || return 75
     fi
     restore_warm_capacity || err "shared capacity: warm restoration incomplete; settling existing owners"
@@ -843,7 +844,8 @@ autoscale_tick() {
       restore_warm_capacity || return 1
     fi
     # Preserve the broad queue cooldown without coupling it to owner recovery.
-    if [ "$QUEUED_POOLS" = true ] && printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'; then
+    if [ "$QUEUED_POOLS" = true ] && (shared_capacity_native_required ||
+      printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'); then
       php "$SCRIPT_DIR/build-demand.php" begin "$CFGDIR" "$RUNDIR" "$RUNNER_POOLS" >/dev/null || return 75
     fi
     shared_capacity_poison_scan || err "shared capacity: poison scan unavailable; preserving existing owner intents"
