@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.15.0](https://github.com/unraid/ci-runner-farm/compare/v1.14.0...v1.15.0) (2026-10-22)
+
+
+### Features
+
+* **runner:** pin runners to CPU sets sized to their CPU limit ([#179](https://github.com/unraid/ci-runner-farm/issues/179)) ([f431701](https://github.com/unraid/ci-runner-farm/commit/f431701877747d289bed316889adf999cc67e1c8))
+
+
+### Bug Fixes
+
+* **capacity:** retry the queued head and granted unstarted builders ([#180](https://github.com/unraid/ci-runner-farm/issues/180)) ([1d6b3f8](https://github.com/unraid/ci-runner-farm/commit/1d6b3f851d88d4a0606c75581d342c23eb0f54b3))
+* **capacity:** route native OS pools through demand admission ([#184](https://github.com/unraid/ci-runner-farm/issues/184)) ([112d718](https://github.com/unraid/ci-runner-farm/commit/112d718a3103a15f8e7ea88a33f362f2c75bf271))
+
 ## [1.14.0](https://github.com/unraid/ci-runner-farm/compare/v1.13.0...v1.14.0) (2026-10-15)
 
 
