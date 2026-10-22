@@ -1,20 +1,8 @@
 {
   "disposition": "NOT_REQUIRED",
-  "expected_structural_delta": "Two predicates in one existing production module; zero new owners, representations, parsers, protocols, dependencies, lifecycle actions or policy fields. One existing shell regression extended.",
-  "minimum_design": "Extend the two existing routing-label predicates to select the native demand path for every native-owned build profile; reuse existing PHP/native pool parsers, warm targets, queue validation, admission and start plan.",
-  "outcome": "Native-owned OS build profiles restore configured warm capacity and size queued demand through the existing fenced native protocol, preserving legacy provider behavior.",
-  "reuse_decisions": [
-    {
-      "decision": "extend",
-      "name": "Existing native demand/warm path",
-      "rationale": "Already accepts OS pool labels and protected costs; legacy scale action is absent from native CLI."
-    },
-    {
-      "decision": "extend",
-      "name": "Existing queued-pools regression",
-      "rationale": "Exercise OS native routing and queue-failure warm recovery alongside retained general and legacy cases."
-    }
-  ],
+  "forecast_commit": "86067e3824f219e9a2e9a6b51874b44ab1d9b63b",
+  "reviewed_sha": "42b42cfdbcc31d11e48e32697b8e62ae7b7b8e57",
   "schema": "limetech.ai-review-marker.v2",
-  "stage": "forecast"
+  "stage": "final",
+  "unresolved_proportionality_findings": []
 }
