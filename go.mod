@@ -4,5 +4,5 @@ go 1.26.10
 
 require (
 	go.etcd.io/bbolt v1.5.0
-	golang.org/x/sys v0.48.0
+	golang.org/x/sys v0.49.0
 )
