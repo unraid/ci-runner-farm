@@ -308,8 +308,9 @@ github_repo_for_index() {
 #   $RUNDIR/gh-etag, and GitHub does not count a 304 against the limit, so an
 #   unchanged run list or job list costs nothing to re-read.
 # - Every response records the core x-ratelimit headers in $RUNDIR/gh-ratelimit.
-#   Background readers (poison scan, Fleet queue and run counts) skip GitHub
-#   while fewer than GH_API_RESERVE requests remain before the reset.
+#   Background readers (poison scan, Fleet queue and run counts) set
+#   GH_API_BACKGROUND=1, which makes every one of their requests skip GitHub
+#   (exit 3) while fewer than GH_API_RESERVE requests remain before the reset.
 GH_API_RESERVE="${CRF_GH_API_RESERVE:-500}"
 GH_ETAG_MAX_BYTES=262144
 
@@ -326,10 +327,23 @@ gh_rate_record() {
   reset="$(gh_header_value "$headers" x-ratelimit-reset)"
   case "$remaining" in ''|*[!0-9]*) return 0 ;; esac
   case "$reset" in ''|*[!0-9]*) return 0 ;; esac
-  tmpf="$(mktemp "$RUNDIR/gh-ratelimit.XXXXXX" 2>/dev/null)" || return 0
-  if ! { printf '%s %s\n' "$remaining" "$reset" > "$tmpf" && mv -f "$tmpf" "$RUNDIR/gh-ratelimit"; }; then
-    rm -f "$tmpf"
-  fi
+  # Parallel requests finish out of order. Keep the lowest count seen for a
+  # reset window, and never let a response from an older window replace a
+  # newer one, so a late reply cannot restore a higher remaining count.
+  (
+    command -v flock >/dev/null 2>&1 && flock -w 2 9
+    local old_remaining old_reset
+    if [ -f "$RUNDIR/gh-ratelimit" ] && read -r old_remaining old_reset < "$RUNDIR/gh-ratelimit"; then
+      case "$old_remaining$old_reset" in *[!0-9]*) ;; *)
+        [ "$old_reset" -gt "$reset" ] && exit 0
+        [ "$old_reset" -eq "$reset" ] && [ "$old_remaining" -le "$remaining" ] && exit 0 ;;
+      esac
+    fi
+    tmpf="$(mktemp "$RUNDIR/gh-ratelimit.XXXXXX" 2>/dev/null)" || exit 0
+    if ! { printf '%s %s\n' "$remaining" "$reset" > "$tmpf" && mv -f "$tmpf" "$RUNDIR/gh-ratelimit"; }; then
+      rm -f "$tmpf"
+    fi
+  ) 9>"$RUNDIR/gh-ratelimit.lock"
 }
 
 gh_rate_allows_background() {
@@ -369,6 +383,7 @@ gh_etag_prune() {
 # not appear in /proc/<pid>/cmdline.
 gh_api() {
   [ -n "$ACCESS_TOKEN" ] || return 1
+  if [ "${GH_API_BACKGROUND:-0}" = 1 ] && ! gh_rate_allows_background; then return 3; fi
   local method="$1" path="$2" work cache="" etag="" code rc=0
   local conditional=()
   work="$(mktemp -d "${TMPDIR:-/tmp}/crf-gh.XXXXXX" 2>/dev/null)" || return 1
@@ -453,16 +468,24 @@ github_deregister_runner_api() {
   fi
 }
 
+# With GH_API_BACKGROUND=1, stop launching batches once the reserve is reached
+# and return 3 so the caller keeps its previous snapshot instead of publishing
+# a partial count.
 github_fetch_all() {
   local suffix="$1" outdir="$2" maxpar="${3:-8}" timeout="${4:-10}"
-  local n=0 r
+  local n=0 r blocked=0
   for r in $GH_REPOS; do
     [ -n "$r" ] || continue
+    if [ "${GH_API_BACKGROUND:-0}" = 1 ] && [ $((n % maxpar)) -eq 0 ] && ! gh_rate_allows_background; then
+      blocked=1; break
+    fi
     n=$((n+1))
     GH_API_TIMEOUT="$timeout" gh_api GET "/repos/${r}${suffix}" > "$outdir/$n" 2>/dev/null &
     [ $((n % maxpar)) -eq 0 ] && wait
   done
   wait
+  [ "${GH_API_BACKGROUND:-0}" = 1 ] && ! gh_rate_allows_background && blocked=1
+  [ "$blocked" = 0 ] || return 3
 }
 
 github_public_repo_problem() {
@@ -549,19 +572,25 @@ github_failed_local_jobs() {
 # logs that matter are small. grep without -q reads to EOF, so pipefail cannot
 # turn an early-match SIGPIPE into a false negative.
 github_job_log_poisoned() {
-  local repo="$1" job_id="$2" status
+  local repo="$1" job_id="$2" status headers
   [ -n "$ACCESS_TOKEN" ] || return 2
+  # A job-log request spends the core limit too: honour the reserve (an
+  # uncertain result, so the job is retried later) and record the headers.
+  if [ "${GH_API_BACKGROUND:-0}" = 1 ] && ! gh_rate_allows_background; then return 2; fi
+  headers="$(mktemp "${TMPDIR:-/tmp}/crf-gh-log.XXXXXX" 2>/dev/null)" || return 2
   # Capture every pipe status, including transport failure. Only a complete
   # download can become a durable seen job; uncertain downloads retry later.
   local outcomes=()
   {
     printf 'header = "Authorization: Bearer %s"\n' "$ACCESS_TOKEN" \
       | curl -fsSL -m 30 --max-filesize 8000000 --config - \
-        -H "Accept: application/vnd.github+json" \
+        -H "Accept: application/vnd.github+json" -D "$headers" \
         "https://api.github.com/repos/${repo}/actions/jobs/${job_id}/logs" 2>/dev/null \
       | grep -E "$GITHUB_POISON_SIGNATURE" >/dev/null 2>&1
     outcomes=("${PIPESTATUS[@]}")
   } || true
+  gh_rate_record "$headers"
+  rm -f "$headers"
   [ "${outcomes[0]}" -eq 0 ] && [ "${outcomes[1]}" -eq 0 ] || return 2
   status="${outcomes[2]}"
   [ "$status" -le 1 ] || return 2
@@ -572,6 +601,8 @@ github_build_poison_scan() {
   [ "$DIND" = "true" ] || return 0     # no nested daemon, no buildkit store to poison
   [ -n "$ACCESS_TOKEN" ] || return 0
   local stampf="$RUNDIR/poison-scan.stamp" seenf="$RUNDIR/poison-scan.seen"
+  # Dynamic scope: every gh_api and job-log request below checks the reserve.
+  local GH_API_BACKGROUND=1
   local now last=0 cutoff repo run_id line jid slot snapshot id provider role index gen log_status
   now="$(date +%s)"
   [ -f "$stampf" ] && read -r last < "$stampf"
@@ -831,7 +862,8 @@ github_queued_refresh() {
   local total=0 got=0 r n body tmpd i=0
   tmpd="$(mktemp -d 2>/dev/null)"
   [ -n "$tmpd" ] || { echo "github $(date +%s) -1" > "$RUNDIR/queued.cache"; return 0; }
-  github_fetch_all "/actions/runs?status=queued&per_page=1" "$tmpd"
+  GH_API_BACKGROUND=1 github_fetch_all "/actions/runs?status=queued&per_page=1" "$tmpd" \
+    || { rm -rf "$tmpd"; return 0; }
   for r in $GH_REPOS; do
     [ -n "$r" ] || continue
     i=$((i+1)); body="$(cat "$tmpd/$i" 2>/dev/null)"
@@ -851,7 +883,8 @@ github_stats_refresh() {
   local ok=0 fail=0 cancel=0 other=0 total got=0 r body c tmpd i=0
   tmpd="$(mktemp -d 2>/dev/null)"
   [ -n "$tmpd" ] || { echo "github $(date +%s) 0 0 0 0 -1" > "$RUNDIR/stats.cache"; return 0; }
-  github_fetch_all "/actions/runs?per_page=50" "$tmpd"
+  GH_API_BACKGROUND=1 github_fetch_all "/actions/runs?per_page=50" "$tmpd" \
+    || { rm -rf "$tmpd"; return 0; }
   for r in $GH_REPOS; do
     [ -n "$r" ] || continue
     i=$((i+1)); body="$(cat "$tmpd/$i" 2>/dev/null)"

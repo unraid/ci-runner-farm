@@ -21,8 +21,9 @@ REMAINING=4000
 ETAG='W/"run-list-v1"'
 
 # Minimal curl: honours -D/-o/-w, answers 304 to a matching If-None-Match.
+# With REMAINING_FILE set, each request spends one from a shared counter.
 curl() {
-  local headers="" body="" inm="" url="" method=GET
+  local headers="" body="" inm="" url="" method=GET write_code=0
   cat >/dev/null   # the PAT arrives on stdin, never in argv
   printf '%s\n' "$*" >> "$CURL_LOG"
   while [ "$#" -gt 0 ]; do
@@ -30,21 +31,27 @@ curl() {
       -D) headers="$2"; shift ;;
       -o) body="$2"; shift ;;
       -X) method="$2"; shift ;;
+      -w) write_code=1; shift ;;
       -H) case "$2" in If-None-Match:*) inm="${2#If-None-Match: }" ;; esac; shift ;;
-      -m|-w|--config) shift ;;
+      -m|--config|--max-filesize) shift ;;
       https://*) url="$1" ;;
     esac
     shift
   done
-  {
+  local remaining="$REMAINING"
+  if [ -n "${REMAINING_FILE:-}" ]; then
+    remaining=$(( $(cat "$REMAINING_FILE") - 1 )); echo "$remaining" > "$REMAINING_FILE"
+  fi
+  [ -z "$headers" ] || {
     printf 'HTTP/2 %s\r\n' "${STATUS:-200}"
-    printf 'x-ratelimit-remaining: %s\r\nx-ratelimit-reset: %s\r\nx-ratelimit-resource: core\r\n' "$REMAINING" "$NOW_RESET"
+    printf 'x-ratelimit-remaining: %s\r\nx-ratelimit-reset: %s\r\nx-ratelimit-resource: core\r\n' "$remaining" "$NOW_RESET"
     [ -z "${NO_ETAG:-}" ] && printf 'etag: %s\r\n' "$ETAG"
   } > "$headers"
-  if [ -n "${STATUS:-}" ]; then : > "$body"; printf '%s' "$STATUS"; return 0; fi
-  if [ "$method" = GET ] && [ "$inm" = "$ETAG" ]; then : > "$body"; printf 304; return 0; fi
+  : "${body:=/dev/stdout}"
+  if [ -n "${STATUS:-}" ]; then : > "$body"; [ "$write_code" = 0 ] || printf '%s' "$STATUS"; return 0; fi
+  if [ "$method" = GET ] && [ "$inm" = "$ETAG" ]; then : > "$body"; [ "$write_code" = 0 ] || printf 304; return 0; fi
   printf '{"url":"%s","total_count":3}\n' "$url" > "$body"
-  printf 200
+  [ "$write_code" = 0 ] || printf 200
 }
 
 path='/repos/example/one/actions/runs?status=queued&per_page=1'
@@ -100,5 +107,55 @@ rm -f "$CRF_RUNDIR/gh-ratelimit"
 github_queued_refresh
 read -r _ _ queued < "$CRF_RUNDIR/queued.cache"
 [ "$queued" = 6 ] || fail "queued refresh summed $queued, want 6"
+
+# Out-of-order responses: the lowest count in a reset window wins, and an
+# older window never replaces a newer one.
+record_remaining() {
+  printf 'x-ratelimit-remaining: %s\r\nx-ratelimit-reset: %s\r\nx-ratelimit-resource: core\r\n' "$1" "$2" > "$tmp/h"
+  gh_rate_record "$tmp/h"
+}
+rm -f "$CRF_RUNDIR/gh-ratelimit"
+record_remaining 400 "$NOW_RESET"
+record_remaining 450 "$NOW_RESET"
+[ "$(cat "$CRF_RUNDIR/gh-ratelimit")" = "400 $NOW_RESET" ] || fail "late response restored a higher remaining count"
+record_remaining 4900 "$((NOW_RESET + 3600))"
+[ "$(cat "$CRF_RUNDIR/gh-ratelimit")" = "4900 $((NOW_RESET + 3600))" ] || fail "new reset window was not recorded"
+record_remaining 10 "$NOW_RESET"
+[ "$(cat "$CRF_RUNDIR/gh-ratelimit")" = "4900 $((NOW_RESET + 3600))" ] || fail "older reset window replaced a newer one"
+
+# A background fetch stops launching batches once the reserve is reached and
+# the caller keeps its previous snapshot instead of a partial count.
+rm -f "$CRF_RUNDIR/gh-ratelimit"
+echo "github 1700000000 7" > "$CRF_RUNDIR/queued.cache"
+echo 503 > "$tmp/remaining"
+: > "$CURL_LOG"
+GH_REPOS='r/1 r/2 r/3 r/4 r/5 r/6 r/7 r/8 r/9 r/10'
+REMAINING_FILE="$tmp/remaining" github_queued_refresh
+calls=$(( $(wc -l < "$CURL_LOG") ))
+[ "$calls" -lt 10 ] || fail "background fetch kept launching batches below the reserve ($calls calls)"
+[ "$(cat "$CRF_RUNDIR/queued.cache")" = "github 1700000000 7" ] || fail "blocked refresh published a partial count"
+GH_REPOS='example/one example/two'
+
+# Every poison-scan request is gated: the scan stops once a response records
+# a count below the reserve, not only at its start.
+rm -f "$CRF_RUNDIR/gh-ratelimit" "$CRF_RUNDIR/poison-scan.stamp"
+echo 501 > "$tmp/remaining"
+: > "$CURL_LOG"
+GH_REPOS='p/1 p/2 p/3 p/4' REMAINING_FILE="$tmp/remaining" DIND=true POISON_SCAN_INTERVAL=0 github_build_poison_scan \
+  || fail "gated poison scan failed"
+calls=$(( $(wc -l < "$CURL_LOG") ))
+[ "$calls" = 2 ] || fail "poison scan made $calls requests, want 2 (500 then 499 remaining)"
+
+# Job-log downloads honour the reserve and record their rate-limit headers.
+printf '10 %s\n' "$NOW_RESET" > "$CRF_RUNDIR/gh-ratelimit"
+: > "$CURL_LOG"
+status=0; GH_API_BACKGROUND=1 github_job_log_poisoned example/one 700001 || status=$?
+[ "$status" = 2 ] || fail "job log below the reserve returned $status, want 2 (retry later)"
+[ ! -s "$CURL_LOG" ] || fail "job log was downloaded below the reserve"
+rm -f "$CRF_RUNDIR/gh-ratelimit"
+status=0; REMAINING=3210 GH_API_BACKGROUND=1 github_job_log_poisoned example/one 700001 || status=$?
+[ "$status" = 1 ] || fail "ordinary job log returned $status, want 1 (no signature)"
+grep -q -- '-D' "$CURL_LOG" || fail "job log request did not capture headers"
+[ "$(cut -d' ' -f1 "$CRF_RUNDIR/gh-ratelimit")" = 3210 ] || fail "job log rate limit was not recorded"
 
 echo "github rate budget: ok"
