@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.1](https://github.com/unraid/ci-runner-farm/compare/v1.15.0...v1.15.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* **github:** revalidate GitHub reads and pause background polling near the rate limit ([#181](https://github.com/unraid/ci-runner-farm/issues/181)) ([46369c4](https://github.com/unraid/ci-runner-farm/commit/46369c45f810d0b48b83ecd0fe2ab98ae3f020dc))
+
 ## [1.15.0](https://github.com/unraid/ci-runner-farm/compare/v1.14.0...v1.15.0) (2026-10-22)
 
 
