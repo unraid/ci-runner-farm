@@ -135,9 +135,14 @@ Nightly** or paste:
 https://github.com/unraid/ci-runner-farm/releases/download/nightly/ci-runner-farm-nightly.plg
 ```
 
-Nightly is built on the farm from `main`, may contain breaking changes, and
+Nightly is built from each new `main` commit, may contain breaking changes, and
 replaces the stable plugin channel on the host. Keep the stable release URL
 available for rollback; the two channels are not intended to run side by side.
+
+Each build is also published once as its own prerelease, for example
+`v1.14.0-nightly.73`, and is never replaced. To pin a reproducible build, use
+that release's `ci-runner-farm-nightly.json` manifest rather than the moving
+`nightly` one. The 30 newest build prereleases are kept.
 
 Everything is managed from **Settings → Utilities → CI Runner Farm**. The page
 has **Fleet**, **Runner image**, and **Settings** tabs.
