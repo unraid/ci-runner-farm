@@ -40,7 +40,10 @@ curl() {
   done
   local remaining="$REMAINING"
   if [ -n "${REMAINING_FILE:-}" ]; then
+    # Parallel requests share the counter; serialize read-decrement-write.
+    until mkdir "$REMAINING_FILE.lock" 2>/dev/null; do sleep 0.01; done
     remaining=$(( $(cat "$REMAINING_FILE") - 1 )); echo "$remaining" > "$REMAINING_FILE"
+    rmdir "$REMAINING_FILE.lock"
   fi
   [ -z "$headers" ] || {
     printf 'HTTP/2 %s\r\n' "${STATUS:-200}"
@@ -132,7 +135,9 @@ echo 503 > "$tmp/remaining"
 GH_REPOS='r/1 r/2 r/3 r/4 r/5 r/6 r/7 r/8 r/9 r/10'
 REMAINING_FILE="$tmp/remaining" github_queued_refresh
 calls=$(( $(wc -l < "$CURL_LOG") ))
-[ "$calls" -lt 10 ] || fail "background fetch kept launching batches below the reserve ($calls calls)"
+# One batch of 8 drops the count from 503 to 495, below the 500 reserve, so
+# the second batch never starts.
+[ "$calls" = 8 ] || fail "background fetch made $calls requests, want one batch of 8"
 [ "$(cat "$CRF_RUNDIR/queued.cache")" = "github 1700000000 7" ] || fail "blocked refresh published a partial count"
 GH_REPOS='example/one example/two'
 
