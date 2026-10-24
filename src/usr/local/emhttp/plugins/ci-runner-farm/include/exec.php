@@ -58,6 +58,8 @@ $action = is_string($rawAction) && strlen($rawAction) <= 64 ? $rawAction : '';
 function crf_secret_values($cfgdir) {
   $secrets = [];
   $paths = array_map(fn($name) => "$cfgdir/$name", ['token', 'gitlab-runner-token', 'gitlab-api-token', 'registry-token']);
+  // GitHub App mode: the current installation token is minted on tmpfs.
+  $paths[] = '/var/local/emhttp/ci-runner-farm/github-token';
   $poolTokens = glob("$cfgdir/gitlab-runner-token.*", GLOB_NOSORT);
   if (is_array($poolTokens)) $paths = array_merge($paths, $poolTokens);
   foreach ($paths as $path) {

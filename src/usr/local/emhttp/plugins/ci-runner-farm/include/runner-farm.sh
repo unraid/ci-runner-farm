@@ -76,6 +76,8 @@ IMAGE=""                              # remote image ref, used when IMAGE_SOURCE
 EPHEMERAL="false"                     # true => runner deregisters after each job
 RUN_AS_ROOT="false"                   # false => jobs run as non-root 'runner' (sudo+docker groups), like
                                       # GitHub-hosted runners. true => jobs run as root (legacy).
+GH_APP_ID=""                          # GitHub App id; with GH_APP_INSTALLATION_ID and $CFGDIR/github-app-key.pem
+GH_APP_INSTALLATION_ID=""             # the Farm uses one-hour installation tokens instead of the PAT (github-app.sh)
 ACCESS_TOKEN=""                       # GitHub PAT (repo scope; +admin:org for org; +read:packages if reused for private GHCR). Stays host-side:
                                       # runners get a short-lived registration token, never the PAT itself.
 GITLAB_RUNNER_TOKEN=""                # reusable glrt- auth token; written into mode-0600 per-slot config.toml
@@ -152,13 +154,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/runner-history.sh"
 # shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/cpu-pinning.sh
 . "$SCRIPT_DIR/cpu-pinning.sh"
+# shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/github-app.sh
+. "$SCRIPT_DIR/github-app.sh"
 
 # Durable aggregate recommendation history lives under the plugin config
 # directory; active snapshots and locks remain on tmpfs in RUNDIR.
 HISTORY_FILE="${CRF_HISTORY_FILE:-${CFGDIR}/recommendations.history}"
 
 # Allowlist of keys the settings page may set. load_cfg only ever assigns these.
-CFG_KEYS="CI_PROVIDER GH_SCOPE GH_OWNER GH_REPOS RUNNER_GROUP GITLAB_URL GITLAB_RUNNER_IMAGE GITLAB_PROJECTS GITLAB_SHUTDOWN_TIMEOUT \
+CFG_KEYS="CI_PROVIDER GH_SCOPE GH_OWNER GH_REPOS RUNNER_GROUP GH_APP_ID GH_APP_INSTALLATION_ID GITLAB_URL GITLAB_RUNNER_IMAGE GITLAB_PROJECTS GITLAB_SHUTDOWN_TIMEOUT \
 GITLAB_ALLOWED_IMAGES GITLAB_ALLOWED_SERVICES GITLAB_PULL_POLICY GITLAB_SHM_SIZE \
 RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS QUEUED_POOLS DOCKER_CACHE_MIN_FREE_PERCENT DOCKER_CACHE_BUILDERS \
 RUNNER_CPUS CPU_PINNING RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE USER_SHARE_MOUNTS SHARED_CACHE_ROOT IMAGE_SOURCE IMAGE EPHEMERAL \
@@ -240,7 +244,7 @@ reload_secret_files() {
   # A successful GitLab verification is reusable only within one immutable
   # locked snapshot. Any explicit reload invalidates that process-local cache.
   GITLAB_TOKEN_PROBE_VALIDATED_TARGET=""
-  ACCESS_TOKEN="$(read_secret_file "$TOKEN_FILE")"
+  github_app_select
   GITLAB_RUNNER_TOKEN="$(read_secret_file "$GITLAB_RUNNER_TOKEN_FILE")"
   GITLAB_API_TOKEN="$(read_secret_file "$GITLAB_API_TOKEN_FILE")"
   REGISTRY_TOKEN="$(read_secret_file "$REGISTRY_TOKEN_FILE")"
@@ -4404,6 +4408,17 @@ cmd_boot_autostart() {
     || { err "boot-autostart: could not publish worker PID"; return 1; }
   trap 'rm -f "$BOOT_AUTOSTART_PID" 2>/dev/null || true' EXIT
   trap 'rm -f "$BOOT_AUTOSTART_PID" 2>/dev/null || true; exit 0' HUP INT TERM
+  # A PAT is ready as soon as its file exists, but an App token needs GitHub to
+  # be reachable, which can lag boot. Retry the mint for the same window the
+  # Docker wait below allows instead of skipping the fleet for the whole boot.
+  if [ "$GITHUB_APP_MODE" = true ]; then
+    local attempt
+    for attempt in $(seq 1 75); do
+      github_app_refresh
+      provider_token_ready && break
+      sleep 8
+    done
+  fi
   provider_token_ready || { log "boot-autostart: no valid $(provider_token_name) configured yet — skipping"; return 0; }
   local i
   for i in $(seq 1 150); do

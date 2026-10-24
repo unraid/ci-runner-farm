@@ -3,7 +3,7 @@
 # Sourced by runner-farm.sh after configuration and common helpers are loaded.
 
 github_token_ready() { [ -n "$ACCESS_TOKEN" ]; }
-github_token_name()  { echo "GitHub token"; }
+github_token_name()  { if [ "$GITHUB_APP_MODE" = true ]; then echo "GitHub App installation token"; else echo "GitHub token"; fi; }
 github_builtin_image() { echo "$BUILTIN_IMAGE"; }
 github_validate_settings() {
   github_validate_docker_cache_policy && crf_validate_user_share_mounts && crf_shared_cache_mount
@@ -392,6 +392,7 @@ gh_etag_prune() {
 # Long-lived PATs remain host-side; curl reads credentials from stdin so they do
 # not appear in /proc/<pid>/cmdline.
 gh_api() {
+  github_app_refresh
   [ -n "$ACCESS_TOKEN" ] || return 1
   if [ "${GH_API_BACKGROUND:-0}" = 1 ] && ! gh_rate_allows_background; then return 3; fi
   local method="$1" path="$2" work cache="" etag="" code rc=0
@@ -583,6 +584,7 @@ github_failed_local_jobs() {
 # turn an early-match SIGPIPE into a false negative.
 github_job_log_poisoned() {
   local repo="$1" job_id="$2" status headers
+  github_app_refresh
   [ -n "$ACCESS_TOKEN" ] || return 2
   # A job-log request spends the core limit too: honour the reserve (an
   # uncertain result, so the job is retried later) and record the headers.
@@ -873,7 +875,7 @@ github_remove_runner() {
 }
 
 github_queued_refresh() {
-  [ -z "$ACCESS_TOKEN" ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
+  [ -z "$ACCESS_TOKEN" ] && [ "$GITHUB_APP_MODE" != true ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
   [ -n "$ACCESS_TOKEN" ] || { echo "github $(date +%s) -1" > "$RUNDIR/queued.cache"; return 0; }
   # Keep the last count (its age is visible) rather than spend the reserve.
   gh_rate_allows_background || return 0
@@ -895,7 +897,7 @@ github_queued_refresh() {
 }
 
 github_stats_refresh() {
-  [ -z "$ACCESS_TOKEN" ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
+  [ -z "$ACCESS_TOKEN" ] && [ "$GITHUB_APP_MODE" != true ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
   [ -n "$ACCESS_TOKEN" ] || { echo "github $(date +%s) 0 0 0 0 -1" > "$RUNDIR/stats.cache"; return 0; }
   gh_rate_allows_background || return 0
   local ok=0 fail=0 cancel=0 other=0 total got=0 r body c tmpd i=0

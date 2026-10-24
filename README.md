@@ -163,6 +163,41 @@ The GitHub PAT is stored at
 to the main config or passed into job containers. Existing GitHub settings,
 container names, and the legacy editable `Dockerfile` remain compatible.
 
+### GitHub App authentication (organization scope)
+
+A PAT shares its hourly rate limit with everything else its account runs. An
+organization farm can authenticate as a GitHub App instead, which has its own
+installation rate limit (15,000 requests an hour on GitHub Enterprise Cloud).
+
+1. Create a GitHub App owned by the organization, with no webhook and these
+   permissions:
+
+   | Permission | Access | Used for |
+   | --- | --- | --- |
+   | Organization: Self-hosted runners | Read and write | Registration tokens, runner listing, removal and labels, runner groups |
+   | Repository: Actions | Read | Queued and failed runs, job lists and job logs |
+   | Repository: Metadata | Read | Repository visibility checks |
+   | Repository: Packages | Read | Optional, a private GHCR runner image without a separate registry token |
+
+2. Install it on the organization with access to every repository the farm
+   serves, and generate a private key.
+3. Save the key as `/boot/config/plugins/ci-runner-farm/github-app-key.pem`
+   with mode `0600`. GitHub's PKCS#1 download and PKCS#8 keys both work.
+4. Set **GitHub App ID** and **GitHub App installation ID** on the Settings tab.
+
+With both IDs and the key present, the farm mints a one-hour installation token
+into `/var/local/emhttp/ci-runner-farm/github-token` (tmpfs, so the hourly
+rotation never writes the flash drive). It reuses the token until 15 minutes
+before expiry, and every GitHub request checks that window first, so long
+operations never send an expired token. The engine, the Queue Reader and the
+native capacity binary all read that minted token. It replaces both the PAT and
+the separate Queue Reader token.
+
+App mode fails closed. If no valid installation token can be minted, GitHub
+work pauses as it does with no token, and the farm never falls back to the PAT.
+At boot the farm retries the mint for up to ten minutes while the network comes
+up. Clear both IDs to return to the PAT.
+
 ## GitLab setup
 
 ### 1. Create the runner in GitLab

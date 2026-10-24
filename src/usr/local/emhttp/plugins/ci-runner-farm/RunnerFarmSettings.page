@@ -13,6 +13,12 @@ $plugin   = 'ci-runner-farm';
    the flash cfg only ever holds what the user actually changed. */
 $cfg      = parse_plugin_cfg($plugin);
 $has_token= file_exists("/boot/config/plugins/$plugin/token");
+/* GitHub App mode replaces the PAT with one-hour installation tokens minted on
+   tmpfs (include/github-app.sh); the band reports it instead of the PAT state. */
+$app_mode = ctype_digit((string)($cfg['GH_APP_ID'] ?? '')) && ctype_digit((string)($cfg['GH_APP_INSTALLATION_ID'] ?? ''))
+  && file_exists("/boot/config/plugins/$plugin/github-app-key.pem");
+$app_token_expires = (int)@file_get_contents("/var/local/emhttp/$plugin/github-token.expires");
+$has_token = $has_token || $app_mode;
 $has_gitlab_runner_token = file_exists("/boot/config/plugins/$plugin/gitlab-runner-token");
 $has_gitlab_api_token = file_exists("/boot/config/plugins/$plugin/gitlab-api-token");
 $has_gitlab_ca = file_exists("/boot/config/plugins/$plugin/gitlab-ca.crt");
@@ -28,7 +34,7 @@ $defaults = [
   'GITLAB_URL'=>'https://gitlab.com', 'GITLAB_RUNNER_IMAGE'=>'gitlab/gitlab-runner:alpine', 'GITLAB_PROJECTS'=>'',
   'GITLAB_SHUTDOWN_TIMEOUT'=>'7200',
   'GITLAB_ALLOWED_IMAGES'=>'', 'GITLAB_ALLOWED_SERVICES'=>'', 'GITLAB_PULL_POLICY'=>'auto', 'GITLAB_SHM_SIZE'=>'0',
-  'RUNNER_GROUP'=>'', 'RUNNER_COUNT'=>'4', 'RUNNER_LABELS'=>'self-hosted,unraid,build',
+  'RUNNER_GROUP'=>'', 'GH_APP_ID'=>'', 'GH_APP_INSTALLATION_ID'=>'', 'RUNNER_COUNT'=>'4', 'RUNNER_LABELS'=>'self-hosted,unraid,build',
   'RUNNER_MODE'=>'single', 'RUNNER_POOLS'=>'',
   'RUNNER_CPUS'=>'', 'CPU_PINNING'=>'false', 'RUNNER_MEMORY'=>'16g', 'EPHEMERAL'=>'false', 'RUN_AS_ROOT'=>'false',
   'IMAGE_SOURCE'=>'builtin', 'IMAGE'=>'', 'REGISTRY_SERVER'=>'', 'REGISTRY_USERNAME'=>'',
@@ -62,8 +68,11 @@ if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d=''){ global 
   <div class="crfs-tok-status">
     <span class="crf-ball <?= $has_token ? 'crf-ball-idle' : 'crf-ball-error' ?>" id="crf-tok-ball"></span>
     <span class="crfs-tok-text">
-      <strong id="crf-tok"><?= $has_token ? 'GitHub token configured' : 'GitHub token not set' ?></strong>
-      <span class="crfs-tok-sub" id="crf-tok-sub"><?= $has_token ? 'Stored at /boot/config/plugins/ci-runner-farm/token (chmod 600), never in ci-runner-farm.cfg.' : 'The farm cannot register runners until a token is saved.' ?></span>
+      <strong id="crf-tok"><?= $app_mode ? 'GitHub App authentication' : ($has_token ? 'GitHub token configured' : 'GitHub token not set') ?></strong>
+      <span class="crfs-tok-sub" id="crf-tok-sub"><?= $app_mode
+        ? ('App '.crf_html($cfg['GH_APP_ID']).', installation '.crf_html($cfg['GH_APP_INSTALLATION_ID']).'. One-hour installation tokens are minted on tmpfs; '
+           .($app_token_expires > time() ? 'the current token expires '.date('H:i', $app_token_expires).'.' : 'no valid token yet — check the farm log.'))
+        : ($has_token ? 'Stored at /boot/config/plugins/ci-runner-farm/token (chmod 600), never in ci-runner-farm.cfg.' : 'The farm cannot register runners until a token is saved.') ?></span>
     </span>
   </div>
   <div class="crfs-tok-input">
@@ -197,6 +206,16 @@ _(Runner group)_:
 
 :crf_group_plug:
 > Optional runner group (org scope) to restrict which repos may use the pool — e.g. exclude public repos so fork PRs never run here.
+:end
+
+_(GitHub App ID)_:
+: <input type="text" name="GH_APP_ID" value="<?=crf_g($cfg,'GH_APP_ID')?>" pattern="[0-9]*" placeholder="PAT mode">
+
+_(GitHub App installation ID)_:
+: <input type="text" name="GH_APP_INSTALLATION_ID" value="<?=crf_g($cfg,'GH_APP_INSTALLATION_ID')?>" pattern="[0-9]*" placeholder="PAT mode">
+
+:crf_github_app_plug:
+> Optional. With both IDs set and the App's private key at /boot/config/plugins/ci-runner-farm/github-app-key.pem (chmod 600), the farm authenticates with one-hour App installation tokens instead of the PAT, using the App's own rate limit. The App needs organization Self-hosted runners: Read and write, plus Actions: Read and Metadata: Read on the build repositories. The token also serves the Queue Reader. Leave both empty to keep using the PAT.
 :end
 
 ### GitLab
@@ -690,7 +709,7 @@ function crfFieldVisible(name,on){
 function crfProviderChange(){
   const sel=document.getElementsByName('CI_PROVIDER')[0], provider=sel&&sel.value==='gitlab'?'gitlab':'github';
   document.querySelectorAll('[data-provider]').forEach(el=>{el.style.display=el.dataset.provider===provider?'':'none';});
-  ['GH_SCOPE','GH_OWNER','GH_REPOS','RUNNER_GROUP','RUNNER_LABELS','RUN_AS_ROOT','WORK_TMPFS_SIZE','CPU_PINNING'].forEach(n=>crfFieldVisible(n,provider==='github'));
+  ['GH_SCOPE','GH_OWNER','GH_REPOS','RUNNER_GROUP','GH_APP_ID','GH_APP_INSTALLATION_ID','RUNNER_LABELS','RUN_AS_ROOT','WORK_TMPFS_SIZE','CPU_PINNING'].forEach(n=>crfFieldVisible(n,provider==='github'));
   ['GITLAB_URL','GITLAB_RUNNER_IMAGE','GITLAB_PROJECTS','GITLAB_SHUTDOWN_TIMEOUT','GITLAB_ALLOWED_IMAGES','GITLAB_ALLOWED_SERVICES','GITLAB_PULL_POLICY','GITLAB_SHM_SIZE'].forEach(n=>crfFieldVisible(n,provider==='gitlab'));
   const ephemeral=document.getElementsByName('EPHEMERAL')[0], gitlabEphemeral=document.getElementById('crfs-gitlab-ephemeral');
   if(ephemeral)ephemeral.style.display=provider==='github'?'':'none';
