@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.16.0](https://github.com/unraid/ci-runner-farm/compare/v1.15.1...v1.16.0) (2026-10-24)
+
+
+### Features
+
+* **github:** authenticate the farm as a GitHub App ([#186](https://github.com/unraid/ci-runner-farm/issues/186)) ([001b7df](https://github.com/unraid/ci-runner-farm/commit/001b7df6fe3132e3ab1585dafd1546c966a32c32))
+
 ## [1.15.1](https://github.com/unraid/ci-runner-farm/compare/v1.15.0...v1.15.1) (2026-10-23)
 
 
