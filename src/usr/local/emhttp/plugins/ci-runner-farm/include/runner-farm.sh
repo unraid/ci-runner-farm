@@ -4412,10 +4412,8 @@ cmd_boot_autostart() {
   # be reachable, which can lag boot. Retry the mint for the same window the
   # Docker wait below allows instead of skipping the fleet for the whole boot.
   if [ "$GITHUB_APP_MODE" = true ]; then
-    local attempt
-    for attempt in $(seq 1 75); do
-      github_app_refresh
-      provider_token_ready && break
+    local deadline=$(( $(date +%s) + 600 ))
+    while github_app_refresh; ! provider_token_ready && [ "$(date +%s)" -lt "$deadline" ]; do
       sleep 8
     done
   fi

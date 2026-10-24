@@ -66,6 +66,24 @@ MINT_FAIL=1 github_app_refresh 2>"$tmp/warn"
 [ "$ACCESS_TOKEN" = ghs_MintedInstallationToken000002 ] || fail "a failed refresh dropped a valid token"
 grep -q "GitHub App token refresh failed" "$tmp/warn" || fail "a failed refresh was not reported"
 
+# A failure backs off: the next calls inside the retry window do not mint.
+mints="$(wc -l < "$MINT_LOG" | tr -d ' ')"
+MINT_FAIL=1 github_app_refresh 2>/dev/null; MINT_FAIL=1 github_app_refresh 2>/dev/null
+[ "$(wc -l < "$MINT_LOG" | tr -d ' ')" = "$mints" ] || fail "a failed refresh did not back off"
+[ "$ACCESS_TOKEN" = ghs_MintedInstallationToken000002 ] || fail "backing off dropped a valid token"
+rm -f "$CRF_RUNDIR/github-token.retry"
+
+# A refresh already in progress elsewhere is not duplicated.
+if command -v flock >/dev/null 2>&1; then
+  ( exec 6>>"$CRF_RUNDIR/github-token.refresh"; flock 6; touch "$tmp/held"; sleep 1 ) &
+  holder=$!
+  while [ ! -e "$tmp/held" ]; do sleep 0.05; done
+  github_app_refresh
+  [ "$(wc -l < "$MINT_LOG" | tr -d ' ')" = "$mints" ] || fail "a concurrent refresh started a second minter"
+  [ "$ACCESS_TOKEN" = ghs_MintedInstallationToken000002 ] || fail "waiting on a refresh dropped a valid token"
+  wait "$holder"
+fi
+
 # ... and an expired one fails closed: no PAT fallback anywhere.
 printf '%s\n' $(( $(date +%s) - 5 )) > "$CRF_RUNDIR/github-token.expires"
 MINT_FAIL=1 github_app_refresh 2>/dev/null
@@ -76,7 +94,7 @@ MINT_FAIL=1 github_queued_refresh 2>/dev/null
 [ -z "$ACCESS_TOKEN" ] || fail "queued refresh fell back to the PAT"
 
 # gh_api refreshes before each request and sends the minted token on stdin.
-rm -f "$CRF_RUNDIR/github-token" "$CRF_RUNDIR/github-token.expires"
+rm -f "$CRF_RUNDIR/github-token" "$CRF_RUNDIR/github-token.expires" "$CRF_RUNDIR/github-token.retry"
 CURL_ARGV="$tmp/curl.argv"; CURL_STDIN="$tmp/curl.stdin"
 curl() {
   printf '%s\n' "$*" > "$CURL_ARGV"; cat > "$CURL_STDIN"

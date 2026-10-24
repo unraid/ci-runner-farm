@@ -19,6 +19,7 @@
 GITHUB_APP_KEY_FILE="${CFGDIR}/github-app-key.pem"
 GITHUB_APP_TOKEN_FILE="${RUNDIR}/github-token"
 GITHUB_APP_REFRESH_SECONDS=900
+GITHUB_APP_RETRY_SECONDS=30
 GITHUB_APP_MODE=false
 
 github_app_configured() {
@@ -37,19 +38,40 @@ github_app_token_seconds_left() {
   echo $(( expires - $(date +%s) ))
 }
 
+# Run the minter at most once at a time, and not again for
+# GITHUB_APP_RETRY_SECONDS after a failure. A caller that finds a refresh in
+# progress or backing off returns at once and keeps the current token, so a
+# GitHub outage costs one request per retry window rather than one per call.
+github_app_mint() {
+  local retry
+  read -r retry 2>/dev/null < "$GITHUB_APP_TOKEN_FILE.retry" || retry=0
+  case "$retry" in ''|*[!0-9]*) retry=0 ;; esac
+  [ "$(date +%s)" -ge "$retry" ] || return 0
+  (
+    if command -v flock >/dev/null 2>&1; then
+      exec 6>>"$GITHUB_APP_TOKEN_FILE.refresh" || exit 0
+      flock -n 6 || exit 0
+    fi
+    if "${CRF_GITHUB_APP_MINTER:-$SCRIPT_DIR/../bin/ci-runner-capacity}" github-app-token \
+        "$GH_APP_ID" "$GH_APP_INSTALLATION_ID" "$GITHUB_APP_KEY_FILE" "$GITHUB_APP_TOKEN_FILE" \
+        >/dev/null 2>"$RUNDIR/github-app-token.err"; then
+      rm -f "$GITHUB_APP_TOKEN_FILE.retry"
+    else
+      printf '%s\n' $(( $(date +%s) + GITHUB_APP_RETRY_SECONDS )) > "$GITHUB_APP_TOKEN_FILE.retry"
+      printf '[ci-runner-farm] warning: GitHub App token refresh failed: %s\n' \
+        "$(head -c 300 "$RUNDIR/github-app-token.err" 2>/dev/null | tr -d '\r\n')" >&2
+    fi
+  )
+}
+
 # Mint when the current token is near expiry, then load it into ACCESS_TOKEN.
 # A failed refresh keeps a token that is still valid; an expired or missing
 # token leaves ACCESS_TOKEN empty rather than reaching for the PAT.
 github_app_load_token() {
-  local left minter
+  local left
   left="$(github_app_token_seconds_left)"
   if [ "$left" -le "$GITHUB_APP_REFRESH_SECONDS" ]; then
-    minter="${CRF_GITHUB_APP_MINTER:-$SCRIPT_DIR/../bin/ci-runner-capacity}"
-    if ! "$minter" github-app-token "$GH_APP_ID" "$GH_APP_INSTALLATION_ID" \
-        "$GITHUB_APP_KEY_FILE" "$GITHUB_APP_TOKEN_FILE" >/dev/null 2>"$RUNDIR/github-app-token.err"; then
-      printf '[ci-runner-farm] warning: GitHub App token refresh failed: %s\n' \
-        "$(head -c 300 "$RUNDIR/github-app-token.err" 2>/dev/null | tr -d '\r\n')" >&2
-    fi
+    github_app_mint
     left="$(github_app_token_seconds_left)"
   fi
   if [ "$left" -gt 60 ]; then
