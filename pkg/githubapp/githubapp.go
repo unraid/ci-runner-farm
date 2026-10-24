@@ -46,12 +46,19 @@ const RefreshBefore = 15 * time.Minute
 
 const (
 	maxKeyBytes   = 16 * 1024
-	maxTokenBytes = 4 * 1024
+	maxTokenBytes = 8 * 1024
 	jwtLifetime   = 9 * time.Minute // GitHub caps App JWTs at 10 minutes.
 	jwtBackdate   = time.Minute     // Tolerate host clock skew.
 )
 
-var tokenPattern = regexp.MustCompile(`^[A-Za-z0-9_]{20,255}$`)
+// Installation tokens are opaque: GitHub has issued short ghs_ tokens and
+// longer forms containing "-" and "." (383 characters in October 2026), so
+// accept any single-line token of URL-safe characters rather than one shape.
+var tokenPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]+$`)
+
+func validToken(token []byte) bool {
+	return len(token) >= 20 && len(token) <= 4096 && tokenPattern.Match(token)
+}
 
 // Minter keeps TokenPath holding a current installation token.
 type Minter struct {
@@ -132,7 +139,7 @@ func (m *Minter) Ensure(ctx context.Context) (bool, error) {
 // stays valid for longer than RefreshBefore.
 func (m *Minter) fresh() bool {
 	token, err := readPrivate(m.TokenPath, maxTokenBytes)
-	if err != nil || !tokenPattern.Match(bytes.TrimSpace(token)) {
+	if err != nil || !validToken(bytes.TrimSpace(token)) {
 		return false
 	}
 	raw, err := readPrivate(m.expiryPath(), 64)
@@ -206,7 +213,7 @@ func (m *Minter) mint(ctx context.Context, jwt string) (string, time.Time, error
 		Token     string    `json:"token"`
 		ExpiresAt time.Time `json:"expires_at"`
 	}
-	if err := json.Unmarshal(body, &minted); err != nil || !tokenPattern.MatchString(minted.Token) {
+	if err := json.Unmarshal(body, &minted); err != nil || !validToken([]byte(minted.Token)) {
 		return "", time.Time{}, errors.New("github app: installation token response was malformed")
 	}
 	if !minted.ExpiresAt.After(m.now().Add(RefreshBefore)) {

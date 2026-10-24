@@ -87,7 +87,7 @@ function crf_redact($s, $secrets = null) {
   $out = preg_replace([
     '/([A-Za-z0-9_.@-]{1,64}-)?glrt(r)?-[A-Za-z0-9_.-]{10,507}/',
     '/github_pat_[A-Za-z0-9_]{10,}/',
-    '/gh[pousr]_[A-Za-z0-9_]{10,}/',
+    '/gh[pousr]_[A-Za-z0-9_.-]{10,}/',
     '/glpat-[A-Za-z0-9_-]{8,}/',
   ], [
     '[REDACTED_GITLAB_TOKEN]',

@@ -155,6 +155,7 @@ try {
             same([$app['token'], $app['queue-token'], $app['identity']], ['ghs_minted', 'ghs_minted', 'github-app:7:42']);
             putenv('CRF_GITHUB_TOKEN_FILE=relative/token'); rejects(fn()=>BuildDemand::credentials($credentialDir));
             putenv('CRF_GITHUB_TOKEN_FILE');
+            unlink($minted);
             same(BuildDemand::credentials($credentialDir, false)['identity'], '');
             file_put_contents($credentialDir . '/ci-runner-farm.cfg', "CI_PROVIDER=github\nGH_SCOPE=org\nGH_OWNER=example\nRUNNER_GROUP=Default\n");
             mkdir($credentialDir . '/runtime', 0700);

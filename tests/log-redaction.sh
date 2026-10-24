@@ -29,6 +29,7 @@ printf '%s\n' \
   "shape $routable glrtr-$payload acme-glrt-$payload" \
   'shape glpat-abcdefghijklmnop github_pat_abcdefghijklmnop ghp_abcdefghijklmnop' \
   'shape gho_abcdefghijklmnop ghs_abcdefghijklmnop ghu_abcdefghijklmnop ghr_abcdefghijklmnop' \
+  'shape ghs_NewFormat0123456789-abcdef.ghijklmnop-QRSTUV.wxyz0123 (current installation token form)' \
   'plain time="2026-01-01T00:00:00Z" level=warning msg="docker: no such image"' \
   > "$fixture"
 
@@ -75,7 +76,8 @@ for leaked in "$redact_access" "$redact_runner" "$redact_api" "$redact_registry"
   "$routable" "glrtr-$payload" "acme-glrt-$payload" \
   glpat-abcdefghijklmnop github_pat_abcdefghijklmnop \
   ghp_abcdefghijklmnop gho_abcdefghijklmnop ghs_abcdefghijklmnop \
-  ghu_abcdefghijklmnop ghr_abcdefghijklmnop
+  ghu_abcdefghijklmnop ghr_abcdefghijklmnop \
+  abcdef.ghijklmnop-QRSTUV wxyz0123
 do
   if grep -Fq -- "$leaked" "$tmp/php.out"; then fail "shared redaction leaked $leaked"; fi
 done

@@ -3206,7 +3206,7 @@ redact_log_stream() {
   done | sed -E \
     -e 's/([A-Za-z0-9_.@-]{1,64}-)?glrt(r)?-[A-Za-z0-9_.-]{10,507}/[REDACTED_GITLAB_TOKEN]/g' \
     -e 's/github_pat_[A-Za-z0-9_]{10,}/[REDACTED_GITHUB_TOKEN]/g' \
-    -e 's/gh[pousr]_[A-Za-z0-9_]{10,}/[REDACTED_GITHUB_TOKEN]/g' \
+    -e 's/gh[pousr]_[A-Za-z0-9_.-]{10,}/[REDACTED_GITHUB_TOKEN]/g' \
     -e 's/glpat-[A-Za-z0-9_-]{8,}/[REDACTED_GITLAB_TOKEN]/g'
 }
 # JSON-encode stdin as a string literal (with surrounding quotes), preserving newlines

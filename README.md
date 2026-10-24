@@ -177,7 +177,11 @@ installation rate limit (15,000 requests an hour on GitHub Enterprise Cloud).
    | Organization: Self-hosted runners | Read and write | Registration tokens, runner listing, removal and labels, runner groups |
    | Repository: Actions | Read | Queued and failed runs, job lists and job logs |
    | Repository: Metadata | Read | Repository visibility checks |
-   | Repository: Packages | Read | Optional, a private GHCR runner image without a separate registry token |
+
+   A private GHCR runner image still needs a registry token. GHCR accepts an
+   App installation token as a credential but does not grant it access to
+   private organization packages, which only grant access through people,
+   teams and repositories' Actions tokens.
 
 2. Install it on the organization with access to every repository the farm
    serves, and generate a private key.

@@ -21,7 +21,8 @@ import (
 	"time"
 )
 
-const fakeToken = "ghs_FAKEinstallationTOKEN0123456789"
+// The current GitHub format: long, with "-" and "." separators.
+var fakeToken = "ghs_" + strings.Repeat("FAKEtoken0123456789-abcdefABCDEF.", 11) + "end"
 
 type fakeGitHub struct {
 	t        *testing.T
