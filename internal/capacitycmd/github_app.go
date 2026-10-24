@@ -1,3 +1,4 @@
+// Package capacitycmd composes Farm's native controller without a QA runtime.
 package capacitycmd
 
 import (
