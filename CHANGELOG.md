@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.16.1](https://github.com/unraid/ci-runner-farm/compare/v1.16.0...v1.16.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **github:** authenticate cold images before queued runner startup ([#189](https://github.com/unraid/ci-runner-farm/issues/189)) ([e2cf880](https://github.com/unraid/ci-runner-farm/commit/e2cf880dd2e7a0ac80d34a9dc6af8497e2924828))
+* **github:** preserve empty remote image fallback ([#191](https://github.com/unraid/ci-runner-farm/issues/191)) ([e8a727f](https://github.com/unraid/ci-runner-farm/commit/e8a727fca37b82ad506894f6b987762110bcc6fb))
+
 ## [1.16.0](https://github.com/unraid/ci-runner-farm/compare/v1.15.1...v1.16.0) (2026-10-24)
 
 
