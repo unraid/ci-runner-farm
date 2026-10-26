@@ -1,0 +1,20 @@
+{
+  "disposition": "PATCH",
+  "expected_structural_delta": "One condition extended and one regression case; zero new owners, services, stores or credentials.",
+  "minimum_design": "Require the existing nonempty remote image setting before cold-image authentication, and add the missing fallback regression to the same startup test.",
+  "outcome": "An empty remote image selection retains the existing built-in fallback without registry access.",
+  "reuse_decisions": [
+    {
+      "decision": "reuse",
+      "name": "effective_image",
+      "rationale": "Already selects the built-in image for an empty remote setting."
+    },
+    {
+      "decision": "extend",
+      "name": "github_start_one",
+      "rationale": "Align its new cold pull condition with effective_image without changing any other startup/admission behavior."
+    }
+  ],
+  "schema": "limetech.ai-review-marker.v2",
+  "stage": "forecast"
+}
