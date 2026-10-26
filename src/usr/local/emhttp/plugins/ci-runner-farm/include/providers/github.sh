@@ -850,7 +850,14 @@ github_build_args() {
 }
 
 github_start_one() {
-  local idx="$1" name="$2" rc
+  local idx="$1" name="$2" rc image
+  image="$(effective_image)" || return 1
+  # Queued native starts can bypass the full Start preflight. Prepare cold
+  # private images with host authentication before minting runner credentials.
+  if [ "$IMAGE_SOURCE" = remote ] && ! docker image inspect "$image" >/dev/null 2>&1; then
+    github_prepare_remote_image "$image" >/dev/null \
+      || { err "runner $name not started (remote image preparation failed)"; return 1; }
+  fi
   github_build_args "$idx" "$name" || { err "runner $name not started (registration-token error)"; return 1; }
   log "starting $name (pool=${CRF_POOL_ID:-default} cpus=$RUNNER_CPUS mem=$RUNNER_MEMORY scope=$GH_SCOPE image=$(effective_image))"
   run_owned_github_container "$idx" >/dev/null
