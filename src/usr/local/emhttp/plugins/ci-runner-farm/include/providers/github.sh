@@ -854,7 +854,8 @@ github_start_one() {
   image="$(effective_image)" || return 1
   # Queued native starts can bypass the full Start preflight. Prepare cold
   # private images with host authentication before minting runner credentials.
-  if [ "$IMAGE_SOURCE" = remote ] && ! docker image inspect "$image" >/dev/null 2>&1; then
+  if [ "$IMAGE_SOURCE" = remote ] && [ -n "$IMAGE" ] \
+     && ! docker image inspect "$image" >/dev/null 2>&1; then
     github_prepare_remote_image "$image" >/dev/null \
       || { err "runner $name not started (remote image preparation failed)"; return 1; }
   fi

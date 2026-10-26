@@ -50,6 +50,12 @@ done
 : > "$tmp/order"; IMAGE_SOURCE=builtin login_ok=true pull_ok=true
 run_queued
 [ "$(cat "$tmp/order")" = $'registration\ncreate\nadmission\ncleanup' ] || fail 'built-in startup changed'
+# Empty remote settings select the existing built-in image and never authenticate.
+(
+ : > "$tmp/order"; IMAGE_SOURCE=remote IMAGE=""
+ run_queued
+ [ "$(cat "$tmp/order")" = $'registration\ncreate\nadmission\ncleanup' ] || fail 'empty remote setting changed built-in admission'
+)
 : > "$tmp/order"; IMAGE_SOURCE=remote native=false cached=false
 github_start_one 1 ci-runner-build-1
 [ "$(cat "$tmp/order")" = $'inspect\nlogin\npull\nregistration\nrun\ncleanup' ] || fail 'legacy startup lost authenticated image preparation'
