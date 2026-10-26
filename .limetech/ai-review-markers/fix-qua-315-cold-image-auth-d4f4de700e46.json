@@ -1,0 +1,25 @@
+{
+  "disposition": "PATCH",
+  "expected_structural_delta": "One existing function extended by about 10 lines, one bounded mocked regression file and existing test registration; zero new owners, stores, services or credentials.",
+  "minimum_design": "Before minting registration credentials, reuse the GitHub provider authenticated image preparation only when the selected remote image is absent locally. Leave cached and built-in image starts unchanged.",
+  "outcome": "Queued GitHub builders start from an uncached private runner image using existing host registry credentials, preserving admission and active jobs.",
+  "reuse_decisions": [
+    {
+      "decision": "reuse",
+      "name": "github_prepare_remote_image and registry_login",
+      "rationale": "Existing host-only credential and authenticated pull owner already works on the affected host."
+    },
+    {
+      "decision": "extend",
+      "name": "github_start_one",
+      "rationale": "Common new-runner path covers queued native and legacy startup before token/env staging."
+    },
+    {
+      "decision": "reuse",
+      "name": "Native shared-capacity broker",
+      "rationale": "Admission and cleanup remain unchanged after successful image preparation."
+    }
+  ],
+  "schema": "limetech.ai-review-marker.v2",
+  "stage": "forecast"
+}
