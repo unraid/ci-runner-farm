@@ -27,11 +27,14 @@ case "${1:-}" in
     if ! timeout -k 2 30 bash "$0" --cleanup; then
       echo '[ci-runner-farm] job cache cleanup incomplete; retained uncertain caches' >&2
     fi
-    if ! timeout -k 2 120 bash "$0" --prune; then
-      echo '[ci-runner-farm] job Docker prune incomplete; retained unpruned state' >&2
-    fi
-    if ! timeout -k 2 120 bash "$0" --workspace; then
-      echo '[ci-runner-farm] job workspace cleanup incomplete; retained remaining checkouts' >&2
+    # Pruning removes state a later job could reuse, so it is opt-in.
+    if [ "${CRF_JOB_PRUNE:-}" = 1 ]; then
+      if ! timeout -k 2 120 bash "$0" --prune; then
+        echo '[ci-runner-farm] job Docker prune incomplete; retained unpruned state' >&2
+      fi
+      if ! timeout -k 2 120 bash "$0" --workspace; then
+        echo '[ci-runner-farm] job workspace cleanup incomplete; retained remaining checkouts' >&2
+      fi
     fi
     exit "$image_status"
     ;;

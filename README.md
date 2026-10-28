@@ -863,6 +863,13 @@ remain untouched. Free space is checked after each removal. Normal admission
 replenishes the configured runner floor. Unknown disk information or failed
 cleanup preserves normal recovery.
 
+Persistent runners can also prune their own Docker state after each job. This
+is off by default because it removes state a later job could reuse. Set the
+engine-only `DOCKER_JOB_PRUNE="true"` to enable it. Each job then removes
+stopped containers, anonymous volumes, dangling images and dangling build
+cache. Below the free-space threshold it also removes every unused image and
+the checkouts of other repositories. Enabling it replaces idle runners once.
+
 For an explicit cleanup run, use
 `include/runner-farm.sh prune-completed-docker --dry-run`, then
 `include/runner-farm.sh prune-completed-docker --apply`. Both commands acquire

@@ -9,12 +9,13 @@ github_validate_settings() {
   github_validate_docker_cache_policy && crf_validate_user_share_mounts && crf_shared_cache_mount
 }
 github_validate_docker_cache_policy() {
-  [ "$DIND" = true ] && [ "$EPHEMERAL" = false ] && [ -n "${DOCKER_CACHE_BUILDERS:-}" ] || return 0
+  [ "$DIND" = true ] && [ "$EPHEMERAL" = false ] || return 0
+  [[ "${DOCKER_CACHE_MIN_FREE_PERCENT:-15}" =~ ^(0|[1-9][0-9]?|100)$ ]] \
+    || { err "invalid Docker cache free-space threshold"; return 1; }
+  [ -n "${DOCKER_CACHE_BUILDERS:-}" ] || return 0
   local -a pressure_builders
   [ "${#DOCKER_CACHE_BUILDERS}" -le 1024 ] && [[ "$DOCKER_CACHE_BUILDERS" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}(,[A-Za-z0-9][A-Za-z0-9_.-]{0,63})*$ ]] \
     || { err "invalid Docker cache builder allowlist"; return 1; }
-  [[ "$DOCKER_CACHE_MIN_FREE_PERCENT" =~ ^(0|[1-9][0-9]?|100)$ ]] \
-    || { err "invalid Docker cache free-space threshold"; return 1; }
   IFS=, read -r -a pressure_builders <<< "$DOCKER_CACHE_BUILDERS"
   [ "${#pressure_builders[@]}" -le 32 ] \
     || { err "too many Docker cache builder names"; return 1; }
@@ -51,7 +52,15 @@ github_confgen() {
   [ "$DIND" = true ] && runtime_salt='github-dind-cgroupns-v1'
   if [ "$DIND" = true ] && [ "$EPHEMERAL" = false ]; then
     runtime_salt="${runtime_salt}-job-cache-cleanup-v3"
-    [ -z "${DOCKER_CACHE_BUILDERS:-}" ] || runtime_salt="${runtime_salt}-cache-pressure-v1-${DOCKER_CACHE_MIN_FREE_PERCENT:-15}-${DOCKER_CACHE_BUILDERS}"
+    # Opting in must replace existing slots; the default keeps the fingerprint.
+    [ "${DOCKER_JOB_PRUNE:-false}" != true ] || runtime_salt="${runtime_salt}-job-prune-v1"
+    # Existing slots must pick up a changed threshold. The default keeps the
+    # prior fingerprint so an upgrade does not recycle every persistent slot.
+    if [ -n "${DOCKER_CACHE_BUILDERS:-}" ]; then
+      runtime_salt="${runtime_salt}-cache-pressure-v1-${DOCKER_CACHE_MIN_FREE_PERCENT:-15}-${DOCKER_CACHE_BUILDERS}"
+    elif [ "${DOCKER_CACHE_MIN_FREE_PERCENT:-15}" != 15 ]; then
+      runtime_salt="${runtime_salt}-cache-pressure-threshold-v1-${DOCKER_CACHE_MIN_FREE_PERCENT}"
+    fi
   fi
   # The explicit store contract must replace existing slots through the normal
   # drain lifecycle. Farms without a pnpm-store mount keep their fingerprint.
@@ -796,12 +805,19 @@ github_build_args() {
         esac
       fi
       ARGS+=( -e "CRF_IMAGE_JOB_COMPLETED_HOOK=$image_hook" )
+      github_validate_docker_cache_policy || return 1
       ARGS+=( -v "$cleanup_script:$cleanup_destination:ro"
-        -e "ACTIONS_RUNNER_HOOK_JOB_COMPLETED=$cleanup_destination" -e CRF_JOB_CLEANUP_DIND=1 )
+        -e "ACTIONS_RUNNER_HOOK_JOB_COMPLETED=$cleanup_destination" -e CRF_JOB_CLEANUP_DIND=1
+        -e "CRF_DOCKER_CACHE_MIN_FREE_PERCENT=${DOCKER_CACHE_MIN_FREE_PERCENT:-15}" )
+      # The hook's image prune and workspace cleanup honor the threshold
+      # without a builder allowlist, so 0 must reach it to disable them.
       if [ -n "${DOCKER_CACHE_BUILDERS:-}" ]; then
-        github_validate_docker_cache_policy || return 1
-        ARGS+=( -e "CRF_DOCKER_CACHE_BUILDERS=$DOCKER_CACHE_BUILDERS"
-          -e "CRF_DOCKER_CACHE_MIN_FREE_PERCENT=$DOCKER_CACHE_MIN_FREE_PERCENT" )
+        ARGS+=( -e "CRF_DOCKER_CACHE_BUILDERS=$DOCKER_CACHE_BUILDERS" )
+      fi
+      if [ "${DOCKER_JOB_PRUNE:-false}" = true ]; then
+        ARGS+=( -e CRF_JOB_PRUNE=1 )
+      else
+        ARGS+=( -e CRF_JOB_PRUNE=0 )
       fi
     fi
   elif [ "$SHARE_DOCKER_SOCK" = "true" ]; then
