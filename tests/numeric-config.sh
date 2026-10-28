@@ -23,6 +23,17 @@ fail() { printf 'NUMERIC CONFIG FAIL: %s\n' "$*" >&2; exit 1; }
   # load_cfg can be driven directly against a scratch cfg file.
   write_cfg() { printf '%s\n' "$@" > "$CFG"; }
 
+  write_cfg 'DOCKER_CACHE_BUILDERS="warm,second"'
+  load_cfg
+  [ "$DOCKER_CACHE_BUILDERS" = warm,second ] || fail "builder policy failed to load"
+  write_cfg 'GH_OWNER="example"'
+  load_cfg
+  [ -z "$DOCKER_CACHE_BUILDERS" ] || fail "removed builder policy remained active"
+  DOCKER_CACHE_BUILDERS=warm
+  rm "$CFG"
+  load_cfg
+  [ -z "$DOCKER_CACHE_BUILDERS" ] || fail "missing cfg retained builder policy"
+
   # A command substitution in an array-subscript shape is what makes this a code
   # execution bug rather than a typo: $(( RUNNER_COUNT + 1 )) would run it. The
   # value must be rejected and the built-in default must survive.

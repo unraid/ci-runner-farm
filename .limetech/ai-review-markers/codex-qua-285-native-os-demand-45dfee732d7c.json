@@ -1,0 +1,8 @@
+{
+  "disposition": "NOT_REQUIRED",
+  "forecast_commit": "86067e3824f219e9a2e9a6b51874b44ab1d9b63b",
+  "reviewed_sha": "b44e8aa7297b4f0e12c9c9cbfb140e091036661e",
+  "schema": "limetech.ai-review-marker.v2",
+  "stage": "final",
+  "unresolved_proportionality_findings": []
+}

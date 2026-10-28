@@ -50,6 +50,9 @@ func (b *Broker) AdoptWithSnapshot(policy *Policy, workloads []Request, attest f
 				return err
 			}
 			snapshot.Grants[workload.ID] = Grant{Request: workload, Cost: cost, BorrowedMemoryMiB: borrowed, Fence: hex.EncodeToString(fence), GrantedAt: b.now()}
+			if snapshot.Policy.SharedMemoryHeadroom {
+				snapshot.Starts[workload.ID] = reservedStart(snapshot.Grants[workload.ID])
+			}
 		}
 		return nil
 	})

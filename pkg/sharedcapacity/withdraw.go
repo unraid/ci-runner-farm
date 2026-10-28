@@ -54,6 +54,14 @@ type WithdrawalOwner interface {
 	Removed(context.Context) (bool, error)
 }
 
+// TerminalWithdrawalOwner proves that an immutable owner cannot execute or
+// restart. Terminal removal must fail if the owner restarts after that proof.
+// Owners without this capability retain the listener pickup settlement period.
+type TerminalWithdrawalOwner interface {
+	Terminated(context.Context) (bool, error)
+	RemoveTerminated(context.Context) error
+}
+
 // AdvanceWithdrawal takes one bounded step while the caller holds its owner
 // lifecycle lock. It never frees a grant; the owner releases only after its
 // exact container is proven absent. Failures and uncertain effects stay charged.
@@ -105,8 +113,20 @@ func finishWithdrawal(ctx context.Context, withdrawal *Withdrawal, owner Withdra
 	if withdrawal.WithdrawnAt.IsZero() || withdrawal.WithdrawnAt.After(now) {
 		return errors.New("idle withdrawal settlement time is invalid")
 	}
+	remove := owner.RemoveFrozen
 	if now.Sub(withdrawal.WithdrawnAt) < pickupSettlement {
-		return ErrWithdrawalWaiting
+		terminal, supported := owner.(TerminalWithdrawalOwner)
+		if !supported {
+			return ErrWithdrawalWaiting
+		}
+		terminated, err := terminal.Terminated(ctx)
+		if err != nil {
+			return err
+		}
+		if !terminated {
+			return ErrWithdrawalWaiting
+		}
+		remove = terminal.RemoveTerminated
 	}
 	if err := requireFrozenIdle(ctx, withdrawal, owner, save); err != nil {
 		return err
@@ -122,7 +142,7 @@ func finishWithdrawal(ctx context.Context, withdrawal *Withdrawal, owner Withdra
 	if err := save(); err != nil {
 		return err
 	}
-	if err := owner.RemoveFrozen(ctx); err != nil {
+	if err := remove(ctx); err != nil {
 		return err
 	}
 	withdrawal.Phase = withdrawRemoved

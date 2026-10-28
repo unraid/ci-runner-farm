@@ -17,6 +17,8 @@
 #   CHANNEL           stable (default) or nightly. Nightly emits a separate
 #                     preview artifact and release channel from the same source
 #                     tree while preserving the runtime/config contract.
+#   PACKAGE_TAG       Nightly only: the build's immutable prerelease tag that
+#                     hosts the package. Defaults to the moving nightly tag.
 #
 # The Unraid plugin-manager <version> ("external" version) is
 #   YYYY.MM.DD.HHMM.BUILD-INTERNAL  e.g. 2026.06.24.1530.42-0.1.0
@@ -48,12 +50,31 @@ REPO="${REPO:-unraid/ci-runner-farm}"
 # (never /usr or a root '.' entry that could clobber system-dir perms on extract;
 # the install step extracts --no-same-owner and chowns root:root regardless).
 make_tgz() {
+  build_native_capacity
   local opts=()
   if tar --version 2>/dev/null | grep -qi 'gnu tar'; then
     opts=(--sort=name --mtime='UTC 2020-01-01' --owner=0 --group=0 --numeric-owner)
   fi
   # ${opts[@]+...} keeps this safe under `set -u` when opts is empty (bash 3.2).
   tar ${opts[@]+"${opts[@]}"} -cf - -C "$SRCDIR" . | gzip -9n > "$TGZ"
+}
+
+# Pin the compiler and strip checkout paths/VCS state so tagged rebuilds produce
+# the same Linux executable. Never package a previously generated helper.
+build_native_capacity() {
+  local temporary
+  command -v go >/dev/null 2>&1 || { echo "Go is required to build native capacity" >&2; return 1; }
+  temporary="$(mktemp -d)" || return 1
+  if ! GOTOOLCHAIN=go1.26.10 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' \
+    -o "$temporary/ci-runner-capacity" ./cmd/ci-runner-capacity; then
+    rm -rf -- "$temporary"
+    return 1
+  fi
+  mkdir -p "$SRCDIR/bin"
+  chmod 755 "$temporary/ci-runner-capacity"
+  mv -f "$temporary/ci-runner-capacity" "$SRCDIR/bin/ci-runner-capacity"
+  rm -rf -- "$temporary"
 }
 
 # Build an explicitly local-only plugin descriptor and package without touching
@@ -126,6 +147,8 @@ build_dev_package() {
   render_dir="$dev_workdir/render"
   mkdir -p "$render_dir/$SRCDIR"
   cp -p build-plg.sh "$render_dir/build-plg.sh"
+  cp -p go.mod go.sum "$render_dir/"
+  cp -pR cmd internal pkg "$render_dir/"
   [ ! -f VERSION ] || cp -p VERSION "$render_dir/VERSION"
   [ ! -f CHANGELOG.md ] || cp -p CHANGELOG.md "$render_dir/CHANGELOG.md"
   cp -pR "$SRCDIR"/. "$render_dir/$SRCDIR/"
@@ -351,9 +374,14 @@ SUPPORT_URL="https://github.com/${REPO}/issues"
 
 if [ "$CHANNEL" = nightly ]; then
   RELEASE_TAG="${RELEASE_TAG:-nightly}"
+  # Update checks follow the moving channel. The package comes from the
+  # build's own immutable prerelease when PACKAGE_TAG names one, so a
+  # descriptor never fetches bytes from a later build.
+  PACKAGE_TAG="${PACKAGE_TAG:-$RELEASE_TAG}"
+  [[ "$PACKAGE_TAG" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]] || { echo "PACKAGE_TAG is not a valid tag: $PACKAGE_TAG" >&2; exit 1; }
   PLUGIN_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${OUT}"
   PACKAGE_NAME="$TGZ"
-  PACKAGE_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${PACKAGE_NAME}"
+  PACKAGE_URL="https://github.com/${REPO}/releases/download/${PACKAGE_TAG}/${PACKAGE_NAME}"
 else
   RELEASE_TAG="v${INTERNAL_VERSION}"
   PLUGIN_URL="https://github.com/${REPO}/releases/latest/download/${OUT}"
@@ -364,8 +392,8 @@ else
   PACKAGE_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${PACKAGE_NAME}"
 fi
 
-# Stable packages are version-pinned; the nightly channel uses one moving
-# package name. In both cases the .tgz is rebuilt reproducibly at publish and
+# Stable packages are version-pinned; the nightly channel uses one package
+# name under each build's prerelease tag. In both cases the .tgz is rebuilt reproducibly at publish and
 # only the .plg descriptor is committed.
 
 # Portable MD5 (md5sum on Linux/CI, md5 on macOS/BSD dev boxes).
@@ -445,7 +473,7 @@ tar -xzf "\$CFGDIR/${PACKAGE_NAME}" --no-same-owner --no-overwrite-dir -C "\$PLG
 chown -R root:root "\$PLGDIR"
 find "\$PLGDIR" -type d -exec chmod 0755 {} +
 find "\$PLGDIR" -type f -exec chmod 0644 {} +
-chmod 0755 "\$PLGDIR/include/runner-farm.sh"
+chmod 0755 "\$PLGDIR/include/runner-farm.sh" "\$PLGDIR/include/runner-job-cleanup.sh" "\$PLGDIR/bin/ci-runner-capacity"
 [ -d "\$PLGDIR/nchan" ] && find "\$PLGDIR/nchan" -type f -exec chmod 0755 {} +
 # Unraid's emhttp_event executes these on Docker service start/stop — must be +x
 [ -d "\$PLGDIR/event" ] && find "\$PLGDIR/event" -type f -exec chmod 0755 {} +

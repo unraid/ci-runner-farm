@@ -65,9 +65,10 @@ script = "\n".join(line[10:] if line.startswith("          ") else line
 
 with tempfile.TemporaryDirectory() as temporary:
     build = Path(temporary)
-    for name in ("build-plg.sh", "VERSION", "ci-runner-farm.plg", "CHANGELOG.md"):
+    for name in ("build-plg.sh", "go.mod", "go.sum", "VERSION", "ci-runner-farm.plg", "CHANGELOG.md"):
         shutil.copy2(root / name, build / name)
-    shutil.copytree(root / "src", build / "src")
+    for directory in ("src", "cmd", "internal", "pkg"):
+        shutil.copytree(root / directory, build / directory)
     (build / "VERSION").write_text("1.9.1\n")
     (build / ".release-please-manifest.json").write_text(json.dumps({".": "1.10.0"}))
     # The workflow obtains its reproducible build date from the checked-out

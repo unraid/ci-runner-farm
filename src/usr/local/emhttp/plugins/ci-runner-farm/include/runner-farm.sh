@@ -60,7 +60,10 @@ RUNNER_POOLS=""                       # semicolon-separated validated V3 pool re
 QUEUED_POOLS="false"                  # native queued-job sizing and fenced idle retirement
 ELASTIC_POOLS="false"                 # shared GitHub pools grow from occupied slots plus warm headroom
 DOCKER_CACHE_MIN_FREE_PERCENT="15"     # reclaim completed DinD stores below this free-space threshold; 0 disables
+DOCKER_CACHE_BUILDERS=""              # optional comma-separated reusable Buildx builder names eligible for pressure eviction
 RUNNER_CPUS=""                        # per-runner CPU cap; empty = uncapped (CFS time-shares fairly)
+CPU_PINNING="false"                   # true => GitHub runners with a whole-number CPU cap also get a cpuset of that
+                                      # size, so tools see the right CPU count; the --cpus cap and accounting stay.
 RUNNER_MEMORY="16g"                   # per-runner memory cap (kept: memory isn't time-shared like CPU)
 CACHE_ROOT="/mnt/cache/github-runner" # must be a dedicated SUBDIR under a pool/disk, never a bare mount root (see crf_safe_cache_root)
 WORK_TMPFS_SIZE="8g"                  # empty => bind workdir to pool instead of RAM
@@ -73,6 +76,8 @@ IMAGE=""                              # remote image ref, used when IMAGE_SOURCE
 EPHEMERAL="false"                     # true => runner deregisters after each job
 RUN_AS_ROOT="false"                   # false => jobs run as non-root 'runner' (sudo+docker groups), like
                                       # GitHub-hosted runners. true => jobs run as root (legacy).
+GH_APP_ID=""                          # GitHub App id; with GH_APP_INSTALLATION_ID and $CFGDIR/github-app-key.pem
+GH_APP_INSTALLATION_ID=""             # the Farm uses one-hour installation tokens instead of the PAT (github-app.sh)
 ACCESS_TOKEN=""                       # GitHub PAT (repo scope; +admin:org for org; +read:packages if reused for private GHCR). Stays host-side:
                                       # runners get a short-lived registration token, never the PAT itself.
 GITLAB_RUNNER_TOKEN=""                # reusable glrt- auth token; written into mode-0600 per-slot config.toml
@@ -147,16 +152,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/runner-recommendations.sh"
 # shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-history.sh
 . "$SCRIPT_DIR/runner-history.sh"
+# shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/cpu-pinning.sh
+. "$SCRIPT_DIR/cpu-pinning.sh"
+# shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/github-app.sh
+. "$SCRIPT_DIR/github-app.sh"
 
 # Durable aggregate recommendation history lives under the plugin config
 # directory; active snapshots and locks remain on tmpfs in RUNDIR.
 HISTORY_FILE="${CRF_HISTORY_FILE:-${CFGDIR}/recommendations.history}"
 
 # Allowlist of keys the settings page may set. load_cfg only ever assigns these.
-CFG_KEYS="CI_PROVIDER GH_SCOPE GH_OWNER GH_REPOS RUNNER_GROUP GITLAB_URL GITLAB_RUNNER_IMAGE GITLAB_PROJECTS GITLAB_SHUTDOWN_TIMEOUT \
+CFG_KEYS="CI_PROVIDER GH_SCOPE GH_OWNER GH_REPOS RUNNER_GROUP GH_APP_ID GH_APP_INSTALLATION_ID GITLAB_URL GITLAB_RUNNER_IMAGE GITLAB_PROJECTS GITLAB_SHUTDOWN_TIMEOUT \
 GITLAB_ALLOWED_IMAGES GITLAB_ALLOWED_SERVICES GITLAB_PULL_POLICY GITLAB_SHM_SIZE \
-RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS QUEUED_POOLS DOCKER_CACHE_MIN_FREE_PERCENT \
-RUNNER_CPUS RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE USER_SHARE_MOUNTS SHARED_CACHE_ROOT IMAGE_SOURCE IMAGE EPHEMERAL \
+RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS QUEUED_POOLS DOCKER_CACHE_MIN_FREE_PERCENT DOCKER_CACHE_BUILDERS \
+RUNNER_CPUS CPU_PINNING RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE USER_SHARE_MOUNTS SHARED_CACHE_ROOT IMAGE_SOURCE IMAGE EPHEMERAL \
 RUN_AS_ROOT REGISTRY_SERVER REGISTRY_USERNAME CACHE_MOUNTS SHARE_DOCKER_SOCK DIND \
 SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK ARTIFACT_ENDPOINT MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
 AUTOSCALE_MAX AUTOSCALE_MIN_IDLE AUTOSCALE_STEP AUTOSCALE_INTERVAL \
@@ -178,6 +187,8 @@ IMAGE_DRAIN_TIMEOUT GITLAB_SHUTDOWN_TIMEOUT GITLAB_SHM_SIZE DOCKER_CACHE_MIN_FRE
 # lines ourselves and assign via printf -v — a literal string set, never eval'd —
 # and only for keys on the allowlist above.
 load_cfg() {
+  # Omitting the optional policy is an explicit opt-out on daemon reload.
+  DOCKER_CACHE_BUILDERS=""
   [ -f "$CFG" ] || return 0
   local line key val
   while IFS= read -r line || [ -n "$line" ]; do
@@ -233,7 +244,7 @@ reload_secret_files() {
   # A successful GitLab verification is reusable only within one immutable
   # locked snapshot. Any explicit reload invalidates that process-local cache.
   GITLAB_TOKEN_PROBE_VALIDATED_TARGET=""
-  ACCESS_TOKEN="$(read_secret_file "$TOKEN_FILE")"
+  github_app_select
   GITLAB_RUNNER_TOKEN="$(read_secret_file "$GITLAB_RUNNER_TOKEN_FILE")"
   GITLAB_API_TOKEN="$(read_secret_file "$GITLAB_API_TOKEN_FILE")"
   REGISTRY_TOKEN="$(read_secret_file "$REGISTRY_TOKEN_FILE")"
@@ -817,12 +828,31 @@ autoscale_tick() {
   if pool_mode_enabled; then
     validate_runner_mode || return 1
     pool_activate build || return 1
-    shared_capacity_poison_scan || err "shared capacity: poison scan unavailable; preserving existing owner intents"
+    # Bound native registration reads across restarts independently of queue
+    # quota. A queue-reader cooldown must not strand completed owner grants.
+    if [ "$QUEUED_POOLS" = true ] && (shared_capacity_native_required ||
+      printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'); then
+      php "$SCRIPT_DIR/build-demand.php" begin-recovery "$CFGDIR" "$RUNDIR" "$RUNNER_POOLS" >/dev/null || return 75
+    fi
+    restore_warm_capacity || err "shared capacity: warm restoration incomplete; settling existing owners"
     if shared_capacity_call rebalance; then :; else
       # Unknown recovery retains its charged grant. Independent starts still
       # require the broker, so one unproved owner must not stall the fleet.
       [ "$?" -eq 75 ] || err "shared capacity: rebalance incomplete; retaining allocations and retrying gated starts"
     fi
+    # Queued starts can return healthy waiting before settlement frees grants.
+    # Retry warm restoration before a queue cooldown can defer burst planning.
+    restore_warm_capacity || return 1
+    if shared_capacity_native_required; then
+      reconcile_stale_runners || err "shared capacity: config migration deferred; preserving native owners"
+      restore_warm_capacity || return 1
+    fi
+    # Preserve the broad queue cooldown without coupling it to owner recovery.
+    if [ "$QUEUED_POOLS" = true ] && (shared_capacity_native_required ||
+      printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'); then
+      php "$SCRIPT_DIR/build-demand.php" begin "$CFGDIR" "$RUNDIR" "$RUNNER_POOLS" >/dev/null || return 75
+    fi
+    shared_capacity_poison_scan || err "shared capacity: poison scan unavailable; preserving existing owner intents"
     # The shared broker, rather than local count arithmetic, owns admission.
     # Retrying every stable slot preserves queue age and repairs inert creates.
     start_configured_capacity
@@ -901,12 +931,14 @@ autoscale_daemon() {
   # runs) and (b) every UI start/stop/scale/recycle would block 20s then fail "fleet
   # busy". Closing fd 8 here releases the inherited lock; with_fleet_lock reopens it
   # fresh per tick. (7/9 closed too, defensively, for any future locked spawn path.)
-  exec 8>&- 7>&- 9>&- 2>/dev/null || true
+  { exec 8>&- 7>&- 9>&-; } 2>/dev/null || true
   log "autoscale daemon up (min=$AUTOSCALE_MIN max=$AUTOSCALE_MAX buffer=$AUTOSCALE_MIN_IDLE step=$AUTOSCALE_STEP every ${AUTOSCALE_INTERVAL}s)"
   while true; do
     load_cfg
     reload_secret_files
     [ "$AUTOSCALE" = "true" ] || { log "autoscale disabled -> daemon exit"; rm -f "$AUTOSCALE_PID"; break; }
+    # Timestamp each tick so autoscale.log lines can be correlated with jobs.
+    log "autoscale tick $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     with_fleet_lock try autoscale_tick
     sleep "${AUTOSCALE_INTERVAL:-30}"
   done
@@ -925,7 +957,7 @@ autoscale_start() {
 # work instead of creating a second observation path.
 recommendation_history_daemon() {
   local sleeper=""
-  exec 8>&- 7>&- 9>&- 2>/dev/null || true
+  { exec 8>&- 7>&- 9>&-; } 2>/dev/null || true
   trap 'if [ -n "$sleeper" ]; then if jobs -pr | grep -qx "$sleeper"; then kill "$sleeper" 2>/dev/null || true; fi; wait "$sleeper" 2>/dev/null || true; fi; rm -f "$HISTORY_PID" 2>/dev/null || true' EXIT
   trap 'exit 0' HUP INT TERM
   log "recommendation history daemon up (every 30s)"
@@ -991,6 +1023,7 @@ autoscale_status() {
 lifecycle_tick() {
   shared_capacity_require_starts_open || return 0
   crf_storage_pressure_cleanup
+  replenish_fixed_native_capacity || return 1
   replenish_fixed_github_capacity || return 1
   # Shared idle withdrawal owns local admission closure and exact worker proof.
   # Legacy log-derived idle recycling cannot race a frozen owner.
@@ -1013,6 +1046,24 @@ lifecycle_tick() {
   log "lifecycle: replacing positively exited $candidate"
   cmd_recycle "$candidate" >/dev/null \
     || { err "lifecycle: could not recycle $candidate; will retry"; return 1; }
+}
+
+# Native fixed fleets share the existing durable registration cadence. The
+# lifecycle daemon runs frequently, so record the gate before any remote reads.
+replenish_fixed_native_capacity() {
+  [ "$AUTOSCALE" != true ] && shared_capacity_native_required || return 0
+  validate_runner_mode && pool_activate build || return 1
+  php "$SCRIPT_DIR/build-demand.php" begin-recovery "$CFGDIR" "$RUNDIR" "$RUNNER_POOLS" >/dev/null || return 0
+  if shared_capacity_call rebalance; then :; else
+    [ "$?" -eq 75 ] || return 1
+  fi
+  reconcile_stale_runners || return 1
+  if [ "$QUEUED_POOLS" = true ]; then
+    # A queued profile retains its warm floor without a queue scan here.
+    restore_warm_capacity
+  else
+    start_configured_capacity
+  fi
 }
 
 # Fixed fleets have no autoscale tick to restore a removed completed slot.
@@ -1042,7 +1093,7 @@ replenish_fixed_github_capacity() {
 lifecycle_daemon() {
   # This daemon is nohup'd from cmd_start under fleet.lock. Do not inherit that
   # lock or the worker would hold it for its entire lifetime.
-  exec 8>&- 7>&- 9>&- 2>/dev/null || true
+  { exec 8>&- 7>&- 9>&-; } 2>/dev/null || true
   log "lifecycle watchdog up (every ${LIFECYCLE_INTERVAL}s)"
   while true; do
     load_cfg
@@ -1234,7 +1285,7 @@ imageupdate_tick() {
 
 # long-running loop; re-reads config each tick so UI changes apply live
 imageupdate_daemon() {
-  exec 8>&- 7>&- 9>&- 2>/dev/null || true   # disown inherited lock fds (see autoscale_daemon)
+  { exec 8>&- 7>&- 9>&-; } 2>/dev/null || true   # disown inherited lock fds (see autoscale_daemon)
   log "image-update daemon up (every ${IMAGE_AUTOUPDATE_INTERVAL}s, drain-timeout ${IMAGE_DRAIN_TIMEOUT}s)"
   while true; do
     load_cfg
@@ -1496,6 +1547,32 @@ ensure_network() {
   # upgrade compatibility with pre-label networks — see docs on isolation caveats.)
   docker network create --driver bridge --label net.unraid.ci-runner-farm=1 "$RUNNER_NETWORK" >/dev/null \
     || { err "could not create network $RUNNER_NETWORK"; return 1; }
+}
+
+# A failed bring-up can leave a runner-network endpoint without its container.
+# Docker then refuses every later start under that name, including a recreated
+# slot. Docker keys such an endpoint "ep-<id>" instead of a container ID. Remove
+# it by name only while no container holds that name: with a container present,
+# a forced disconnect would detach that container instead. Callers hold fleet.lock.
+clear_dangling_endpoint() {
+  local name="$1" names endpoints key endpoint dangling=false
+  [ "$NETWORK_ISOLATION" != off ] || return 0
+  names="$(docker ps -a --format '{{.Names}}')" \
+    || { err "could not enumerate containers before creating $name"; return 1; }
+  printf '%s\n' "$names" | tr ',' '\n' | grep -Fxq -- "$name" && return 0
+  endpoints="$(docker network inspect -f '{{range $key, $endpoint := .Containers}}{{$key}}|{{$endpoint.Name}}{{println}}{{end}}' "$RUNNER_NETWORK")" \
+    || { err "could not inspect $RUNNER_NETWORK endpoints before creating $name"; return 1; }
+  while IFS='|' read -r key endpoint; do
+    [ "$endpoint" = "$name" ] || continue
+    case "$key" in
+      ep-*) dangling=true ;;
+      *) return 0 ;;  # A container still owns this endpoint.
+    esac
+  done <<< "$endpoints"
+  [ "$dangling" = true ] || return 0
+  log "removing dangling $RUNNER_NETWORK endpoint left by a previous $name"
+  docker network disconnect -f "$RUNNER_NETWORK" "$name" >/dev/null \
+    || { err "could not remove the dangling $RUNNER_NETWORK endpoint for $name"; return 1; }
 }
 
 # Does container $1 sit on the network the CURRENT isolation mode expects? Used to
@@ -2034,6 +2111,32 @@ clear_args_tmpdir() {
     || { err "could not remove temporary argv dir '$dir'"; return 1; }
 }
 
+# Retry one existing queued owner without requiring a new queue scan. The native
+# controller retains its pending age and authorizes every create/start effect.
+cmd_resume_queued() {
+  shared_capacity_require_starts_open || return 1
+  shared_capacity_enabled && [ "$QUEUED_POOLS" = true ] || return 1
+  validate_runner_mode || return 1
+  local name="$1" snapshot id provider role idx generation current_generation pool state
+  snapshot="$(managed_runner_snapshot "$name")" || return 1
+  IFS='|' read -r id provider role idx generation <<< "$snapshot"
+  [ "$provider" = github ] && [ "$role" = runner ] || return 1
+  state="$(docker inspect -f '{{.State.Status}}' "$id")" || return 1
+  [ "$state" = created ] || { err "queued resume requires a never-started owner"; return 1; }
+  pool="$(runner_pool "$name")" || return 1
+  pool_activate "$pool" || return 1
+  current_generation="$(crf_confgen)" || return 1
+  [ -n "$current_generation" ] || return 1
+  if [ "$generation" != "$current_generation" ]; then
+    provision_base || return 1
+    firewall_prepare_replacement || return 1
+    shared_capacity_call refresh-queued "$name" "$id" || return 1
+    provider_call start_one "$idx" "$name"
+    return $?
+  fi
+  shared_capacity_start "$name" "$id"
+}
+
 start_one() {
   shared_capacity_require_starts_open || return 1
   local idx="$1" name="${NAME_PREFIX}-$1" snapshot
@@ -2047,6 +2150,8 @@ start_one() {
     log "owned runner $name already exists; skipping"
     return 0
   fi
+  # A slot released after a proved failed start waits for the next pass.
+  case " ${CRF_REPLACED_STARTS:-} " in *" $name "*) return 75 ;; esac
   provider_call start_one "$idx" "$name"
 }
 
@@ -2097,11 +2202,24 @@ pool_start_target() {
   printf '%s\n' "$target"
 }
 
-# One complete native plan owns both idle retirement and selected sparse starts.
-# Failure returns before creating any new runner; stale plans are never cached.
+# Static warm restoration is additive and independent of queue evidence.
+restore_warm_capacity() {
+  local targets plan
+  [ "$QUEUED_POOLS" = true ] || return 0
+  shared_capacity_native_required ||
+    printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)' || return 0
+  targets="$(php "$SCRIPT_DIR/build-demand.php" warm-targets "$RUNNER_POOLS")" || return 1
+  plan="$(shared_capacity_call demand-warm "$RUNNER_POOLS" "$targets")" \
+    || { err "native warm recovery unavailable; preserving owners"; return 1; }
+  start_native_capacity_plan "$plan"
+}
+
+# Fresh queue evidence owns burst starts and idle retirement after warm recovery.
 start_queued_capacity() {
-  local plan pool idx failed=0 rc scan observation targets
-  if printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'; then
+  local plan scan observation targets
+  if shared_capacity_native_required ||
+    printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'; then
+    restore_warm_capacity || return 1
     # Read GitHub before acquiring a short native configuration lease.
     # A missing native capability during rollout preserves existing owners.
     scan="$(php "$SCRIPT_DIR/build-demand.php" scan "$CFGDIR" "$RUNDIR" "$RUNNER_POOLS")" || return 1
@@ -2111,6 +2229,11 @@ start_queued_capacity() {
   else
     plan="$(shared_capacity_call scale "$RUNNER_POOLS")" || { err "queued capacity unavailable; preserving owners"; return 1; }
   fi
+  start_native_capacity_plan "$plan"
+}
+
+start_native_capacity_plan() {
+  local plan="$1" pool idx failed=0 rc
   while IFS='|' read -r pool idx; do
     [ -n "$pool" ] || continue
     case "$pool" in build|build-small|build-large) ;; *) return 1 ;; esac
@@ -2296,7 +2419,11 @@ cmd_mirror_up() {
 # the first unsafe slot rather than walking through and quiescing the whole fleet.
 reconcile_stale_runners() {
   shared_capacity_require_starts_open || return 0
-  shared_capacity_enabled && return 0
+  if shared_capacity_enabled; then
+    shared_capacity_native_required || return 0
+    reconcile_shared_stale_runners
+    return $?
+  fi
   # Re-read settings and secret files only after the caller holds fleet.lock.
   # Otherwise a drain waiting for the lock can recreate per-slot files from a
   # token that was cleared/rotated while it waited.
@@ -2331,6 +2458,30 @@ reconcile_stale_runners() {
   return 0
 }
 
+# Native shared owners must freeze and recheck both local and remote idle
+# evidence. Legacy recycle uses a snapshot and cannot supply that guarantee.
+reconcile_shared_stale_runners() {
+  reload_locked_snapshot || return 1
+  local names c snapshot id provider role index generation current pool rc
+  names="$(managed_names)" || return 1
+  for c in $names; do
+    snapshot="$(managed_runner_snapshot "$c")" || return 1
+    IFS='|' read -r id provider role index generation <<< "$snapshot"
+    [ "$provider" = github ] && [ "$role" = runner ] || continue
+    pool="$(runner_pool "$c")" || return 1
+    shared_capacity_build_pool "$pool" || continue
+    current="$(expected_runner_confgen "$c")" || return 1
+    [ "$generation" != "$current" ] || continue
+    [ "$(runner_state "$c")" = idle ] || continue
+    log "reconcile: requesting fenced idle replacement of stale native owner $c"
+    if shared_capacity_call reconcile-idle "$c" "$id"; then return 0; else rc=$?; fi
+    # Frozen settlement or a job-pickup race retains its charged owner. The
+    # existing rebalance loop recovers that intent before another replacement.
+    [ "$rc" -eq 75 ] && return 0
+    return "$rc"
+  done
+}
+
 # Detached worker behind the Settings "Apply" button: migrate every stale runner onto the
 # new config as each goes idle, then exit. Re-reads the cfg each pass so an Apply made
 # mid-drain retargets the SAME drain (the flock in the dispatch keeps it to one). Gives up
@@ -2341,7 +2492,7 @@ cmd_reconcile_drain() {
   # Disown an inherited fleet-lock fd (this can be nohup'd from cmd_start, which holds
   # fd 8) so our own `with_fleet_lock wait` below isn't self-blocked. Keep fd 7 — the
   # dispatch wrapper holds it as this drain's own reconcile.lock. See autoscale_daemon.
-  exec 8>&- 9>&- 2>/dev/null || true
+  { exec 8>&- 9>&-; } 2>/dev/null || true
   trap 'rm -f "$RECONCILE_PID" 2>/dev/null || true' EXIT
   trap 'rm -f "$RECONCILE_PID" 2>/dev/null || true; exit 0' HUP INT TERM
   local deadline announced=0 lost paused=0 stale=-1
@@ -3083,7 +3234,7 @@ redact_log_stream() {
   done | sed -E \
     -e 's/([A-Za-z0-9_.@-]{1,64}-)?glrt(r)?-[A-Za-z0-9_.-]{10,507}/[REDACTED_GITLAB_TOKEN]/g' \
     -e 's/github_pat_[A-Za-z0-9_]{10,}/[REDACTED_GITHUB_TOKEN]/g' \
-    -e 's/gh[pousr]_[A-Za-z0-9_]{10,}/[REDACTED_GITHUB_TOKEN]/g' \
+    -e 's/gh[pousr]_[A-Za-z0-9_.-]{10,}/[REDACTED_GITHUB_TOKEN]/g' \
     -e 's/glpat-[A-Za-z0-9_-]{8,}/[REDACTED_GITLAB_TOKEN]/g'
 }
 # JSON-encode stdin as a string literal (with surrounding quotes), preserving newlines
@@ -4285,6 +4436,15 @@ cmd_boot_autostart() {
     || { err "boot-autostart: could not publish worker PID"; return 1; }
   trap 'rm -f "$BOOT_AUTOSTART_PID" 2>/dev/null || true' EXIT
   trap 'rm -f "$BOOT_AUTOSTART_PID" 2>/dev/null || true; exit 0' HUP INT TERM
+  # A PAT is ready as soon as its file exists, but an App token needs GitHub to
+  # be reachable, which can lag boot. Retry the mint for the same window the
+  # Docker wait below allows instead of skipping the fleet for the whole boot.
+  if [ "$GITHUB_APP_MODE" = true ]; then
+    local deadline=$(( $(date +%s) + 600 ))
+    while github_app_refresh; ! provider_token_ready && [ "$(date +%s)" -lt "$deadline" ]; do
+      sleep 8
+    done
+  fi
   provider_token_ready || { log "boot-autostart: no valid $(provider_token_name) configured yet — skipping"; return 0; }
   local i
   for i in $(seq 1 150); do
@@ -4395,6 +4555,7 @@ case "${1:-status}" in
   shared-prepare) with_fleet_lock wait cmd_shared_prepare ;;
   shared-adopt) with_fleet_lock wait cmd_shared_adopt ;;
   shared-activate) with_fleet_lock wait cmd_shared_activate ;;
+  resume-queued) with_fleet_lock wait cmd_resume_queued "${2:?usage: resume-queued <name>}" ;;
   start)        with_fleet_lock wait cmd_start ;;
   boot-autostart)   cmd_boot_autostart ;;
   docker-stopping)  cmd_docker_stopping ;;

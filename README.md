@@ -135,9 +135,14 @@ Nightly** or paste:
 https://github.com/unraid/ci-runner-farm/releases/download/nightly/ci-runner-farm-nightly.plg
 ```
 
-Nightly is built on the farm from `main`, may contain breaking changes, and
+Nightly is built from each new `main` commit, may contain breaking changes, and
 replaces the stable plugin channel on the host. Keep the stable release URL
 available for rollback; the two channels are not intended to run side by side.
+
+Each build is also published once as its own prerelease, for example
+`v1.14.0-nightly.73`, and is never replaced. To pin a reproducible build, use
+that release's `ci-runner-farm-nightly.json` manifest rather than the moving
+`nightly` one. The 30 newest build prereleases are kept.
 
 Everything is managed from **Settings → Utilities → CI Runner Farm**. The page
 has **Fleet**, **Runner image**, and **Settings** tabs.
@@ -162,6 +167,45 @@ The GitHub PAT is stored at
 `/boot/config/plugins/ci-runner-farm/token` with mode `0600`; it is not written
 to the main config or passed into job containers. Existing GitHub settings,
 container names, and the legacy editable `Dockerfile` remain compatible.
+
+### GitHub App authentication (organization scope)
+
+A PAT shares its hourly rate limit with everything else its account runs. An
+organization farm can authenticate as a GitHub App instead, which has its own
+installation rate limit (15,000 requests an hour on GitHub Enterprise Cloud).
+
+1. Create a GitHub App owned by the organization, with no webhook and these
+   permissions:
+
+   | Permission | Access | Used for |
+   | --- | --- | --- |
+   | Organization: Self-hosted runners | Read and write | Registration tokens, runner listing, removal and labels, runner groups |
+   | Repository: Actions | Read | Queued and failed runs, job lists and job logs |
+   | Repository: Metadata | Read | Repository visibility checks |
+
+   A private GHCR runner image still needs a registry token. GHCR accepts an
+   App installation token as a credential but does not grant it access to
+   private organization packages, which only grant access through people,
+   teams and repositories' Actions tokens.
+
+2. Install it on the organization with access to every repository the farm
+   serves, and generate a private key.
+3. Save the key as `/boot/config/plugins/ci-runner-farm/github-app-key.pem`
+   with mode `0600`. GitHub's PKCS#1 download and PKCS#8 keys both work.
+4. Set **GitHub App ID** and **GitHub App installation ID** on the Settings tab.
+
+With both IDs and the key present, the farm mints a one-hour installation token
+into `/var/local/emhttp/ci-runner-farm/github-token` (tmpfs, so the hourly
+rotation never writes the flash drive). It reuses the token until 15 minutes
+before expiry, and every GitHub request checks that window first, so long
+operations never send an expired token. The engine, the Queue Reader and the
+native capacity binary all read that minted token. It replaces both the PAT and
+the separate Queue Reader token.
+
+App mode fails closed. If no valid installation token can be minted, GitHub
+work pauses as it does with no token, and the farm never falls back to the PAT.
+At boot the farm retries the mint for up to ten minutes while the network comes
+up. Clear both IDs to return to the PAT.
 
 ## GitLab setup
 
@@ -500,6 +544,27 @@ The watchdog runs independently of autoscaling, so fixed-size fleets receive
 the same protection. GitLab keeps its manager-owned lifecycle path and exposes
 no candidate to this watchdog.
 
+### CPU pinning
+
+A CPU limit (`--cpus`) caps a runner's CPU time, but tools that size their
+parallelism from the CPU affinity mask (`nproc`, `make -j`, test and bundler
+worker pools) still see every host CPU, start that many workers, and spend
+most scheduling periods throttled. `CPU_PINNING="true"` (off by default,
+GitHub only) also gives each runner with a whole-number CPU limit a cpuset of
+that many host CPUs, so the runner and containers started by its nested Docker
+daemon see the right CPU count. The CPU limit and capacity accounting are
+unchanged.
+
+Placement reads the host topology from sysfs. It prefers whole physical cores
+spread across L3 cache domains, then their SMT sibling threads, and picks the
+CPUs least used by the farm's other live containers; overcommitted runners
+share the least-loaded CPUs. The chosen cpuset is recorded in the
+`net.unraid.ci-runner-farm.cpuset` label. A fractional or missing CPU limit, a
+limit larger than the host, or unreadable topology logs a warning and starts
+that runner unpinned. Turning the setting on or off changes the configuration
+fingerprint of pinnable slots, so they are recreated like any other baked
+setting; with it off, existing fingerprints are unchanged.
+
 ![Fleet state and controls](docs/images/fleet.png)
 
 ## CLI
@@ -589,6 +654,88 @@ runtime provider.
 Canonical releases use release-please and GitHub Release assets. Questions and
 bug reports: <https://github.com/unraid/ci-runner-farm/issues>
 
+### Shared host budget consumers
+
+Farm runs independently. Installing or operating Farm does not require QA Lab,
+its binary, its configuration or its service. Most installations need only the
+normal runner settings. Shared host admission is an optional integration for
+hosts that also run other workloads.
+
+With this integration enabled, Farm owns the host policy and admission ledger.
+QA Lab can participate as a consumer through the public SDK. A standalone host
+does not configure a QA consumer. An installed consumer that is unavailable
+does not prevent Farm from using capacity within the protected shared policy.
+Its existing allocations remain charged until their owner proves they stopped.
+
+The public `pkg/hostcapacity` SDK provides `WithConsumer` for a host participant.
+Its `Binding` selects Farm's protected config path, ownership epoch and declared
+consumer name. The participant stores no independent copy of the shared policy.
+Farm provides the ledger path, allocation classes and guest overhead under a
+shared policy lease.
+
+Acquire the participant's configuration and owner/capacity locks first. Put
+both the provider or listener effect and its state/receipt commit inside the
+`WithConsumer` callback. Pass its context to nested operations so they reuse
+the same lease. A different ownership binding or a context retained after the
+outer callback returns is rejected. Policy changes and ownership handoffs use
+the existing exclusive host lease and wait for the entire callback.
+
+The callback receives a private policy snapshot; changing that snapshot does
+not change the host policy. The participant still verifies actual workload
+limits and proves that its own stopped owners can release their fenced grants.
+This SDK does not activate a host or migrate its existing ledger. The current
+QA bridge remains active on legacy shared deployments until the participant
+and ownership handoff are deployed. The independent integration described here
+is not yet active on those deployments.
+
+The engine selects the packaged Farm controller when Farm's protected
+`host-capacity.json` or durable `shared-capacity.owner` marker is present. That
+path reads no QA configuration and calls no QA executable. Missing or invalid
+native owner configuration fails closed, including when only the marker remains.
+The legacy bridge continues protecting existing owners before migration.
+
+The Farm host contract can declare `scanRepositories`, a bounded list of unique
+repositories within its organization. Native poison detection uses that explicit
+inventory when `GH_REPOS` is empty. An undeclared inventory fails visibly instead
+of treating an empty group repository response as a complete scan. Native
+`build-limits` and `scan-repositories` queries read only the protected Farm
+contract under its existing shared lease, without opening credentials or the ledger.
+
+### Shared physical headroom
+
+The optional host policy field `sharedMemoryHeadroom` enables one physical
+headroom guard for builders and declared consumers. It requires soft CPU
+admission and a positive host memory reserve. Running workloads use measured
+resident memory instead of a nominal aggregate commitment allowance. The legacy
+`additionalMiB` field remains for policy and accounting compatibility but does not
+cap admission in this mode. Workload hard limits, class maxima, protected floors
+and release fences remain enforced.
+Ordinary standalone Farm policies do not enable this mode or require QA.
+
+Every new grant atomically reserves its full start cost against a fresh native
+memory sample, after the configured host reserve, unfilled guaranteed floors
+and other unfinished starts.
+The sample must be at most five seconds old. Missing, stale, future or failed
+samples block new starts. A fitting request can use stranded headroom when an
+older request cannot fit; the older request retains its identity and queue age.
+
+Owners must call `ReserveStart` immediately before dispatch, persist the start
+nonce, and call `ConfirmStarted` only after durable state/receipt commit and
+fresh proof of the exact running owner. Reservations never expire on timeout
+or restart. Unknown outcomes retain their charge. A restarted execution gets a
+new nonce; an old acknowledgement cannot clear its charge. Exact fenced
+stopped-owner release still removes both the grant and its start reservation.
+Farm confirms builders after registration and routing persistence.
+
+This mode uses ledger protocol v7. Existing v6 start nonces, confirmations and
+pending ages survive migration unchanged. Migration initially reserves every existing
+grant until its owner proves execution is already running. Older writers are
+rejected. All participants must support the start protocol before the ownership
+handoff enables it; installing this SDK alone does not activate the policy.
+The native CLI reports `resident-memory-v7` through `capabilities`. Diagnostics
+report `memoryAdmission: "resident"` and the actual available memory observation;
+`commitmentRemaining` is legacy accounting, not the admission ceiling.
+
 ### Elastic general build classes
 
 For shared GitHub pools, `ELASTIC_POOLS="true"` makes each class ceiling a
@@ -620,8 +767,15 @@ Queued native pools may opt into `QUEUED_POOLS="true"` together with
 `ELASTIC_POOLS="true"` and shared named-pool admission. A compatible
 qa-vm-service native capacity owner is required. It returns exact sparse slots
 from a fresh complete job snapshot and retires idle excess through fenced
-withdrawal. No successful snapshot means no demand-based starts or retirement.
-The standard floor stays warm; zero minimum/headroom lets other classes stop.
+withdrawal. No successful snapshot means no queue-driven burst starts or retirement.
+Before queue scanning, Farm independently restores each class's static warm
+total, `max(minimum, idle)`, through the native additive `demand-warm` plan.
+This path preserves all existing owners and pending ages, prefers old pending
+slots, and still requires normal broker and measured-memory admission for each
+start. It never adds busy/unknown counts repeatedly during an API outage.
+GitHub must be reachable to complete registration; unknown native outcomes
+remain fenced for the next owned retry. A zero minimum and idle target adds
+no warm capacity. Legacy OS and nonqueued behavior remains unchanged.
 GitHub omits requested groups from queued jobs, so uncertain label demand adds
 at most one spare per class per tick; successful pickups drive further growth.
 
@@ -654,6 +808,46 @@ engine state on their existing local disks. A disconnected client requires
 supported recovery and runner replacement; no local-directory fallback is used.
 
 ### Retired Docker storage
+
+Persistent GitHub DinD runners also receive a synchronous completed-job hook.
+The wrapper runs the image’s existing completion hook first and preserves its
+exit status. Images can use an absolute `.sh` or `.ps1` hook path.
+It removes only unreferenced local Buildx cache volumes whose names end with
+that job's exact `-<run-id>-<attempt>0_state` suffix. Stable builder caches,
+custom-labeled volumes, other jobs, package caches and referenced volumes stay
+intact. The pass has a 30-second limit and makes no GitHub API requests. A
+Farm cleanup error is logged without changing the job result. Existing runners
+receive the hook through the normal config-generation replacement after their
+current job finishes.
+
+Workflows still own reusable cache export and import. Configure Buildx with a
+repository/image/platform scope using GitHub Actions or OCI registry caches.
+The shared filesystem is available for explicit repository caches. Do not
+share writable Docker graph directories or BuildKit daemon state between
+independent daemons. Exported layer caches do not automatically preserve
+`RUN --mount=type=cache` compiler stores. Retain a stable builder with bounded
+garbage collection or explicitly persist those stores when the workflow needs
+them. Old abandoned run-specific volumes need a separate verified cleanup;
+the completed-job hook never guesses ownership of historical data.
+
+Persistent DinD farms can also opt specific reusable Buildx builders into
+storage-pressure eviction. Set the engine-only `DOCKER_CACHE_BUILDERS` to a
+comma-separated list, for example `project-builder,project-fedora-builder`.
+Use only builders whose volumes contain disposable build cache, never artifacts
+or other durable data. Up to 32 names are accepted. The list order is the
+eviction preference; it is not a last-used timestamp.
+
+After a job completes, the hook checks the Docker store's filesystem against
+`DOCKER_CACHE_MIN_FREE_PERCENT` (15% by default). Below that free-space floor,
+it can remove at most one listed builder's local, unreferenced state volume.
+All container references, including stopped containers, prevent removal.
+Labels, driver options, nonlocal volumes, changed daemon identity and unknown
+space information preserve the cache. Docker arbitrates the final non-forced
+removal. Warm caches stay intact above the floor or when the list is empty.
+This runs inside the existing 30-second job cleanup budget and preserves the
+original image hook's exit status. Changing the policy uses normal idle runner
+configuration replacement; running jobs are not interrupted. This is a
+free-space reclamation policy, not a hard per-runner disk quota.
 
 GitHub Docker-in-Docker stores persist between runner jobs. Without cleanup,
 completed runners can retain large image and build caches. The lifecycle and
@@ -691,9 +885,9 @@ These commands do not impose a size limit on active Docker stores. Keep
 build headroom when budgeting a shared filesystem; its configured object maximum
 does not reserve free disk space.
 
-### General build queue ownership
+### Native build queue ownership
 
-For shared OVH general pools, CI Runner Farm reads the native private runner
+For Farm-owned build pools, CI Runner Farm reads the native private runner
 group's queues and computes desired class targets. The host-side registration
 credential attests the local group; a separate root-owned mode-0600
 `queue-token` provides read-only Actions and Metadata access. Neither credential
@@ -706,8 +900,10 @@ Farm performs its bounded GitHub scan before the short native
 existing shared resource broker remains the sole allocator. Native apply checks
 policy, organization and pool identities, snapshot age and all class bounds,
 then reobserves exact owners. Busy, unknown and guaranteed floor slots remain
-protected by the existing fenced lifecycle. OS-specific pools retain their
-existing queue path.
+protected by the existing fenced lifecycle. Native OS profiles use this same
+protocol with their configured routing labels. Their configured warm floor is
+restored independently of queue scans. Provider-owned OS profiles retain the
+legacy provider queue path.
 
 Qualify both Farm and provider packages before rollout. Install Farm first on
 one host, then upgrade that host's compatible provider through its native lease.
@@ -715,3 +911,21 @@ Until the new native actions exist, scaling fails closed and running jobs
 continue. Normal ticks resume after upgrade. Keep the other host serving and
 verify live registrations, exact grants and unchanged busy jobs before the
 second host. Related to [QUA-203](https://linear.app/lime-technology/issue/QUA-203).
+
+#### Expand allocation pools
+
+A root operator can increase pool minima and maxima without replacing active
+owners. Prepare a private, root-owned JSON request containing the complete
+`previous` and `revised` allocation policies. Only monotonic changes to existing
+pool limits are accepted. Budgets, costs, priorities, reserves, classes and
+ownership epoch remain unchanged.
+
+With the existing native fleet lock held on descriptor 8, run
+`ci-runner-capacity expand-pools <expected-epoch> <absolute-request-path>`.
+The controller takes the exclusive shared policy lease, validates the existing
+ledger and publishes a durable closed transition before changing its policy.
+It reopens admission only after both the ledger and protected configuration
+match the reviewed destination. After interruption, reuse the exact request;
+an unrelated closure or different transition is rejected. This operation
+starts no workloads. Consumers still materialize their own reviewed capacity
+plans, and every subsequent start uses normal physical memory admission.

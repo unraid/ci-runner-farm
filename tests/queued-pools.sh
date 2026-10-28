@@ -44,6 +44,7 @@ pool_base_refresh
 mode=good
 php() {
  case "$2" in
+ warm-targets) printf '%s\n' warm-targets >> "$tmp/order"; printf '{}';;
  scan) printf '%s\n' scan >> "$tmp/order"; [ "$mode" != scan-fails ] || return 1; printf '{}';;
  targets) printf '%s\n' targets >> "$tmp/order"; [ "$mode" != targets-fails ] || return 1; printf '{}';;
  *) fail 'unexpected PHP action';;
@@ -51,16 +52,133 @@ php() {
 }
 shared_capacity_call() {
  case "$1" in
+ demand-warm) printf '%s\n' warm >> "$tmp/order"; [ "$mode" != capability-missing ] || return 1; printf 'build|2\n';;
  demand-observe) printf '%s\n' observe >> "$tmp/order"; [ "$mode" != capability-missing ] || return 1; printf '{}';;
  demand-apply) printf '%s\n' apply >> "$tmp/order"; [ "$mode" != apply-unknown ] || return 1; printf 'build|1\n';;
  *) fail 'general demand fell back to QA scale';;
  esac
 }
 start_configured_capacity || fail 'Farm general plan failed'
-[ "$(cat "$tmp/order")" = $'scan\nobserve\ntargets\napply' ] || fail 'network scan held native configuration lease'
+[ "$(cat "$tmp/order")" = $'warm-targets\nwarm\nscan\nobserve\ntargets\napply' ] || fail 'warm recovery or queue lease order differs'
 rm "$tmp/starts"
 for mode in scan-fails capability-missing targets-fails apply-unknown; do
  if start_configured_capacity; then fail "accepted $mode"; fi
- [ ! -e "$tmp/starts" ] || fail "started after $mode"
+ if [ "$mode" = capability-missing ]; then
+  [ ! -e "$tmp/starts" ] || fail "started after unknown native capability"
+ else
+  [ "$(cat "$tmp/starts")" = ci-runner-build-2 ] || fail "failed queue evidence changed warm-only effects"
+  rm "$tmp/starts"
+ fi
 done
 printf 'queued-pools: Farm owns general queue sizing; staged capability/unknown evidence preserves owners\n'
+
+# Native ownership, rather than a general-build label, selects the native
+# demand protocol. OS profiles keep their original route and warm floor.
+RUNNER_POOLS="${RUNNER_POOLS/general-build/os-build}"
+pool_base_refresh
+touch "$CRF_CFGDIR/host-capacity.json"
+rm -f "$tmp/order"
+mode=good
+start_configured_capacity || fail 'native OS plan used legacy scale'
+[ "$(cat "$tmp/order")" = $'warm-targets\nwarm\nscan\nobserve\ntargets\napply' ] || fail 'native OS demand order differs'
+rm "$tmp/starts"
+mode=scan-fails
+if start_configured_capacity; then fail 'native OS accepted failed queue scan'; fi
+[ "$(cat "$tmp/starts")" = ci-runner-build-2 ] || fail 'native OS queue failure stranded warm floor'
+rm "$tmp/starts"
+mode=capability-missing
+if start_configured_capacity; then fail 'native OS bypassed missing demand capability'; fi
+[ ! -e "$tmp/starts" ] || fail 'native OS started after unknown warm outcome'
+rm "$CRF_CFGDIR/host-capacity.json"
+RUNNER_POOLS="${RUNNER_POOLS/os-build/general-build}"
+pool_base_refresh
+printf 'queued-pools: native OS routing retains warm recovery and fail-closed demand\n'
+
+# Full planning (including native reads) stops before effects during cooldown.
+mode=deferred
+php() {
+ case "$2" in begin-recovery) printf 'begin\n' >> "$tmp/rate-order"; [ "$mode" != deferred ];; *) fail 'deferred pass reached network scan';; esac
+}
+crf_storage_pressure_cleanup() { :; }
+validate_runner_mode() { :; }
+shared_capacity_poison_scan() { fail 'cooldown reached poison planning'; }
+shared_capacity_call() { fail 'cooldown reached native planning'; }
+if autoscale_tick; then fail 'cooldown reported applied plan'; else [ "$?" -eq 75 ] || fail 'cooldown lost deferred status'; fi
+[ "$(cat "$tmp/rate-order")" = begin ] || fail 'background rate gate not reached'
+# Closing inherited lock descriptors must not hide later daemon errors.
+(
+ load_cfg() { AUTOSCALE=false; printf 'visible-daemon-error\n' >&2; }
+ reload_secret_files() { :; }
+ autoscale_daemon
+) > "$tmp/daemon-out" 2> "$tmp/daemon-err"
+grep -qx visible-daemon-error "$tmp/daemon-err" || fail 'daemon discarded operational errors'
+printf 'queued-pools: durable background cooldown precedes all remote effects; daemon errors stay visible\n'
+
+# Cooldown defers capacity, but startup must establish controllers that retry it.
+(
+ shared_capacity_require_starts_open() { :; }
+ shared_capacity_enabled() { return 0; }
+ shared_capacity_poison_scan() { :; }
+ restore_warm_capacity() { :; }
+ shared_capacity_call() { [ "$1" = rebalance ] || fail 'unexpected startup effect'; return 75; }
+ validate_runner_mode() { :; }
+ pool_tokens_ready() { :; }
+ public_repo_problem() { :; }
+ gitlab_assert_no_orphan_manager_configs() { :; }
+ managed_names() { :; }
+ provision_preflight() { :; }
+ gitlab_cleanup_orphan_sidecars() { :; }
+ start_stopped_managed() { :; }
+ reap_dead_runners() { :; }
+ start_configured_capacity() { return 75; }
+ current_count() { echo 1; }
+ lifecycle_start() { echo lifecycle >> "$tmp/startup"; }
+ recommendation_history_start() { echo history >> "$tmp/startup"; }
+ autoscale_start() { echo autoscale >> "$tmp/startup"; }
+ NETWORK_ISOLATION=off IMAGE_AUTOUPDATE=false
+ if cmd_start; then fail 'deferred startup reported healthy capacity'; fi
+)
+[ "$(cat "$tmp/startup")" = $'lifecycle\nhistory\nautoscale' ] || fail 'cooldown stranded retry controllers'
+
+# Queue cooldown retains its request budget while native ownership settles.
+(
+ php() {
+  case "$2" in
+   begin-recovery) printf 'native-gate\n' >> "$tmp/queue-cooldown";;
+   begin) printf 'queue-gate\n' >> "$tmp/queue-cooldown"; return 1;;
+   *) fail 'queue cooldown reached network scan';;
+  esac
+ }
+ restore_warm_capacity() { printf 'warm\n' >> "$tmp/queue-cooldown"; }
+ shared_capacity_call() { [ "$1" = rebalance ] || fail 'unexpected recovery action'; printf 'rebalance\n' >> "$tmp/queue-cooldown"; }
+ shared_capacity_poison_scan() { fail 'queue cooldown reached poison scan'; }
+ if autoscale_tick; then fail 'queue cooldown reported completed plan'; else [ "$?" -eq 75 ] || fail 'queue cooldown lost deferred status'; fi
+)
+[ "$(cat "$tmp/queue-cooldown")" = $'native-gate\nwarm\nrebalance\nwarm\nqueue-gate' ] || fail 'queue quota suppressed native recovery'
+printf 'queued-pools: queue cooldown preserves separately bounded native recovery\n'
+
+# OS native ownership must select both existing durable cadence gates.
+(
+ RUNNER_POOLS="${RUNNER_POOLS/general-build/os-build}"
+ pool_base_refresh
+ touch "$CRF_CFGDIR/host-capacity.json"
+ reconcile_stale_runners() { :; }
+ restore_warm_capacity() { printf 'warm\n' >> "$tmp/os-cadence"; }
+ shared_capacity_call() { [ "$1" = rebalance ] || fail 'unexpected OS recovery action'; printf 'rebalance\n' >> "$tmp/os-cadence"; }
+ shared_capacity_poison_scan() { fail 'OS cadence reached poison scan'; }
+ php() {
+  case "$2" in
+   begin-recovery) printf 'native-gate\n' >> "$tmp/os-cadence"; [ "$mode" != deferred ];;
+   begin) printf 'queue-gate\n' >> "$tmp/os-cadence"; return 1;;
+   *) fail 'OS cadence reached network scan';;
+  esac
+ }
+ mode=deferred
+ if autoscale_tick; then fail 'OS recovery cooldown reported applied plan'; else [ "$?" -eq 75 ] || fail 'OS recovery cooldown lost deferred status'; fi
+ [ "$(cat "$tmp/os-cadence")" = native-gate ] || fail 'OS recovery cooldown allowed effects'
+ rm "$tmp/os-cadence"
+ mode=good
+ if autoscale_tick; then fail 'OS queue cooldown reported completed plan'; else [ "$?" -eq 75 ] || fail 'OS queue cooldown lost deferred status'; fi
+ [ "$(cat "$tmp/os-cadence")" = $'native-gate\nwarm\nrebalance\nwarm\nwarm\nqueue-gate' ] || fail 'OS queue quota suppressed native recovery'
+)
+printf 'queued-pools: native OS recovery and queue cadence gates preserve request budgets\n'

@@ -1,7 +1,17 @@
 #!/bin/bash
 # Native lifecycle bridge. Ansible installs this root-owned activation marker
 # only after the complete host inventory has been adopted by the shared broker.
+shared_capacity_native_required() {
+  [ -e "$CFGDIR/host-capacity.json" ] || [ -L "$CFGDIR/host-capacity.json" ] || \
+    [ -e "$CFGDIR/shared-capacity.owner" ] || [ -L "$CFGDIR/shared-capacity.owner" ]
+}
+
+shared_capacity_native_call() {
+  "$SCRIPT_DIR/../bin/ci-runner-capacity" "$@"
+}
+
 shared_capacity_enabled() {
+  shared_capacity_native_required && return 0
   [ -e "$CFGDIR/shared-capacity.enabled" ] || [ -L "$CFGDIR/shared-capacity.enabled" ] && return 0
   local status=0
   shared_capacity_config_required || status=$?
@@ -31,6 +41,10 @@ shared_capacity_config_required() {
   '
 }
 shared_capacity_call() {
+  if shared_capacity_native_required; then
+    shared_capacity_native_call "$@"
+    return $?
+  fi
   local state_root
   state_root="$(php -r '
     $dir="/boot/config/plugins/qa-vm-service/";
@@ -68,6 +82,15 @@ shared_capacity_start() {
     || { err "shared capacity only supports owned GitHub build size pools"; return 1; }
   local rc
   if shared_capacity_call start "$name" "$id"; then return 0; else rc=$?; fi
+  if [ "$rc" -eq 77 ]; then
+    # The provider proved this exact owner never started, removed only that
+    # inert container and released its fenced grant. The next plan recreates
+    # the slot; skipping it for the rest of this locked pass bounds a
+    # persistent Docker failure to one fresh registration per slot and tick.
+    CRF_REPLACED_STARTS="${CRF_REPLACED_STARTS:-} $name"
+    log "released never-started $name after its start failed; a later plan recreates it"
+    return 75
+  fi
   [ "$rc" -eq 76 ] || return "$rc"
   # Only the provider may authorize removal of an uncharged, never-started
   # owner. Its stable pending request survives removal and fresh creation.
@@ -100,6 +123,7 @@ start_owned_container() {
 # allocation for an owner-locked retry; never fall back to an ungated start.
 run_owned_github_container() {
   shared_capacity_require_starts_open || return 1
+  clear_dangling_endpoint "${NAME_PREFIX}-$1" || return 1
   if ! shared_capacity_enabled; then docker run "${ARGS[@]}"; return $?; fi
   local name="${NAME_PREFIX}-$1" id arg
   local create_args=()
@@ -138,6 +162,10 @@ cmd_shared_prepare() { shared_capacity_call prepare; }
 shared_capacity_poison_scan() {
   local configured="$GH_REPOS" repositories
   if [ -z "$configured" ]; then
+    if shared_capacity_native_required; then
+      repositories="$(shared_capacity_native_call scan-repositories)" || return 1
+      [ -n "$repositories" ] || return 1
+    else
     repositories="$(php -r '
       $file="/boot/config/plugins/qa-vm-service/runner-integration.json";
       if (is_link($file) || !is_file($file)) exit(1);
@@ -151,6 +179,7 @@ shared_capacity_poison_scan() {
       }
       echo implode(" ",$repos);
     ' "$GH_OWNER")" || return 1
+    fi
     GH_REPOS="$repositories"
   fi
   local rc=0
@@ -168,6 +197,10 @@ shared_capacity_build_pool() {
 # Floors and aggregate slot count belong to the protected host contract, not
 # this plugin version. All three documents must describe the same policy.
 shared_capacity_build_limits() {
+  if shared_capacity_native_required; then
+    shared_capacity_native_call build-limits
+    return $?
+  fi
   php -r '
     $dir="/boot/config/plugins/qa-vm-service/";
     foreach (["host-policy.json","host-plan.json","runner-integration.json"] as $name) {

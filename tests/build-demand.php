@@ -39,8 +39,13 @@ class QueueFixture extends BuildDemand {
                 if ($this->mode === 'small') $job['labels'] = ['self-hosted','Linux','X64'];
                 if ($this->mode === 'status') $job['status'] = 'unrecognized';
                 if ($this->mode === 'assigned') $job['runner_id'] = 42;
-                if ($this->mode === 'unknown-assignment') $job['runner_id'] = null;
-                if ($this->mode === 'small-unknown-assignment') { $job['runner_id'] = null; $job['labels'] = ['self-hosted','Linux','X64']; }
+                if ($this->mode === 'unassigned-null') $job['runner_id'] = null;
+                if ($this->mode === 'missing-assignment') unset($job['runner_id']);
+                if ($this->mode === 'string-assignment') $job['runner_id'] = '0';
+                if ($this->mode === 'boolean-assignment') $job['runner_id'] = false;
+                if ($this->mode === 'negative-assignment') $job['runner_id'] = -1;
+                if ($this->mode === 'in-progress-null') { $job['runner_id'] = null; $job['status'] = 'in_progress'; }
+                if ($this->mode === 'small-unassigned-null') { $job['runner_id'] = null; $job['labels'] = ['self-hosted','Linux','X64']; }
                 if ($this->mode === 'foreign-qa') { $job['runner_id'] = null; $job['labels'] = ['Linux','X64','unraid','qa-vm-client','qa-vm-ready']; }
                 if ($this->mode === 'foreign-hosted') { $job['runner_id'] = null; $job['labels'] = ['ubuntu-latest']; }
                 if ($this->mode === 'foreign-invalid-identity') { $job['runner_id'] = null; $job['labels'] = ['ubuntu-latest']; $job['run_id'] = 999; }
@@ -70,6 +75,8 @@ class PageFixture extends BuildDemand {
 }
 $cache = sys_get_temp_dir() . '/farm-demand-' . bin2hex(random_bytes(8));
 try {
+    same(BuildDemand::warmTargets(RECORDS), ['schema'=>1,'targets'=>['build-small'=>0,'build'=>10]]);
+    same(BuildDemand::warmTargets(str_replace('|1|0|10|0|2|4g|', '|1|0|10|1|2|4g|', RECORDS))['targets'], ['build-small'=>1,'build'=>10]);
     $paged = new PageFixture($cache,'g','q');
     $paged->responses=[1=>['total_count'=>101,'jobs'=>array_fill(0,100,['id'=>1])],2=>['total_count'=>101,'jobs'=>[['id'=>101]]]];
     $visited=0;
@@ -87,19 +94,21 @@ try {
     $scan = $reader->queue($scope,$pools);
     same($scan['counts'],['build-small'=>0,'build'=>2]);
     foreach ($reader->seen as $path=>$token) same($token,str_contains($path,'runner-groups')?'group-only':'actions-only');
-    foreach (['public','inherited','ambiguous','repository','run','partial','job','duplicate','missing','inaccessible','status','unknown-assignment','small-unknown-assignment','foreign-invalid-identity','foreign-invalid-assignment'] as $mode) {
+    foreach (['public','inherited','ambiguous','repository','run','partial','job','duplicate','missing','inaccessible','status','missing-assignment','string-assignment','boolean-assignment','negative-assignment','foreign-invalid-identity','foreign-invalid-assignment'] as $mode) {
         $reader->mode=$mode; rejects(fn()=>$reader->queue($scope,$pools));
     }
     $reader->mode='selected'; same($reader->queue($scope,$pools)['counts'],['build-small'=>0,'build'=>1]);
+    $reader->mode='unassigned-null'; same($reader->queue($scope,$pools)['counts'],['build-small'=>0,'build'=>2]);
+    $reader->mode='small-unassigned-null'; same($reader->queue($scope,$pools)['counts'],['build-small'=>2,'build'=>0]);
     $reader->mode='small'; same($reader->queue($scope,$pools)['counts'],['build-small'=>2,'build'=>0]);
     $reader->mode='skipped'; same($reader->queue($scope,$pools)['counts'],['build-small'=>0,'build'=>2]);
     $reader->mode='mixed-foreign'; same($reader->queue($scope,$pools)['counts'],['build-small'=>0,'build'=>2]);
-    foreach (['assigned','labels','foreign-qa','foreign-hosted'] as $mode) { $reader->mode=$mode; same($reader->queue($scope,$pools)['counts'],['build-small'=>0,'build'=>0]); }
+    foreach (['assigned','in-progress-null','labels','foreign-qa','foreign-hosted'] as $mode) { $reader->mode=$mode; same($reader->queue($scope,$pools)['counts'],['build-small'=>0,'build'=>0]); }
     $observation=['schema'=>1,'observedAt'=>time(),'policyDigest'=>str_repeat('a',64),'poolsDigest'=>hash('sha256',"unraid\0".RECORDS),'retained'=>['build'=>5,'build-small'=>0]];
     same(BuildDemand::targets(RECORDS,$scan,$observation)['targets'],['build-small'=>0,'build'=>10]);
     foreach (['stale','policy','pool','missing','negative','extra'] as $mode) {
         $bad=$observation; $queue=$scan;
-        if ($mode==='stale') $queue['queueStartedAt']=time()-61;
+        if ($mode==='stale') $queue['queueStartedAt']=time()-181;
         if ($mode==='policy') $bad['policyDigest']='';
         if ($mode==='pool') $bad['poolsDigest']=str_repeat('b',64);
         if ($mode==='missing') unset($queue['counts']['build-small']);
@@ -117,8 +126,101 @@ try {
     $stored=json_decode(file_get_contents($cache),true);
     same(count($stored['items']),512); same(fileperms($cache)&0777,0600);
     rejects(fn()=>$reader->response('rate',429,['retry-after'=>'120'],'',null));
-    $reader->save(); same(json_decode(file_get_contents($cache),true)['cooldown'] >= time()+119,true);
+    $reader->save(); same(json_decode(file_get_contents($cache),true)['cooldown'] >= time()+299,true);
     chmod($cache,0644); rejects(fn()=>new BuildDemand($cache,'g','q')); unlink($cache);
+    // A rotating App token keeps one cache scope; distinct PATs do not share one.
+    $scope = new ReflectionProperty(BuildDemand::class, 'scope');
+    same($scope->getValue(new BuildDemand($cache,'ghs_one','ghs_one','github-app:7:42')), $scope->getValue(new BuildDemand($cache,'ghs_two','ghs_two','github-app:7:42')));
+    same($scope->getValue(new BuildDemand($cache,'pat-a','q')) === $scope->getValue(new BuildDemand($cache,'pat-b','q')), false);
     symlink('/dev/null',$cache); rejects(fn()=>new BuildDemand($cache,'g','q')); unlink($cache);
+    if (posix_geteuid() === 0) {
+        $credentialDir = $cache . '-credentials';
+        mkdir($credentialDir, 0700);
+        file_put_contents($credentialDir . '/ci-runner-farm.cfg', "CI_PROVIDER=github\nGH_SCOPE=org\nGH_OWNER=example\nRUNNER_GROUP=Default\n");
+        chmod($credentialDir . '/ci-runner-farm.cfg', 0600);
+        file_put_contents($credentialDir . '/token', 'native-token');
+        chmod($credentialDir . '/token', 0600);
+        try {
+            same(BuildDemand::credentials($credentialDir, false)['token'], 'native-token');
+            same(BuildDemand::credentials($credentialDir, false)['queue-token'], '');
+            rejects(fn()=>BuildDemand::credentials($credentialDir));
+            // GitHub App mode: the engine-exported minted token serves both the
+            // runner-group and the queue reads, and names a stable identity.
+            $minted = $credentialDir . '/minted-token';
+            file_put_contents($minted, 'ghs_minted'); chmod($minted, 0600);
+            putenv('CRF_GITHUB_TOKEN_FILE=' . $minted);
+            rejects(fn()=>BuildDemand::credentials($credentialDir));
+            file_put_contents($credentialDir . '/ci-runner-farm.cfg', "CI_PROVIDER=github\nGH_SCOPE=org\nGH_OWNER=example\nRUNNER_GROUP=Default\nGH_APP_ID=\"7\"\nGH_APP_INSTALLATION_ID=\"42\"\n");
+            $app = BuildDemand::credentials($credentialDir);
+            same([$app['token'], $app['queue-token'], $app['identity']], ['ghs_minted', 'ghs_minted', 'github-app:7:42']);
+            putenv('CRF_GITHUB_TOKEN_FILE=relative/token'); rejects(fn()=>BuildDemand::credentials($credentialDir));
+            putenv('CRF_GITHUB_TOKEN_FILE');
+            unlink($minted);
+            same(BuildDemand::credentials($credentialDir, false)['identity'], '');
+            file_put_contents($credentialDir . '/ci-runner-farm.cfg', "CI_PROVIDER=github\nGH_SCOPE=org\nGH_OWNER=example\nRUNNER_GROUP=Default\n");
+            mkdir($credentialDir . '/runtime', 0700);
+            $command = implode(' ', array_map('escapeshellarg', [PHP_BINARY,
+                __DIR__ . '/../src/usr/local/emhttp/plugins/ci-runner-farm/include/build-demand.php',
+                'begin-recovery', $credentialDir, $credentialDir . '/runtime', RECORDS]));
+            exec($command . ' 2>/dev/null', $output, $status);
+            same($status, 0);
+            same(json_decode(implode("\n", $output), true), ['recoveryReady'=>true]);
+            exec($command . ' 2>/dev/null', $ignored, $status);
+            same($status, 1); // A fresh process still observes the recovery cadence.
+        } finally {
+            if (is_dir($credentialDir . '/runtime')) {
+                @unlink($credentialDir . '/runtime/build-demand-http.json');
+                rmdir($credentialDir . '/runtime');
+            }
+            unlink($credentialDir . '/token');
+            unlink($credentialDir . '/ci-runner-farm.cfg');
+            rmdir($credentialDir);
+        }
+        $reader = new BuildDemand($cache,'g','q');
+        $reader->begin();
+        // A fresh process cannot turn a failed/restarted pass into another scan.
+        rejects(fn()=>(new BuildDemand($cache,'g','q'))->begin());
+        $stored=json_decode(file_get_contents($cache),true);
+        $stored['plan']['attemptedAt']=time()-280;
+        file_put_contents($cache,json_encode($stored));
+        rejects(fn()=>(new BuildDemand($cache,'g','q'))->begin());
+        // A tick that lands slightly early on a 300s interval still polls.
+        $stored['plan']['attemptedAt']=time()-290;
+        file_put_contents($cache,json_encode($stored));
+        (new BuildDemand($cache,'g','q'))->begin();
+        unlink($cache);
+        $reader = new BuildDemand($cache,'g','q');
+        $reset=time()+900;
+        same($reader->response('reserve',200,['x-ratelimit-remaining'=>'500','x-ratelimit-reset'=>(string)$reset],'{"ok":true}',null),['ok'=>true]);
+        $reader->save();
+        rejects(fn()=>(new BuildDemand($cache,'g','q'))->begin());
+        same(json_decode(file_get_contents($cache),true)['cooldown'] >= $reset,true);
+        // Queue quota blocks queue reads, while one scheduled native recovery
+        // remains available and persists across fresh processes.
+        (new BuildDemand($cache,'g','q'))->beginRecovery();
+        rejects(fn()=>(new BuildDemand($cache,'g','q'))->beginRecovery());
+        rejects(fn()=>(new BuildDemand($cache,'g','rotated-queue'))->beginRecovery());
+        rejects(fn()=>(new BuildDemand($cache,'g','q'))->begin());
+        $stored=json_decode(file_get_contents($cache),true);
+        same($stored['cooldown'] >= $reset,true);
+        $stored['recoveryPlan']['attemptedAt']=time()-300;
+        file_put_contents($cache,json_encode($stored));
+        (new BuildDemand($cache,'g','q'))->beginRecovery();
+        (new BuildDemand($cache,'rotated-native','q'))->beginRecovery();
+        $stored=json_decode(file_get_contents($cache),true);
+        $stored['recoveryPlan']['attemptedAt']=time()+300;
+        file_put_contents($cache,json_encode($stored));
+        rejects(fn()=>(new BuildDemand($cache,'rotated-native','q'))->beginRecovery());
+        unset($stored['recoveryPlan']);
+        file_put_contents($cache,json_encode($stored));
+        // A credential replacement must not inherit another credential's denial.
+        (new BuildDemand($cache,'other','credential'))->begin();
+        unlink($cache);
+        $reader = new BuildDemand($cache,'g','q');
+        $reader->response('above',200,['x-ratelimit-remaining'=>'501','x-ratelimit-reset'=>(string)$reset],'{"ok":true}',null);
+        $reader->save();
+        (new BuildDemand($cache,'g','q'))->begin();
+        unlink($cache);
+    }
     echo "build-demand: private group/credential split, complete current-attempt queues, target identity and authenticated cache protections passed\n";
 } finally { if (file_exists($cache)||is_link($cache)) unlink($cache); }

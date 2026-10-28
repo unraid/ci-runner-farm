@@ -31,6 +31,7 @@ var ErrDiagnosticUnsafe = errors.New("shared capacity diagnostic input is unsafe
 // Diagnostics is a point-in-time observation, never a grant or stopped-workload proof.
 // Fence hashes correlate allocations without disclosing release capabilities.
 type Diagnostics struct {
+	MemoryAdmission     string                 `json:"memoryAdmission"`
 	BuildMemory         *BuildMemoryDiagnostic `json:"buildMemory,omitempty"`
 	Schema              string                 `json:"schema"`
 	ObservedAt          time.Time              `json:"observedAt"`
@@ -43,13 +44,14 @@ type Diagnostics struct {
 	PhysicalMemoryMiB   uint64                 `json:"physicalMemoryMiB"`
 	BorrowedMemoryMiB   uint64                 `json:"borrowedMemoryMiB"`
 	MemoryOvercommitted bool                   `json:"memoryOvercommitted"`
-	CommitmentRemaining Resources              `json:"commitmentRemaining"`
-	AllocatedVCPUs      uint64                 `json:"allocatedVcpus"`
-	CPUOvercommitted    bool                   `json:"cpuOvercommitted"`
-	Pools               []PoolDiagnostic       `json:"pools"`
-	Grants              []GrantDiagnostic      `json:"grants"`
-	Pending             []PendingDiagnostic    `json:"pending"`
-	QueueHead           string                 `json:"queueHead,omitempty"`
+	// CommitmentRemaining is legacy nominal accounting, not the resident admission limit.
+	CommitmentRemaining Resources           `json:"commitmentRemaining"`
+	AllocatedVCPUs      uint64              `json:"allocatedVcpus"`
+	CPUOvercommitted    bool                `json:"cpuOvercommitted"`
+	Pools               []PoolDiagnostic    `json:"pools"`
+	Grants              []GrantDiagnostic   `json:"grants"`
+	Pending             []PendingDiagnostic `json:"pending"`
+	QueueHead           string              `json:"queueHead,omitempty"`
 }
 
 // PoolDiagnostic reports charged allocations and the unfilled guaranteed floor.
@@ -132,7 +134,12 @@ func (b *Broker) annotateBuildMemory(snapshot *Snapshot, report *Diagnostics) {
 		return
 	}
 	status := b.BuildMemoryStatus(&snapshot.Policy)
+	status.PendingStartMiB = pendingStartMemory(snapshot, "")
 	report.BuildMemory = &status
+	if snapshot.Policy.SharedMemoryHeadroom {
+		annotateSharedHeadroom(snapshot, report, status, b.now())
+		return
+	}
 	for index := range report.Pending {
 		pending := &report.Pending[index]
 		if (pending.Reason != diagnosticWouldAdmit && pending.Reason != memoryObservationRequired) || pending.Pool != buildPool || restoresBuildFloor(snapshot, pending.Request) {
@@ -190,6 +197,10 @@ func diagnoseSnapshot(snapshot *Snapshot, digest string, now time.Time) Diagnost
 		PolicyMatches: digest == snapshot.PolicyDigest, Policy: snapshot.Policy,
 		Remaining: snapshot.Policy.Budget, CommitmentRemaining: snapshot.Policy.commitmentBudget(),
 		Pools: []PoolDiagnostic{}, Grants: []GrantDiagnostic{}, Pending: []PendingDiagnostic{},
+	}
+	report.MemoryAdmission = "commitment"
+	if snapshot.Schema == sharedMemoryLedgerSchema {
+		report.MemoryAdmission = "resident"
 	}
 	counts := map[string]uint32{}
 	for _, id := range slices.Sorted(maps.Keys(snapshot.Grants)) {
@@ -257,14 +268,20 @@ func diagnosticReason(snapshot *Snapshot, pending *Pending, report *Diagnostics)
 		}
 	}
 	remaining := report.Remaining
-	if pending.Pool == buildPool {
+	if pending.Pool == buildPool || snapshot.Policy.SharedMemoryHeadroom {
 		remaining = report.CommitmentRemaining
 	}
-	if constraint == "" && !snapshot.Policy.fitsHost(remaining, cost) {
+	if snapshot.Schema != sharedMemoryLedgerSchema && constraint == "" && !snapshot.Policy.fitsHost(remaining, cost) {
 		constraint = "host_budget"
 	}
-	if constraint == "" && !canAdmit(snapshot, pending.Request) {
+	if snapshot.Schema != sharedMemoryLedgerSchema && constraint == "" && !canAdmit(snapshot, pending.Request) {
 		constraint = "floor_reserve"
+	}
+	if snapshot.Policy.SharedMemoryHeadroom {
+		if constraint != "" {
+			return diagnosticBudget, constraint
+		}
+		return memoryObservationRequired, memoryHeadroom
 	}
 	if report.QueueHead != pending.ID {
 		if !canBackfill(snapshot, pending.Request, report.QueueHead) {
@@ -287,4 +304,35 @@ func diagnosticCost(policy *Policy, request Request) Resources {
 		return policy.Pools[request.Pool].Cost
 	}
 	return request.Resources
+}
+
+// Diagnostics reuse the admission decision and one bounded physical sample.
+// Release fences and start nonces remain private to lifecycle owners.
+func annotateSharedHeadroom(snapshot *Snapshot, report *Diagnostics, status BuildMemoryDiagnostic, now time.Time) {
+	if !report.PolicyMatches {
+		return
+	}
+	for index := range report.Pending {
+		pending := &report.Pending[index]
+		if pending.Reason == "owner_wait_ended" {
+			continue
+		}
+		_, reason := sharedFundingObserved(snapshot, pending.Request, now, status)
+		switch reason {
+		case "":
+			pending.Reason, pending.Constraint = diagnosticWouldAdmit, ""
+		case memoryPressure:
+			pending.Reason, pending.Constraint = memoryPressure, memoryHeadroom
+			if status.AvailableMiB == nil {
+				pending.Reason = memoryObservationRequired
+			}
+		case reasonPriority:
+			pending.Reason = reasonPriority
+		case diagnosticBudget:
+			pending.Reason = diagnosticBudget
+			if pending.Constraint == "" {
+				pending.Constraint = "host_budget"
+			}
+		}
+	}
 }

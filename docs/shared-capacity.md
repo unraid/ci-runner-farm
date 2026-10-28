@@ -70,6 +70,17 @@ exists, and preserves the same pending request and queue age. Fresh creation
 binds the new immutable ID before admission. Unknown removal retains its intent;
 no running or charged container can use this refresh path.
 
+A charged owner whose start fails keeps its grant and start reservation while
+the outcome is unknown. When a live re-inspection of the same immutable ID
+proves the container never started, the provider durably records inert removal
+intent, removes only that container without force, and releases the fenced
+grant and its start reservation after ID and name absence. The persistent cache
+is kept. Exit 77 is healthy waiting for the native owner: a later plan
+recreates the slot, at most once per locked pass, and rebalance replays
+interrupted intent. Before creating a slot on the isolated runner network, the
+native owner removes an endpoint that Docker lists under that slot name without
+a container (an `ep-` key), and never while a container holds the name.
+
 Native maintenance records each attested registration before the ephemeral
 runner exits. A positively exited PID-zero owner cannot restart its consumed
 credentials. The provider settles its exact remote registration, waits for

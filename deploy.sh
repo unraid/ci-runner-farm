@@ -112,7 +112,7 @@ fi
 chown -R root:root "$stage"
 find "$stage" -type d -exec chmod 0755 {} +
 find "$stage" -type f -exec chmod 0644 {} +
-chmod 0755 "$stage/include/runner-farm.sh"
+chmod 0755 "$stage/include/runner-farm.sh" "$stage/include/runner-job-cleanup.sh"
 find "$stage/nchan" -type f -exec chmod 0755 {} +
 find "$stage/event" -type f -exec chmod 0755 {} +
 

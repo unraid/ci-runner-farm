@@ -1,5 +1,98 @@
 # Changelog
 
+## [1.16.1](https://github.com/unraid/ci-runner-farm/compare/v1.16.0...v1.16.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **github:** authenticate cold images before queued runner startup ([#189](https://github.com/unraid/ci-runner-farm/issues/189)) ([e2cf880](https://github.com/unraid/ci-runner-farm/commit/e2cf880dd2e7a0ac80d34a9dc6af8497e2924828))
+* **github:** preserve empty remote image fallback ([#191](https://github.com/unraid/ci-runner-farm/issues/191)) ([e8a727f](https://github.com/unraid/ci-runner-farm/commit/e8a727fca37b82ad506894f6b987762110bcc6fb))
+
+## [1.16.0](https://github.com/unraid/ci-runner-farm/compare/v1.15.1...v1.16.0) (2026-10-24)
+
+
+### Features
+
+* **github:** authenticate the farm as a GitHub App ([#186](https://github.com/unraid/ci-runner-farm/issues/186)) ([001b7df](https://github.com/unraid/ci-runner-farm/commit/001b7df6fe3132e3ab1585dafd1546c966a32c32))
+
+## [1.15.1](https://github.com/unraid/ci-runner-farm/compare/v1.15.0...v1.15.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* **github:** revalidate GitHub reads and pause background polling near the rate limit ([#181](https://github.com/unraid/ci-runner-farm/issues/181)) ([46369c4](https://github.com/unraid/ci-runner-farm/commit/46369c45f810d0b48b83ecd0fe2ab98ae3f020dc))
+
+## [1.15.0](https://github.com/unraid/ci-runner-farm/compare/v1.14.0...v1.15.0) (2026-10-22)
+
+
+### Features
+
+* **runner:** pin runners to CPU sets sized to their CPU limit ([#179](https://github.com/unraid/ci-runner-farm/issues/179)) ([f431701](https://github.com/unraid/ci-runner-farm/commit/f431701877747d289bed316889adf999cc67e1c8))
+
+
+### Bug Fixes
+
+* **capacity:** retry the queued head and granted unstarted builders ([#180](https://github.com/unraid/ci-runner-farm/issues/180)) ([1d6b3f8](https://github.com/unraid/ci-runner-farm/commit/1d6b3f851d88d4a0606c75581d342c23eb0f54b3))
+* **capacity:** route native OS pools through demand admission ([#184](https://github.com/unraid/ci-runner-farm/issues/184)) ([112d718](https://github.com/unraid/ci-runner-farm/commit/112d718a3103a15f8e7ea88a33f362f2c75bf271))
+
+## [1.14.0](https://github.com/unraid/ci-runner-farm/compare/v1.13.0...v1.14.0) (2026-10-15)
+
+
+### Features
+
+* **capacity:** expand shared pools without resetting active owners ([#171](https://github.com/unraid/ci-runner-farm/issues/171)) ([8b788b4](https://github.com/unraid/ci-runner-farm/commit/8b788b4b9b408c2f390bfa6a6f364844f6cbba51))
+
+
+### Bug Fixes
+
+* **cache:** drop idle workspace checkouts under storage pressure ([#173](https://github.com/unraid/ci-runner-farm/issues/173)) ([0d0c345](https://github.com/unraid/ci-runner-farm/commit/0d0c3458afb8809cf4bdca1bafcfdfe368ac3453))
+* **cache:** prune persistent DinD stores between jobs ([#172](https://github.com/unraid/ci-runner-farm/issues/172)) ([e166498](https://github.com/unraid/ci-runner-farm/commit/e166498327906577d50d706c520eb972867ced46))
+* **cache:** reclaim opted-in unused builder caches under pressure ([#170](https://github.com/unraid/ci-runner-farm/issues/170)) ([bd6d478](https://github.com/unraid/ci-runner-farm/commit/bd6d4789867a00b7ada44cdc586f617b1ad52bb0))
+* **capacity:** drain owners above a lowered class ceiling ([#175](https://github.com/unraid/ci-runner-farm/issues/175)) ([1f4aa86](https://github.com/unraid/ci-runner-farm/commit/1f4aa8656fa6c701ef5069f90c1153bcd8567fa0))
+* **capacity:** parse runner process names that contain spaces ([#174](https://github.com/unraid/ci-runner-farm/issues/174)) ([e82212a](https://github.com/unraid/ci-runner-farm/commit/e82212a1d4a5667b9dd4e388c5e76e9bae21a36e))
+* **capacity:** reconcile idle native runners without clearing warm caches ([#168](https://github.com/unraid/ci-runner-farm/issues/168)) ([9606597](https://github.com/unraid/ci-runner-farm/commit/96065971e02b008bbc7fee234f1f14264ac8da15))
+* **capacity:** stop timing windows from discarding demand ticks ([#176](https://github.com/unraid/ci-runner-farm/issues/176)) ([05e6e06](https://github.com/unraid/ci-runner-farm/commit/05e6e06d01e5e9a39a72613dd103689160e7b183))
+
+## [1.13.0](https://github.com/unraid/ci-runner-farm/compare/v1.12.0...v1.13.0) (2026-10-14)
+
+
+### Features
+
+* **capacity:** initialize standalone native ownership safely ([#166](https://github.com/unraid/ci-runner-farm/issues/166)) ([ace5589](https://github.com/unraid/ci-runner-farm/commit/ace55898aeddd1f30d65ccec40cdb8a939cb88a7))
+* **capacity:** pin consumer policy through outer operations ([#163](https://github.com/unraid/ci-runner-farm/issues/163)) ([930f19f](https://github.com/unraid/ci-runner-farm/commit/930f19f6d0653ada570e006630f5d8fdef05b0e3))
+* **capacity:** preserve warm recovery in Farm controller ([#159](https://github.com/unraid/ci-runner-farm/issues/159)) ([3b89bfc](https://github.com/unraid/ci-runner-farm/commit/3b89bfcced74b36f91b35b0af2ca960cac73a7c6))
+
+
+### Bug Fixes
+
+* **capacity:** admit shared workloads against resident memory ([#167](https://github.com/unraid/ci-runner-farm/issues/167)) ([0968814](https://github.com/unraid/ci-runner-farm/commit/09688146ccfef5174ea2b81b69bd0a1ddda98f26))
+* **capacity:** release completed builder grants promptly ([#161](https://github.com/unraid/ci-runner-farm/issues/161)) ([4239ea3](https://github.com/unraid/ci-runner-farm/commit/4239ea3976a11d9faf7ff666b456ff26755ad214))
+* fence optional shared memory admission across workload starts ([#164](https://github.com/unraid/ci-runner-farm/issues/164)) ([c7927f7](https://github.com/unraid/ci-runner-farm/commit/c7927f7991f0731a4465798e7ec6860c0132e236))
+* route Farm-owned hosts through the native controller ([#165](https://github.com/unraid/ci-runner-farm/issues/165)) ([a5e2d35](https://github.com/unraid/ci-runner-farm/commit/a5e2d353c2e7475c3a57d80ddd5cb9bbe04c810a))
+
+## [1.12.0](https://github.com/unraid/ci-runner-farm/compare/v1.11.1...v1.12.0) (2026-10-13)
+
+
+### Features
+
+* **capacity:** package the Farm-owned native controller ([#155](https://github.com/unraid/ci-runner-farm/issues/155)) ([6008f45](https://github.com/unraid/ci-runner-farm/commit/6008f4507b046e08c6dd343d7b3b2798070afbe2))
+
+
+### Bug Fixes
+
+* bound GitHub polling and restore Settings rendering ([#157](https://github.com/unraid/ci-runner-farm/issues/157)) ([a08f0f5](https://github.com/unraid/ci-runner-farm/commit/a08f0f53bdb20780d4490c89ba1dc240a3055550))
+* **capacity:** preserve controller executable mode on install ([#158](https://github.com/unraid/ci-runner-farm/issues/158)) ([5047c70](https://github.com/unraid/ci-runner-farm/commit/5047c7040ca5d35bb171cf1196979b404c92139e))
+
+## [1.11.1](https://github.com/unraid/ci-runner-farm/compare/v1.11.0...v1.11.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* **autoscale:** count documented unassigned queued jobs ([#150](https://github.com/unraid/ci-runner-farm/issues/150)) ([e3e4c11](https://github.com/unraid/ci-runner-farm/commit/e3e4c110d5da6aef7181d1d78d4dabe0180a02c4))
+* **autoscale:** ignore foreign jobs before assignment guard ([#146](https://github.com/unraid/ci-runner-farm/issues/146)) ([dccba16](https://github.com/unraid/ci-runner-farm/commit/dccba164394ed69e80c41729b69cf8e0e901f93a))
+* **scaling:** restore warm builders before queue observation ([#154](https://github.com/unraid/ci-runner-farm/issues/154)) ([a006af1](https://github.com/unraid/ci-runner-farm/commit/a006af1ad794f4f8a70411b1d6128621c6331958))
+* **storage:** reclaim completed runner caches under disk pressure ([#148](https://github.com/unraid/ci-runner-farm/issues/148)) ([5e8453b](https://github.com/unraid/ci-runner-farm/commit/5e8453b456537c88e6f66c9a01f65130ab99353f))
+
 ## [1.11.0](https://github.com/unraid/ci-runner-farm/compare/v1.10.3...v1.11.0) (2026-10-13)
 
 

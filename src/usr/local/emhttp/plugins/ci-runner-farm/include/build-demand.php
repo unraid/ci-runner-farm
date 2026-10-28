@@ -7,18 +7,60 @@ require_once __DIR__ . "/encoding.php";
 class BuildDemand
 {
     private const CACHE_LIMIT = 16777216;
+    // The daemon ticks every AUTOSCALE_INTERVAL (300s on queued hosts). A gate
+    // equal to the interval defers alternate ticks on scheduling jitter.
+    private const POLL_SECONDS = 285;
+    // A full organization scan takes ~20s idle and longer under load; owner
+    // observation on a busy host adds tens of seconds more.
+    private const SCAN_SECONDS = 120;
+    private const QUEUE_SECONDS = 180;
+    private const OBSERVATION_SECONDS = 60;
     private array $cache = ['items' => [], 'cooldown' => 0];
     private string $scope;
+    private string $recoveryScope;
     private float $started;
 
-    public function __construct(private string $cachePath, string $groupToken, string $queueToken)
+    // $identity names a rotating credential (a GitHub App installation) so the
+    // cache scope, cooldown and poll receipt survive its hourly token rotation.
+    public function __construct(private string $cachePath, string $groupToken, string $queueToken, string $identity = '')
     {
         $this->started = microtime(true);
-        $this->scope = hash('sha256', $groupToken . "\0" . $queueToken);
+        $this->scope = hash('sha256', $identity !== '' ? $identity : $groupToken . "\0" . $queueToken);
+        $this->recoveryScope = hash('sha256', $identity !== '' ? $identity : $groupToken);
         if (file_exists($cachePath) || is_link($cachePath)) {
             $this->cache = self::decode(self::protectedRead($cachePath, self::CACHE_LIMIT, true));
             self::check(isset($this->cache['items'], $this->cache['cooldown']) && is_array($this->cache['items']) && count($this->cache['items']) <= 512 && is_int($this->cache['cooldown']), 'invalid HTTP cache');
+            if (isset($this->cache['cooldownScope']) && $this->cache['cooldownScope'] !== $this->scope) $this->cache['cooldown'] = 0;
         }
+    }
+
+    // The native fleet lock serializes this gate with all background effects.
+    // Record the attempt before remote reads so failures/restarts cannot rescan.
+    public function begin(): void
+    {
+        $plan = $this->cache['plan'] ?? null;
+        if ($plan !== null) {
+            self::check(is_array($plan) && is_string($plan['scope'] ?? null) && is_int($plan['attemptedAt'] ?? null) &&
+                $plan['attemptedAt'] <= time(), 'invalid background poll receipt');
+            self::check($plan['scope'] !== $this->scope || time() - $plan['attemptedAt'] >= self::POLL_SECONDS, 'background GitHub poll deferred');
+        }
+        $this->fresh();
+        $this->cache['plan'] = ['scope' => $this->scope, 'attemptedAt' => time()];
+        $this->save();
+    }
+
+    // Native ownership recovery uses the registration credential and its own
+    // durable cadence. A depleted queue-reader budget must not strand grants.
+    public function beginRecovery(): void
+    {
+        $plan = $this->cache['recoveryPlan'] ?? null;
+        if ($plan !== null) {
+            self::check(is_array($plan) && is_string($plan['scope'] ?? null) && is_int($plan['attemptedAt'] ?? null) &&
+                $plan['attemptedAt'] <= time(), 'invalid native recovery receipt');
+            self::check($plan['scope'] !== $this->recoveryScope || time() - $plan['attemptedAt'] >= self::POLL_SECONDS, 'background native recovery deferred');
+        }
+        $this->cache['recoveryPlan'] = ['scope' => $this->recoveryScope, 'attemptedAt' => time()];
+        $this->save();
     }
 
     public static function check(bool $condition, string $message): void
@@ -49,11 +91,11 @@ class BuildDemand
         } finally { fclose($file); }
     }
 
-    public static function credentials(string $directory): array
+    public static function credentials(string $directory, bool $requireQueue = true): array
     {
         $values = [];
         foreach (explode("\n", self::protectedRead($directory . '/ci-runner-farm.cfg', 262144, false)) as $line) {
-            if (!preg_match('/^\s*(CI_PROVIDER|GH_SCOPE|GH_OWNER|RUNNER_GROUP)\s*=(.*)$/', $line, $match)) continue;
+            if (!preg_match('/^\s*(CI_PROVIDER|GH_SCOPE|GH_OWNER|RUNNER_GROUP|GH_APP_ID|GH_APP_INSTALLATION_ID)\s*=(.*)$/', $line, $match)) continue;
             self::check(!isset($values[$match[1]]), 'duplicate Farm scope');
             $value = trim($match[2]);
             if (strlen($value) >= 2 && (($value[0] === '"' && substr($value, -1) === '"') || ($value[0] === "'" && substr($value, -1) === "'"))) $value = substr($value, 1, -1);
@@ -63,8 +105,20 @@ class BuildDemand
         self::check(($values['CI_PROVIDER'] ?? '') === 'github' && ($values['GH_SCOPE'] ?? '') === 'org' &&
             preg_match('/\A[A-Za-z0-9][A-Za-z0-9-]*\z/', $values['GH_OWNER'] ?? '') === 1 &&
             ($values['RUNNER_GROUP'] ?? '') !== '' && !preg_match('/[\x00-\x1f$`\\\\]/', implode('', $values)), 'invalid native Farm scope');
-        foreach (['token', 'queue-token'] as $name) {
-            $value = trim(self::protectedRead($directory . '/' . $name, 65536, true));
+        $values['queue-token'] = '';
+        $values['identity'] = '';
+        // In GitHub App mode the engine exports the minted installation token,
+        // which carries both the runner-group and the Actions read permissions,
+        // so it replaces the PAT and the separate Queue Reader token.
+        $minted = getenv('CRF_GITHUB_TOKEN_FILE');
+        if (is_string($minted) && $minted !== '') {
+            self::check($minted[0] === '/' && !str_contains($minted, '/../') && !str_contains($minted, '//'), 'invalid minted Farm credential path');
+            self::check(ctype_digit($values['GH_APP_ID'] ?? '') && ctype_digit($values['GH_APP_INSTALLATION_ID'] ?? ''), 'minted Farm credential without an App identity');
+            $values['identity'] = 'github-app:' . $values['GH_APP_ID'] . ':' . $values['GH_APP_INSTALLATION_ID'];
+        }
+        foreach ($requireQueue ? ['token', 'queue-token'] : ['token'] as $name) {
+            $path = is_string($minted) && $minted !== '' ? $minted : $directory . '/' . $name;
+            $value = trim(self::protectedRead($path, 65536, true));
             self::check($value !== '' && !preg_match('/\s/', $value), 'invalid native Farm credential');
             $values[$name] = $value;
         }
@@ -93,7 +147,7 @@ class BuildDemand
 
     private function fresh(): void
     {
-        self::check(microtime(true) >= $this->started && microtime(true) - $this->started <= 60, 'stale general queue snapshot');
+        self::check(microtime(true) >= $this->started && microtime(true) - $this->started <= self::SCAN_SECONDS, 'stale general queue snapshot');
         self::check(time() >= $this->cache['cooldown'], 'GitHub queue reader cooldown');
     }
 
@@ -151,12 +205,19 @@ class BuildDemand
 
     public function response(string $key, int $status, array $headers, string $body, ?array $previous): array
     {
+        // Keep a reserve for registration, routing and recovery. Header evidence
+        // comes from the actual authenticated endpoint, never /rate_limit.
+        if (ctype_digit($headers['x-ratelimit-remaining'] ?? '') && (int)$headers['x-ratelimit-remaining'] <= 500 &&
+            ctype_digit($headers['x-ratelimit-reset'] ?? '')) {
+            $this->cache['cooldown'] = max($this->cache['cooldown'], min(time() + 86400, (int)$headers['x-ratelimit-reset']) + 5);
+        }
         if ($status === 403 || $status === 429) {
-            $until = time() + 60;
+            $until = time() + 300;
             if (ctype_digit($headers['retry-after'] ?? '')) $until = max($until, time() + min(86400, (int)$headers['retry-after']));
             if (($headers['x-ratelimit-remaining'] ?? '') === '0' && ctype_digit($headers['x-ratelimit-reset'] ?? '')) $until = max($until, min(time() + 86400, (int)$headers['x-ratelimit-reset']));
             $this->cache['cooldown'] = max($this->cache['cooldown'], $until);
         }
+        $this->cache['cooldownScope'] = $this->scope;
         if ($status === 304) {
             self::check($previous !== null, 'unattested GitHub 304');
             return self::decode($previous['body']);
@@ -275,9 +336,8 @@ class BuildDemand
             foreach ($job['labels'] as $label) self::check(is_string($label) && $label !== '', 'invalid job label');
             if ($job['status'] !== 'queued' || !$job['labels']) return;
             foreach ($pools as $pool) if (!array_diff(array_map('strtolower', $job['labels']), $pool['labels'])) {
-                // Assignment evidence matters only for jobs this pool can run.
-                self::check(is_int($job['runner_id']), 'queued job assignment is unknown');
-                if ($job['runner_id'] === 0) $counts[$pool['id']]++;
+                // GitHub documents null as not yet assigned; zero is also observed.
+                if ($job['runner_id'] === null || $job['runner_id'] === 0) $counts[$pool['id']]++;
                 break;
             }
         }, 10);
@@ -285,11 +345,20 @@ class BuildDemand
         return ['queueStartedAt' => (int)$this->started, 'counts' => $counts, 'organization' => $org];
     }
 
+    // Warm recovery uses only the protected profile. It never infers an empty
+    // queue or adds the unknown/busy count repeatedly during an API outage.
+    public static function warmTargets(string $records): array
+    {
+        $targets = [];
+        foreach (self::pools($records) as $pool) $targets[$pool['id']] = max($pool['minimum'], $pool['idle']);
+        return ['schema' => 1, 'targets' => $targets];
+    }
+
     public static function targets(string $records, array $scan, array $observation): array
     {
         $pools = self::pools($records); $now = time(); $start = $scan['queueStartedAt'] ?? null; $observed = $observation['observedAt'] ?? null;
-        self::check(($observation['schema'] ?? 0) === 1 && is_int($start) && $start > 0 && $start <= $now && $now - $start <= 60 &&
-            is_int($observed) && $observed >= $start && $observed <= $now && $now - $observed <= 15 &&
+        self::check(($observation['schema'] ?? 0) === 1 && is_int($start) && $start > 0 && $start <= $now && $now - $start <= self::QUEUE_SECONDS &&
+            is_int($observed) && $observed >= $start && $observed <= $now && $now - $observed <= self::OBSERVATION_SECONDS &&
             preg_match('/\A[a-f0-9]{64}\z/', $observation['policyDigest'] ?? '') === 1 &&
             ($observation['poolsDigest'] ?? '') === hash('sha256', ($scan['organization'] ?? '') . "\0" . $records) &&
             is_array($scan['counts'] ?? null) && is_array($observation['retained'] ?? null) &&
@@ -310,12 +379,19 @@ if (realpath($_SERVER['SCRIPT_FILENAME'] ?? '') === __FILE__) {
     try {
         umask(0077);
         ini_set("memory_limit", "128M");
-        if (($argv[1] ?? '') === 'scan' && count($argv) === 5) {
-            BuildDemand::check(posix_geteuid() === 0 && function_exists('curl_multi_init'), 'general demand requires native root PHP curl runtime');
-            $scope = BuildDemand::credentials($argv[2]);
-            $reader = new BuildDemand($argv[3] . '/build-demand-http.json', $scope['token'], $scope['queue-token']);
-            try { $result = $reader->queue($scope, BuildDemand::pools($argv[4])); }
+        if (in_array($argv[1] ?? '', ['begin', 'begin-recovery', 'scan'], true) && count($argv) === 5) {
+            BuildDemand::check(posix_geteuid() === 0 && (($argv[1] === 'begin-recovery') || function_exists('curl_multi_init')),
+                'general demand requires its native root PHP runtime');
+            $scope = BuildDemand::credentials($argv[2], $argv[1] !== 'begin-recovery');
+            $reader = new BuildDemand($argv[3] . '/build-demand-http.json', $scope['token'], $scope['queue-token'], $scope['identity']);
+            try {
+                if ($argv[1] === 'begin-recovery') { $reader->beginRecovery(); $result = ['recoveryReady' => true]; }
+                elseif ($argv[1] === 'begin') { $reader->begin(); $result = ['backgroundReady' => true]; }
+                else $result = $reader->queue($scope, BuildDemand::pools($argv[4]));
+            }
             finally { $reader->save(); }
+        } elseif (($argv[1] ?? '') === 'warm-targets' && count($argv) === 3) {
+            $result = BuildDemand::warmTargets($argv[2]);
         } elseif (($argv[1] ?? '') === 'targets' && count($argv) === 5) {
             $result = BuildDemand::targets($argv[2], BuildDemand::decode($argv[3]), BuildDemand::decode($argv[4]));
         } else throw new RuntimeException('invalid Farm demand command');

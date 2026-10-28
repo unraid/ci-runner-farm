@@ -38,6 +38,10 @@ type Pool struct {
 
 // Policy is the admission contract materialized from durable host policy.
 type Policy struct {
+	// SharedMemoryHeadroom admits all declared classes against fresh resident
+	// memory, retaining full fenced start reservations until execution is proved.
+	SharedMemoryHeadroom bool `json:"sharedMemoryHeadroom,omitempty"`
+
 	Budget       Resources       `json:"budget"`
 	Pools        map[string]Pool `json:"pools"`
 	AgingSeconds uint32          `json:"agingSeconds"`
@@ -45,7 +49,8 @@ type Policy struct {
 	// each workload's CPU limit but allows CPU time to be shared across grants.
 	CPUAdmission string `json:"cpuAdmission,omitempty"`
 	// BuildMemoryOvercommit adds a bounded, best-effort commitment allowance
-	// for builders only. Costs and container hard limits remain unchanged.
+	// for legacy builders. SharedMemoryHeadroom instead uses measured resident
+	// headroom and MinimumAvailableMiB. Hard limits stay unchanged.
 	BuildMemoryOvercommit *BuildMemoryOvercommit `json:"buildMemoryOvercommit,omitempty"`
 }
 
