@@ -101,7 +101,7 @@ echo 'job Docker cache: exact job scope, preserved references/custom volumes, lo
  # Job pruning is opt-in; enabling it reaches the hook and replaces slots.
  DOCKER_CACHE_MIN_FREE_PERCENT=15
  github_build_args 1 test-runner
- if printf '%s\n' "${ARGS[@]}" | grep -q CRF_JOB_PRUNE; then exit 1; fi
+ printf '%s\n' "${ARGS[@]}" | grep -qx 'CRF_JOB_PRUNE=0'
  DOCKER_JOB_PRUNE=true
  github_build_args 1 test-runner
  printf '%s\n' "${ARGS[@]}" | grep -qx 'CRF_JOB_PRUNE=1'

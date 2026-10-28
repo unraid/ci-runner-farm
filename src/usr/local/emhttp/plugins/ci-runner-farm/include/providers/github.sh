@@ -814,7 +814,11 @@ github_build_args() {
       if [ -n "${DOCKER_CACHE_BUILDERS:-}" ]; then
         ARGS+=( -e "CRF_DOCKER_CACHE_BUILDERS=$DOCKER_CACHE_BUILDERS" )
       fi
-      [ "${DOCKER_JOB_PRUNE:-false}" != true ] || ARGS+=( -e CRF_JOB_PRUNE=1 )
+      if [ "${DOCKER_JOB_PRUNE:-false}" = true ]; then
+        ARGS+=( -e CRF_JOB_PRUNE=1 )
+      else
+        ARGS+=( -e CRF_JOB_PRUNE=0 )
+      fi
     fi
   elif [ "$SHARE_DOCKER_SOCK" = "true" ]; then
     ARGS+=( -v /var/run/docker.sock:/var/run/docker.sock )
