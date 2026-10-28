@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.16.2](https://github.com/unraid/ci-runner-farm/compare/v1.16.1...v1.16.2) (2026-10-28)
+
+
+### Bug Fixes
+
+* **cache:** make post-job prune opt-in and honor zero ([#177](https://github.com/unraid/ci-runner-farm/issues/177)) ([aff3ef5](https://github.com/unraid/ci-runner-farm/commit/aff3ef5ad424c2a42a897b58dfb14dfa6d351cd4))
+* **capacity:** replace builders whose start provably never ran ([#193](https://github.com/unraid/ci-runner-farm/issues/193)) ([e3c1fc2](https://github.com/unraid/ci-runner-farm/commit/e3c1fc2164c27553a599cb7fb12b63a2d5a22dea))
+
 ## [1.16.1](https://github.com/unraid/ci-runner-farm/compare/v1.16.0...v1.16.1) (2026-10-26)
 
 
