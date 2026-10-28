@@ -1,6 +1,6 @@
 # Reproducible Linux check environment for macOS and other non-Unraid hosts.
 # Build context is the repository root; tests/run-linux-checks.sh drives it.
-FROM golang:1.26.9@sha256:d7722066f0b60ceccb6c0643cbed1f5f9e15506ac237146c95333504d7805d89 AS go-toolchain
+FROM golang:1.26.10@sha256:672c944cfd07599b5f1bb179869270cdc94c6254e41db4d431259693cb286b82 AS go-toolchain
 FROM ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
 
 COPY --from=go-toolchain /usr/local/go /usr/local/go

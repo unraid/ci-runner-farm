@@ -26,6 +26,9 @@ func Run(arguments []string, output io.Writer) (result error) {
 		_, err := fmt.Fprintln(output, "ci-runner-capacity protocol 1")
 		return err
 	}
+	if len(arguments) == 5 && arguments[0] == "github-app-token" {
+		return runGitHubAppToken(arguments[1:], output)
+	}
 	if len(arguments) == 1 && (arguments[0] == "build-limits" || arguments[0] == "scan-repositories") {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()

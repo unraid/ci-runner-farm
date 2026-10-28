@@ -135,9 +135,14 @@ Nightly** or paste:
 https://github.com/unraid/ci-runner-farm/releases/download/nightly/ci-runner-farm-nightly.plg
 ```
 
-Nightly is built on the farm from `main`, may contain breaking changes, and
+Nightly is built from each new `main` commit, may contain breaking changes, and
 replaces the stable plugin channel on the host. Keep the stable release URL
 available for rollback; the two channels are not intended to run side by side.
+
+Each build is also published once as its own prerelease, for example
+`v1.14.0-nightly.73`, and is never replaced. To pin a reproducible build, use
+that release's `ci-runner-farm-nightly.json` manifest rather than the moving
+`nightly` one. The 30 newest build prereleases are kept.
 
 Everything is managed from **Settings → Utilities → CI Runner Farm**. The page
 has **Fleet**, **Runner image**, and **Settings** tabs.
@@ -162,6 +167,45 @@ The GitHub PAT is stored at
 `/boot/config/plugins/ci-runner-farm/token` with mode `0600`; it is not written
 to the main config or passed into job containers. Existing GitHub settings,
 container names, and the legacy editable `Dockerfile` remain compatible.
+
+### GitHub App authentication (organization scope)
+
+A PAT shares its hourly rate limit with everything else its account runs. An
+organization farm can authenticate as a GitHub App instead, which has its own
+installation rate limit (15,000 requests an hour on GitHub Enterprise Cloud).
+
+1. Create a GitHub App owned by the organization, with no webhook and these
+   permissions:
+
+   | Permission | Access | Used for |
+   | --- | --- | --- |
+   | Organization: Self-hosted runners | Read and write | Registration tokens, runner listing, removal and labels, runner groups |
+   | Repository: Actions | Read | Queued and failed runs, job lists and job logs |
+   | Repository: Metadata | Read | Repository visibility checks |
+
+   A private GHCR runner image still needs a registry token. GHCR accepts an
+   App installation token as a credential but does not grant it access to
+   private organization packages, which only grant access through people,
+   teams and repositories' Actions tokens.
+
+2. Install it on the organization with access to every repository the farm
+   serves, and generate a private key.
+3. Save the key as `/boot/config/plugins/ci-runner-farm/github-app-key.pem`
+   with mode `0600`. GitHub's PKCS#1 download and PKCS#8 keys both work.
+4. Set **GitHub App ID** and **GitHub App installation ID** on the Settings tab.
+
+With both IDs and the key present, the farm mints a one-hour installation token
+into `/var/local/emhttp/ci-runner-farm/github-token` (tmpfs, so the hourly
+rotation never writes the flash drive). It reuses the token until 15 minutes
+before expiry, and every GitHub request checks that window first, so long
+operations never send an expired token. The engine, the Queue Reader and the
+native capacity binary all read that minted token. It replaces both the PAT and
+the separate Queue Reader token.
+
+App mode fails closed. If no valid installation token can be minted, GitHub
+work pauses as it does with no token, and the farm never falls back to the PAT.
+At boot the farm retries the mint for up to ten minutes while the network comes
+up. Clear both IDs to return to the PAT.
 
 ## GitLab setup
 
@@ -500,6 +544,27 @@ The watchdog runs independently of autoscaling, so fixed-size fleets receive
 the same protection. GitLab keeps its manager-owned lifecycle path and exposes
 no candidate to this watchdog.
 
+### CPU pinning
+
+A CPU limit (`--cpus`) caps a runner's CPU time, but tools that size their
+parallelism from the CPU affinity mask (`nproc`, `make -j`, test and bundler
+worker pools) still see every host CPU, start that many workers, and spend
+most scheduling periods throttled. `CPU_PINNING="true"` (off by default,
+GitHub only) also gives each runner with a whole-number CPU limit a cpuset of
+that many host CPUs, so the runner and containers started by its nested Docker
+daemon see the right CPU count. The CPU limit and capacity accounting are
+unchanged.
+
+Placement reads the host topology from sysfs. It prefers whole physical cores
+spread across L3 cache domains, then their SMT sibling threads, and picks the
+CPUs least used by the farm's other live containers; overcommitted runners
+share the least-loaded CPUs. The chosen cpuset is recorded in the
+`net.unraid.ci-runner-farm.cpuset` label. A fractional or missing CPU limit, a
+limit larger than the host, or unreadable topology logs a warning and starts
+that runner unpinned. Turning the setting on or off changes the configuration
+fingerprint of pinnable slots, so they are recreated like any other baked
+setting; with it off, existing fingerprints are unchanged.
+
 ![Fleet state and controls](docs/images/fleet.png)
 
 ## CLI
@@ -827,9 +892,9 @@ These commands do not impose a size limit on active Docker stores. Keep
 build headroom when budgeting a shared filesystem; its configured object maximum
 does not reserve free disk space.
 
-### General build queue ownership
+### Native build queue ownership
 
-For shared OVH general pools, CI Runner Farm reads the native private runner
+For Farm-owned build pools, CI Runner Farm reads the native private runner
 group's queues and computes desired class targets. The host-side registration
 credential attests the local group; a separate root-owned mode-0600
 `queue-token` provides read-only Actions and Metadata access. Neither credential
@@ -842,8 +907,10 @@ Farm performs its bounded GitHub scan before the short native
 existing shared resource broker remains the sole allocator. Native apply checks
 policy, organization and pool identities, snapshot age and all class bounds,
 then reobserves exact owners. Busy, unknown and guaranteed floor slots remain
-protected by the existing fenced lifecycle. OS-specific pools retain their
-existing queue path.
+protected by the existing fenced lifecycle. Native OS profiles use this same
+protocol with their configured routing labels. Their configured warm floor is
+restored independently of queue scans. Provider-owned OS profiles retain the
+legacy provider queue path.
 
 Qualify both Farm and provider packages before rollout. Install Farm first on
 one host, then upgrade that host's compatible provider through its native lease.

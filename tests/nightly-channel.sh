@@ -13,6 +13,7 @@ tar -cf - build-plg.sh go.mod go.sum cmd internal pkg VERSION CHANGELOG.md src |
     DATE=2026.01.02.0304 \
     BUILD_NUMBER=7 \
     INTERNAL_VERSION=1.10.3-nightly.7 \
+    PACKAGE_TAG=v1.10.3-nightly.7 \
     NIGHTLY_SHA=0123456789abcdef0123456789abcdef01234567 \
     REPO=unraid/ci-runner-farm \
     bash ./build-plg.sh >/dev/null
@@ -29,7 +30,9 @@ assert root.attrib["name"] == "ci-runner-farm"
 assert "ci-runner-farm-nightly" in text
 assert root.attrib["pluginURL"].endswith("/releases/download/nightly/ci-runner-farm-nightly.plg")
 assert '<!ENTITY packageName   "ci-runner-farm-nightly.tgz">' in text
-assert '<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/nightly/ci-runner-farm-nightly.tgz">' in text
+# Update checks follow the moving channel; the package is fetched from the
+# build's immutable prerelease so a later build can never replace it.
+assert '<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/v1.10.3-nightly.7/ci-runner-farm-nightly.tgz">' in text
 assert "Nightly build of main commit 0123456789abcdef0123456789abcdef01234567." in text
 assert "Containerized GitHub Actions runner farm for Unraid." not in text
 md5 = re.search(r'^<!ENTITY packageMD5\s+"([0-9a-f]{32})">$', text, re.MULTILINE).group(1)
@@ -37,6 +40,11 @@ PY
 
   plg_md5="$(md5sum ci-runner-farm-nightly.tgz | cut -d' ' -f1)"
   grep -q "<!ENTITY packageMD5[[:space:]]*\"$plg_md5\">" ci-runner-farm-nightly.plg
+
+  if CHANNEL=nightly DATE=2026.01.02.0304 BUILD_NUMBER=7 INTERNAL_VERSION=1.10.3-nightly.7 \
+    PACKAGE_TAG='../escape' bash ./build-plg.sh >/dev/null 2>&1; then
+    echo 'nightly-channel: invalid PACKAGE_TAG accepted' >&2; exit 1
+  fi
 )
 
 grep -qF 'runs-on: ubuntu-24.04' .github/workflows/nightly.yml
@@ -47,6 +55,15 @@ grep -qF 'ci-runner-farm-nightly.tgz' .github/workflows/nightly.yml
 grep -qF 'ci-runner-farm-nightly.json' .github/workflows/nightly.yml
 grep -qF 'release_base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/nightly"' .github/workflows/nightly.yml
 grep -qF 'contents: write' .github/workflows/nightly.yml
+# A rebuild of an already published commit changes the nightly version and
+# digests in place, which breaks consumers pinned to the current manifest.
+if grep -qE '^[[:space:]]*schedule:' .github/workflows/nightly.yml; then exit 1; fi
+grep -qF 'steps.published.outputs.publish' .github/workflows/nightly.yml
+# Every build gets its own immutable prerelease, and old ones are pruned.
+grep -qF 'PACKAGE_TAG="v${nightly_version}"' .github/workflows/nightly.yml
+grep -qF 'gh release create "$build_tag"' .github/workflows/nightly.yml
+grep -qF -- '--prerelease --latest=false --target "$NIGHTLY_SHA" "${assets[@]}"' .github/workflows/nightly.yml
+grep -qF 'KEEP_BUILDS: 30' .github/workflows/nightly.yml
 grep -qF 'self-hosted-runner:' .github/actionlint.yaml
 grep -qF -- '- unraid' .github/actionlint.yaml
 grep -qF -- '- build' .github/actionlint.yaml

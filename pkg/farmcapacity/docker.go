@@ -2,13 +2,17 @@
 package farmcapacity
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // NativeDocker uses immutable IDs and never interprets inspect failure as absence.
@@ -132,10 +136,7 @@ func (NativeDocker) Start(ctx context.Context, id string) error {
 	if !idPattern.MatchString(id) {
 		return errors.New("invalid immutable build container ID")
 	}
-	if err := exec.CommandContext(ctx, "docker", "start", id).Run(); err != nil {
-		return errors.New("Docker build start did not complete")
-	}
-	return nil
+	return nativeEffect(ctx, "Docker build start did not complete", "start", id)
 }
 
 // RemoveCreated refuses any container that might have started; no force or stop.
@@ -147,10 +148,58 @@ func (d NativeDocker) RemoveCreated(ctx context.Context, id string) error {
 	if item.ID != id || !item.NeverStarted || item.Running {
 		return errors.New("replacement requires an exact never-started container")
 	}
-	if err := exec.CommandContext(ctx, "docker", "rm", id).Run(); err != nil {
-		return errors.New("inert native removal did not complete")
+	return nativeEffect(ctx, "inert native removal did not complete", "rm", id)
+}
+
+const dockerReasonLimit = 240
+
+// nativeEffect keeps the stable failure prefix that logs match on and appends
+// Docker's own reason. Daemon text is untrusted: only a bounded, single-line,
+// printable excerpt is kept, and it never changes whether the effect failed.
+func nativeEffect(ctx context.Context, failure string, arguments ...string) error {
+	var stderr bytes.Buffer
+	command := exec.CommandContext(ctx, "docker", arguments...)
+	command.Stderr = &boundedWriter{buffer: &stderr, limit: 4096}
+	if err := command.Run(); err != nil {
+		if reason := dockerReason(stderr.String()); reason != "" {
+			return fmt.Errorf("%s: %s", failure, reason)
+		}
+		return errors.New(failure)
 	}
 	return nil
+}
+
+func dockerReason(output string) string {
+	reason := ""
+	for line := range strings.SplitSeq(strings.ToValidUTF8(output, " "), "\n") {
+		line = strings.Join(strings.FieldsFunc(line, func(r rune) bool { return unicode.IsSpace(r) || !unicode.IsPrint(r) }), " ")
+		if line != "" {
+			reason = strings.TrimPrefix(line, "Error response from daemon: ")
+			break
+		}
+	}
+	if len(reason) <= dockerReasonLimit {
+		return reason
+	}
+	cut := dockerReasonLimit
+	for cut > 0 && !utf8.RuneStart(reason[cut]) {
+		cut--
+	}
+	return reason[:cut] + "..."
+}
+
+// boundedWriter keeps the first bytes of a stream and discards the rest, so a
+// misbehaving daemon cannot grow broker memory or block the Docker CLI.
+type boundedWriter struct {
+	buffer *bytes.Buffer
+	limit  int
+}
+
+func (w *boundedWriter) Write(data []byte) (int, error) {
+	if room := w.limit - w.buffer.Len(); room > 0 {
+		w.buffer.Write(data[:min(room, len(data))])
+	}
+	return len(data), nil
 }
 
 // ManagedNames lists every native managed container name without inspecting

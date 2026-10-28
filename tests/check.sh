@@ -38,6 +38,8 @@ bash tests/runner-pools.sh
 bash tests/autoscale-queue.sh
 bash tests/imageupdate-drift.sh
 bash tests/github-liveness.sh
+bash tests/github-rate-budget.sh
+bash tests/github-app-auth.sh
 bash tests/lifecycle-enforcement.sh
 bash tests/runner-recommendations.sh
 bash tests/runner-history.sh
@@ -48,11 +50,13 @@ bash tests/nightly-channel.sh
 python3 tests/test-nightly-migration.py
 bash tests/pool-runtime.sh
 bash tests/shared-capacity.sh
+bash tests/runner-network-endpoint.sh
 bash tests/shared-config-reconcile.sh
 bash tests/resume-queued.sh
 bash tests/shared-observation.sh
 bash tests/elastic-pools.sh
 bash tests/queued-pools.sh
+bash tests/cold-image-auth.sh
 bash tests/warm-recovery.sh
 php tests/build-demand.php
 bash tests/shared-host-budget.sh
@@ -64,6 +68,7 @@ bash tests/secret-write.sh
 bash tests/utf8-safety.sh
 bash tests/log-redaction.sh
 bash tests/provider-mocks.sh
+bash tests/cpu-pinning.sh
 bash tests/shared-cache.sh
 bash tests/retired-docker-cache.sh
 bash tests/completed-docker-cache.sh

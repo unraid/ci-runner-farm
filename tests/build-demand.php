@@ -128,6 +128,10 @@ try {
     rejects(fn()=>$reader->response('rate',429,['retry-after'=>'120'],'',null));
     $reader->save(); same(json_decode(file_get_contents($cache),true)['cooldown'] >= time()+299,true);
     chmod($cache,0644); rejects(fn()=>new BuildDemand($cache,'g','q')); unlink($cache);
+    // A rotating App token keeps one cache scope; distinct PATs do not share one.
+    $scope = new ReflectionProperty(BuildDemand::class, 'scope');
+    same($scope->getValue(new BuildDemand($cache,'ghs_one','ghs_one','github-app:7:42')), $scope->getValue(new BuildDemand($cache,'ghs_two','ghs_two','github-app:7:42')));
+    same($scope->getValue(new BuildDemand($cache,'pat-a','q')) === $scope->getValue(new BuildDemand($cache,'pat-b','q')), false);
     symlink('/dev/null',$cache); rejects(fn()=>new BuildDemand($cache,'g','q')); unlink($cache);
     if (posix_geteuid() === 0) {
         $credentialDir = $cache . '-credentials';
@@ -140,6 +144,20 @@ try {
             same(BuildDemand::credentials($credentialDir, false)['token'], 'native-token');
             same(BuildDemand::credentials($credentialDir, false)['queue-token'], '');
             rejects(fn()=>BuildDemand::credentials($credentialDir));
+            // GitHub App mode: the engine-exported minted token serves both the
+            // runner-group and the queue reads, and names a stable identity.
+            $minted = $credentialDir . '/minted-token';
+            file_put_contents($minted, 'ghs_minted'); chmod($minted, 0600);
+            putenv('CRF_GITHUB_TOKEN_FILE=' . $minted);
+            rejects(fn()=>BuildDemand::credentials($credentialDir));
+            file_put_contents($credentialDir . '/ci-runner-farm.cfg', "CI_PROVIDER=github\nGH_SCOPE=org\nGH_OWNER=example\nRUNNER_GROUP=Default\nGH_APP_ID=\"7\"\nGH_APP_INSTALLATION_ID=\"42\"\n");
+            $app = BuildDemand::credentials($credentialDir);
+            same([$app['token'], $app['queue-token'], $app['identity']], ['ghs_minted', 'ghs_minted', 'github-app:7:42']);
+            putenv('CRF_GITHUB_TOKEN_FILE=relative/token'); rejects(fn()=>BuildDemand::credentials($credentialDir));
+            putenv('CRF_GITHUB_TOKEN_FILE');
+            unlink($minted);
+            same(BuildDemand::credentials($credentialDir, false)['identity'], '');
+            file_put_contents($credentialDir . '/ci-runner-farm.cfg', "CI_PROVIDER=github\nGH_SCOPE=org\nGH_OWNER=example\nRUNNER_GROUP=Default\n");
             mkdir($credentialDir . '/runtime', 0700);
             $command = implode(' ', array_map('escapeshellarg', [PHP_BINARY,
                 __DIR__ . '/../src/usr/local/emhttp/plugins/ci-runner-farm/include/build-demand.php',

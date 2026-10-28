@@ -82,6 +82,15 @@ shared_capacity_start() {
     || { err "shared capacity only supports owned GitHub build size pools"; return 1; }
   local rc
   if shared_capacity_call start "$name" "$id"; then return 0; else rc=$?; fi
+  if [ "$rc" -eq 77 ]; then
+    # The provider proved this exact owner never started, removed only that
+    # inert container and released its fenced grant. The next plan recreates
+    # the slot; skipping it for the rest of this locked pass bounds a
+    # persistent Docker failure to one fresh registration per slot and tick.
+    CRF_REPLACED_STARTS="${CRF_REPLACED_STARTS:-} $name"
+    log "released never-started $name after its start failed; a later plan recreates it"
+    return 75
+  fi
   [ "$rc" -eq 76 ] || return "$rc"
   # Only the provider may authorize removal of an uncharged, never-started
   # owner. Its stable pending request survives removal and fresh creation.
@@ -114,6 +123,7 @@ start_owned_container() {
 # allocation for an owner-locked retry; never fall back to an ungated start.
 run_owned_github_container() {
   shared_capacity_require_starts_open || return 1
+  clear_dangling_endpoint "${NAME_PREFIX}-$1" || return 1
   if ! shared_capacity_enabled; then docker run "${ARGS[@]}"; return $?; fi
   local name="${NAME_PREFIX}-$1" id arg
   local create_args=()

@@ -53,7 +53,17 @@ GH_CURL_ARGV="$tmp/github-curl.argv"; GH_CURL_STDIN="$tmp/github-curl.stdin"
 curl() {
   printf '%s\n' "$*" > "$GH_CURL_ARGV"
   cat > "$GH_CURL_STDIN"
-  printf '%s\n' '{"login":"mock-user"}'
+  local body=/dev/stdout code=''
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -o) body="$2"; shift ;;
+      -D) : > "$2"; shift ;;
+      -w) code=200; shift ;;
+    esac
+    shift
+  done
+  printf '%s\n' '{"login":"mock-user"}' > "$body"
+  printf '%s' "$code"
 }
 [ "$(gh_api GET /user)" = '{"login":"mock-user"}' ] || fail "real GitHub API transport did not return curl response"
 grep -qF "Authorization: Bearer $ACCESS_TOKEN" "$GH_CURL_STDIN" || fail "GitHub PAT was not sent through curl config stdin"

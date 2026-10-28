@@ -1,5 +1,40 @@
 # Changelog
 
+## [1.16.1](https://github.com/unraid/ci-runner-farm/compare/v1.16.0...v1.16.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **github:** authenticate cold images before queued runner startup ([#189](https://github.com/unraid/ci-runner-farm/issues/189)) ([e2cf880](https://github.com/unraid/ci-runner-farm/commit/e2cf880dd2e7a0ac80d34a9dc6af8497e2924828))
+* **github:** preserve empty remote image fallback ([#191](https://github.com/unraid/ci-runner-farm/issues/191)) ([e8a727f](https://github.com/unraid/ci-runner-farm/commit/e8a727fca37b82ad506894f6b987762110bcc6fb))
+
+## [1.16.0](https://github.com/unraid/ci-runner-farm/compare/v1.15.1...v1.16.0) (2026-10-24)
+
+
+### Features
+
+* **github:** authenticate the farm as a GitHub App ([#186](https://github.com/unraid/ci-runner-farm/issues/186)) ([001b7df](https://github.com/unraid/ci-runner-farm/commit/001b7df6fe3132e3ab1585dafd1546c966a32c32))
+
+## [1.15.1](https://github.com/unraid/ci-runner-farm/compare/v1.15.0...v1.15.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* **github:** revalidate GitHub reads and pause background polling near the rate limit ([#181](https://github.com/unraid/ci-runner-farm/issues/181)) ([46369c4](https://github.com/unraid/ci-runner-farm/commit/46369c45f810d0b48b83ecd0fe2ab98ae3f020dc))
+
+## [1.15.0](https://github.com/unraid/ci-runner-farm/compare/v1.14.0...v1.15.0) (2026-10-22)
+
+
+### Features
+
+* **runner:** pin runners to CPU sets sized to their CPU limit ([#179](https://github.com/unraid/ci-runner-farm/issues/179)) ([f431701](https://github.com/unraid/ci-runner-farm/commit/f431701877747d289bed316889adf999cc67e1c8))
+
+
+### Bug Fixes
+
+* **capacity:** retry the queued head and granted unstarted builders ([#180](https://github.com/unraid/ci-runner-farm/issues/180)) ([1d6b3f8](https://github.com/unraid/ci-runner-farm/commit/1d6b3f851d88d4a0606c75581d342c23eb0f54b3))
+* **capacity:** route native OS pools through demand admission ([#184](https://github.com/unraid/ci-runner-farm/issues/184)) ([112d718](https://github.com/unraid/ci-runner-farm/commit/112d718a3103a15f8e7ea88a33f362f2c75bf271))
+
 ## [1.14.0](https://github.com/unraid/ci-runner-farm/compare/v1.13.0...v1.14.0) (2026-10-15)
 
 

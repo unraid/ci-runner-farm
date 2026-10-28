@@ -2,7 +2,7 @@
 
 CI Runner Farm exports `github.com/unraid/ci-runner-farm/pkg/sharedcapacity`
 for workloads that share one host CPU and memory budget. The module requires
-Go 1.26.9 or later. Run `go test -race ./...` and `go vet ./...` from the repository
+Go 1.26.10 or later. Run `go test -race ./...` and `go vet ./...` from the repository
 root. The existing shell/plugin checks remain separate.
 
 This foundation transfers the allocator from
@@ -45,7 +45,7 @@ binding, routing publication and phased withdrawal from the same QA source.
 Its only protocol helper change replaces QA's JSON/SHA-256 digest function
 with the same encoding in Farm. Native control remains under `fleet.lock`.
 
-The package includes `bin/ci-runner-capacity`, built with Go 1.26.9 for Linux
+The package includes `bin/ci-runner-capacity`, built with Go 1.26.10 for Linux
 amd64. Packaging strips checkout paths and VCS state. `version` needs no
 provider installation. Lifecycle commands require root, the inherited native
 fleet lock and Farm's private `host-capacity.json` configuration. That file

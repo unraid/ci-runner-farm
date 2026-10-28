@@ -20,11 +20,13 @@ class BuildDemand
     private string $recoveryScope;
     private float $started;
 
-    public function __construct(private string $cachePath, string $groupToken, string $queueToken)
+    // $identity names a rotating credential (a GitHub App installation) so the
+    // cache scope, cooldown and poll receipt survive its hourly token rotation.
+    public function __construct(private string $cachePath, string $groupToken, string $queueToken, string $identity = '')
     {
         $this->started = microtime(true);
-        $this->scope = hash('sha256', $groupToken . "\0" . $queueToken);
-        $this->recoveryScope = hash('sha256', $groupToken);
+        $this->scope = hash('sha256', $identity !== '' ? $identity : $groupToken . "\0" . $queueToken);
+        $this->recoveryScope = hash('sha256', $identity !== '' ? $identity : $groupToken);
         if (file_exists($cachePath) || is_link($cachePath)) {
             $this->cache = self::decode(self::protectedRead($cachePath, self::CACHE_LIMIT, true));
             self::check(isset($this->cache['items'], $this->cache['cooldown']) && is_array($this->cache['items']) && count($this->cache['items']) <= 512 && is_int($this->cache['cooldown']), 'invalid HTTP cache');
@@ -93,7 +95,7 @@ class BuildDemand
     {
         $values = [];
         foreach (explode("\n", self::protectedRead($directory . '/ci-runner-farm.cfg', 262144, false)) as $line) {
-            if (!preg_match('/^\s*(CI_PROVIDER|GH_SCOPE|GH_OWNER|RUNNER_GROUP)\s*=(.*)$/', $line, $match)) continue;
+            if (!preg_match('/^\s*(CI_PROVIDER|GH_SCOPE|GH_OWNER|RUNNER_GROUP|GH_APP_ID|GH_APP_INSTALLATION_ID)\s*=(.*)$/', $line, $match)) continue;
             self::check(!isset($values[$match[1]]), 'duplicate Farm scope');
             $value = trim($match[2]);
             if (strlen($value) >= 2 && (($value[0] === '"' && substr($value, -1) === '"') || ($value[0] === "'" && substr($value, -1) === "'"))) $value = substr($value, 1, -1);
@@ -104,8 +106,19 @@ class BuildDemand
             preg_match('/\A[A-Za-z0-9][A-Za-z0-9-]*\z/', $values['GH_OWNER'] ?? '') === 1 &&
             ($values['RUNNER_GROUP'] ?? '') !== '' && !preg_match('/[\x00-\x1f$`\\\\]/', implode('', $values)), 'invalid native Farm scope');
         $values['queue-token'] = '';
+        $values['identity'] = '';
+        // In GitHub App mode the engine exports the minted installation token,
+        // which carries both the runner-group and the Actions read permissions,
+        // so it replaces the PAT and the separate Queue Reader token.
+        $minted = getenv('CRF_GITHUB_TOKEN_FILE');
+        if (is_string($minted) && $minted !== '') {
+            self::check($minted[0] === '/' && !str_contains($minted, '/../') && !str_contains($minted, '//'), 'invalid minted Farm credential path');
+            self::check(ctype_digit($values['GH_APP_ID'] ?? '') && ctype_digit($values['GH_APP_INSTALLATION_ID'] ?? ''), 'minted Farm credential without an App identity');
+            $values['identity'] = 'github-app:' . $values['GH_APP_ID'] . ':' . $values['GH_APP_INSTALLATION_ID'];
+        }
         foreach ($requireQueue ? ['token', 'queue-token'] : ['token'] as $name) {
-            $value = trim(self::protectedRead($directory . '/' . $name, 65536, true));
+            $path = is_string($minted) && $minted !== '' ? $minted : $directory . '/' . $name;
+            $value = trim(self::protectedRead($path, 65536, true));
             self::check($value !== '' && !preg_match('/\s/', $value), 'invalid native Farm credential');
             $values[$name] = $value;
         }
@@ -370,7 +383,7 @@ if (realpath($_SERVER['SCRIPT_FILENAME'] ?? '') === __FILE__) {
             BuildDemand::check(posix_geteuid() === 0 && (($argv[1] === 'begin-recovery') || function_exists('curl_multi_init')),
                 'general demand requires its native root PHP runtime');
             $scope = BuildDemand::credentials($argv[2], $argv[1] !== 'begin-recovery');
-            $reader = new BuildDemand($argv[3] . '/build-demand-http.json', $scope['token'], $scope['queue-token']);
+            $reader = new BuildDemand($argv[3] . '/build-demand-http.json', $scope['token'], $scope['queue-token'], $scope['identity']);
             try {
                 if ($argv[1] === 'begin-recovery') { $reader->beginRecovery(); $result = ['recoveryReady' => true]; }
                 elseif ($argv[1] === 'begin') { $reader->begin(); $result = ['backgroundReady' => true]; }

@@ -108,6 +108,26 @@ github_start_one() { printf 'fresh-create %s %s\n' "$1" "$2" >> "$logfile"; retu
 if shared_capacity_start ci-runner-build-1 "$docker_id"; then fail 'fresh queued owner reported running'; else [ "$?" -eq 75 ] || fail 'refreshed queue exit lost'; fi
 grep -qF "gate refresh-queued ci-runner-build-1 $docker_id" "$logfile" || fail 'expired credential bypassed inert owner proof'
 grep -qF 'fresh-create 1 ci-runner-build-1' "$logfile" || fail 'expired credential did not mint a fresh container'
+
+# A proved never-started failure was removed and released by the provider.
+# It is healthy waiting; later plans in the same locked pass cannot recreate
+# that slot, so a persistent Docker failure cannot churn registrations.
+(
+  shared_capacity_call() {
+    printf 'gate %s\n' "$*" >> "$logfile"
+    case "$1" in start) return 77 ;; *) return 1 ;; esac
+  }
+  docker() { printf 'docker %s\n' "$*" >> "$logfile"; return 1; }
+  provider_call() { printf 'provider %s\n' "$*" >> "$logfile"; return 75; }
+  : > "$logfile"
+  if shared_capacity_start ci-runner-build-1 "$docker_id"; then fail 'released owner reported running'; else [ "$?" -eq 75 ] || fail 'released failed start was not healthy waiting'; fi
+  [ "$(cat "$logfile")" = "gate start ci-runner-build-1 $docker_id" ] || fail 'released failed start repeated a provider effect'
+  : > "$logfile"
+  if start_one 1; then fail 'released slot reported running'; else [ "$?" -eq 75 ] || fail 'released slot wait status changed'; fi
+  if grep -q '^provider ' "$logfile"; then fail 'released slot was recreated twice in one pass'; fi
+  if start_one 2; then fail 'queued slot reported running'; else [ "$?" -eq 75 ] || fail 'independent slot status changed'; fi
+  grep -qx 'provider start_one 2 ci-runner-build-2' "$logfile" || fail 'released slot suppressed an independent creation'
+)
 shared_capacity_call() { printf 'gate %s\n' "$*" >> "$logfile"; return "$decision"; }
 
 shared_capacity_build_limits() { printf '%s' '4|8|12288|1'; }

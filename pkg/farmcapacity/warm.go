@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"slices"
+
+	"github.com/unraid/ci-runner-farm/pkg/sharedcapacity"
 )
 
 // WarmTargets contains Farm's static profile targets, never queue evidence.
@@ -38,9 +40,13 @@ func (c *Controller) WarmStarts(ctx context.Context, pools []DemandPool, request
 	for index := range diagnostic.Pending {
 		rank[diagnostic.Pending[index].ID] = index + 1
 	}
+	snapshot, err := c.Broker.Status(&c.Policy)
+	if err != nil {
+		return nil, err
+	}
 	starts := map[string][]int{}
 	for _, pool := range pools {
-		selected, planErr := c.warmPoolStarts(ctx, &pool, request.Targets[pool.ID], rank)
+		selected, planErr := c.warmPoolStarts(ctx, &pool, request.Targets[pool.ID], rank, diagnostic.QueueHead, &snapshot)
 		if planErr != nil {
 			return nil, planErr
 		}
@@ -49,9 +55,10 @@ func (c *Controller) WarmStarts(ctx context.Context, pools []DemandPool, request
 	return starts, nil
 }
 
-func (c *Controller) warmPoolStarts(ctx context.Context, pool *DemandPool, target int, rank map[string]int) ([]int, error) {
+func (c *Controller) warmPoolStarts(ctx context.Context, pool *DemandPool, target int, rank map[string]int, head string, snapshot *sharedcapacity.Snapshot) ([]int, error) {
 	occupied := map[int]bool{}
 	inert := []demandSlot{}
+	granted := []int{}
 	running := 0
 	for index := 1; index <= pool.Maximum; index++ {
 		name := demandSlotName(pool.ID, index)
@@ -73,13 +80,20 @@ func (c *Controller) warmPoolStarts(ctx context.Context, pool *DemandPool, targe
 			return nil, errors.New("warm owner identity changed")
 		}
 		occupied[index] = true
-		if item.Running && !item.Paused && !owned.ReleasePending && (owned.Withdrawal == nil || owned.Withdrawal.Phase == "") {
+		switch {
+		case item.Running && !item.Paused && !owned.ReleasePending && (owned.Withdrawal == nil || owned.Withdrawal.Phase == ""):
 			running++
-		} else if owned.Fence == "" && item.NeverStarted && !item.Running && !owned.ReleasePending {
+		case owned.Fence == "" && item.NeverStarted && !item.Running && !owned.ReleasePending:
 			inert = append(inert, demandSlot{index: index, item: item, inert: true})
+		case grantedNeverStarted(name, item, owned, snapshot):
+			granted = append(granted, index)
 		}
 	}
 	floor, _, result := c.demandFloorSlots(pool, inert, occupied)
+	// A charged owner whose start failed or waited for memory headroom holds
+	// its grant until native start runs again. Retry it; it already counts
+	// toward the warm total, so it never adds an allocation.
+	result = append(result, granted...)
 	for _, slot := range inert {
 		if floor[slot.index] {
 			result = append(result, slot.index)
@@ -90,9 +104,15 @@ func (c *Controller) warmPoolStarts(ctx context.Context, pool *DemandPool, targe
 		return warmPendingRank(a, rank) - warmPendingRank(b, rank)
 	})
 	for _, slot := range inert {
-		if !floor[slot.index] && keep > 0 {
+		if floor[slot.index] {
+			continue
+		}
+		// The broker grants only its queue head. Retry an inert head even when
+		// running owners satisfy the warm target, or every later request
+		// waits behind it after its capacity frees.
+		if keep > 0 || "build:"+slot.item.Name == head {
 			result = append(result, slot.index)
-			keep--
+			keep = max(0, keep-1)
 		}
 	}
 	for index := 1; index <= pool.Maximum && keep > 0; index++ {
@@ -102,6 +122,14 @@ func (c *Controller) warmPoolStarts(ctx context.Context, pool *DemandPool, targe
 		}
 	}
 	return result, nil
+}
+
+// grantedNeverStarted is a charged owner that native start has not yet run.
+// Withdrawing, releasing or remotely unproved owners keep their own recovery.
+func grantedNeverStarted(name string, item *Container, owned *receipt, snapshot *sharedcapacity.Snapshot) bool {
+	grant, charged := snapshot.Grants["build:"+name]
+	return charged && owned.Fence != "" && owned.Fence == grant.Fence && item.NeverStarted && !item.Running && !item.Paused &&
+		!owned.ReleasePending && !owned.Retiring && (owned.Withdrawal == nil || owned.Withdrawal.Phase == "")
 }
 
 func warmPendingRank(slot demandSlot, rank map[string]int) int {

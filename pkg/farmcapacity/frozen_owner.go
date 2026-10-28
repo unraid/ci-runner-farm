@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -491,7 +492,18 @@ func (o *FrozenOwner) verifyScopeAccess(ctx context.Context, client *http.Client
 	return nil
 }
 
+// GitHubTokenFileEnv names the minted GitHub App installation token the Farm
+// exports to the commands it spawns. It overrides the configured PAT path so
+// App mode needs no change to the published host capacity config.
+const GitHubTokenFileEnv = "CRF_GITHUB_TOKEN_FILE"
+
 func readPrivateFarmCredential(path string) ([]byte, error) {
+	if override := os.Getenv(GitHubTokenFileEnv); override != "" {
+		if !filepath.IsAbs(override) || filepath.Clean(override) != override {
+			return nil, errors.New("native farm credential override must be a canonical absolute path")
+		}
+		path = override
+	}
 	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, err

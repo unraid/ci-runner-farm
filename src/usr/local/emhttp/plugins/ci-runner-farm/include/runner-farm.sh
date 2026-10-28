@@ -63,6 +63,8 @@ DOCKER_CACHE_MIN_FREE_PERCENT="15"     # reclaim completed DinD stores below thi
 DOCKER_CACHE_BUILDERS=""              # optional comma-separated reusable Buildx builder names eligible for pressure eviction
 DOCKER_JOB_PRUNE="false"              # persistent DinD: prune job Docker state and, under pressure, unused images and other checkouts after each job
 RUNNER_CPUS=""                        # per-runner CPU cap; empty = uncapped (CFS time-shares fairly)
+CPU_PINNING="false"                   # true => GitHub runners with a whole-number CPU cap also get a cpuset of that
+                                      # size, so tools see the right CPU count; the --cpus cap and accounting stay.
 RUNNER_MEMORY="16g"                   # per-runner memory cap (kept: memory isn't time-shared like CPU)
 CACHE_ROOT="/mnt/cache/github-runner" # must be a dedicated SUBDIR under a pool/disk, never a bare mount root (see crf_safe_cache_root)
 WORK_TMPFS_SIZE="8g"                  # empty => bind workdir to pool instead of RAM
@@ -75,6 +77,8 @@ IMAGE=""                              # remote image ref, used when IMAGE_SOURCE
 EPHEMERAL="false"                     # true => runner deregisters after each job
 RUN_AS_ROOT="false"                   # false => jobs run as non-root 'runner' (sudo+docker groups), like
                                       # GitHub-hosted runners. true => jobs run as root (legacy).
+GH_APP_ID=""                          # GitHub App id; with GH_APP_INSTALLATION_ID and $CFGDIR/github-app-key.pem
+GH_APP_INSTALLATION_ID=""             # the Farm uses one-hour installation tokens instead of the PAT (github-app.sh)
 ACCESS_TOKEN=""                       # GitHub PAT (repo scope; +admin:org for org; +read:packages if reused for private GHCR). Stays host-side:
                                       # runners get a short-lived registration token, never the PAT itself.
 GITLAB_RUNNER_TOKEN=""                # reusable glrt- auth token; written into mode-0600 per-slot config.toml
@@ -149,16 +153,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/runner-recommendations.sh"
 # shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-history.sh
 . "$SCRIPT_DIR/runner-history.sh"
+# shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/cpu-pinning.sh
+. "$SCRIPT_DIR/cpu-pinning.sh"
+# shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/github-app.sh
+. "$SCRIPT_DIR/github-app.sh"
 
 # Durable aggregate recommendation history lives under the plugin config
 # directory; active snapshots and locks remain on tmpfs in RUNDIR.
 HISTORY_FILE="${CRF_HISTORY_FILE:-${CFGDIR}/recommendations.history}"
 
 # Allowlist of keys the settings page may set. load_cfg only ever assigns these.
-CFG_KEYS="CI_PROVIDER GH_SCOPE GH_OWNER GH_REPOS RUNNER_GROUP GITLAB_URL GITLAB_RUNNER_IMAGE GITLAB_PROJECTS GITLAB_SHUTDOWN_TIMEOUT \
+CFG_KEYS="CI_PROVIDER GH_SCOPE GH_OWNER GH_REPOS RUNNER_GROUP GH_APP_ID GH_APP_INSTALLATION_ID GITLAB_URL GITLAB_RUNNER_IMAGE GITLAB_PROJECTS GITLAB_SHUTDOWN_TIMEOUT \
 GITLAB_ALLOWED_IMAGES GITLAB_ALLOWED_SERVICES GITLAB_PULL_POLICY GITLAB_SHM_SIZE \
 RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS QUEUED_POOLS DOCKER_CACHE_MIN_FREE_PERCENT DOCKER_CACHE_BUILDERS DOCKER_JOB_PRUNE \
-RUNNER_CPUS RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE USER_SHARE_MOUNTS SHARED_CACHE_ROOT IMAGE_SOURCE IMAGE EPHEMERAL \
+RUNNER_CPUS CPU_PINNING RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE USER_SHARE_MOUNTS SHARED_CACHE_ROOT IMAGE_SOURCE IMAGE EPHEMERAL \
 RUN_AS_ROOT REGISTRY_SERVER REGISTRY_USERNAME CACHE_MOUNTS SHARE_DOCKER_SOCK DIND \
 SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK ARTIFACT_ENDPOINT MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
 AUTOSCALE_MAX AUTOSCALE_MIN_IDLE AUTOSCALE_STEP AUTOSCALE_INTERVAL \
@@ -238,7 +246,7 @@ reload_secret_files() {
   # A successful GitLab verification is reusable only within one immutable
   # locked snapshot. Any explicit reload invalidates that process-local cache.
   GITLAB_TOKEN_PROBE_VALIDATED_TARGET=""
-  ACCESS_TOKEN="$(read_secret_file "$TOKEN_FILE")"
+  github_app_select
   GITLAB_RUNNER_TOKEN="$(read_secret_file "$GITLAB_RUNNER_TOKEN_FILE")"
   GITLAB_API_TOKEN="$(read_secret_file "$GITLAB_API_TOKEN_FILE")"
   REGISTRY_TOKEN="$(read_secret_file "$REGISTRY_TOKEN_FILE")"
@@ -824,7 +832,8 @@ autoscale_tick() {
     pool_activate build || return 1
     # Bound native registration reads across restarts independently of queue
     # quota. A queue-reader cooldown must not strand completed owner grants.
-    if [ "$QUEUED_POOLS" = true ] && printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'; then
+    if [ "$QUEUED_POOLS" = true ] && (shared_capacity_native_required ||
+      printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'); then
       php "$SCRIPT_DIR/build-demand.php" begin-recovery "$CFGDIR" "$RUNDIR" "$RUNNER_POOLS" >/dev/null || return 75
     fi
     restore_warm_capacity || err "shared capacity: warm restoration incomplete; settling existing owners"
@@ -841,7 +850,8 @@ autoscale_tick() {
       restore_warm_capacity || return 1
     fi
     # Preserve the broad queue cooldown without coupling it to owner recovery.
-    if [ "$QUEUED_POOLS" = true ] && printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'; then
+    if [ "$QUEUED_POOLS" = true ] && (shared_capacity_native_required ||
+      printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'); then
       php "$SCRIPT_DIR/build-demand.php" begin "$CFGDIR" "$RUNDIR" "$RUNNER_POOLS" >/dev/null || return 75
     fi
     shared_capacity_poison_scan || err "shared capacity: poison scan unavailable; preserving existing owner intents"
@@ -1541,6 +1551,32 @@ ensure_network() {
     || { err "could not create network $RUNNER_NETWORK"; return 1; }
 }
 
+# A failed bring-up can leave a runner-network endpoint without its container.
+# Docker then refuses every later start under that name, including a recreated
+# slot. Docker keys such an endpoint "ep-<id>" instead of a container ID. Remove
+# it by name only while no container holds that name: with a container present,
+# a forced disconnect would detach that container instead. Callers hold fleet.lock.
+clear_dangling_endpoint() {
+  local name="$1" names endpoints key endpoint dangling=false
+  [ "$NETWORK_ISOLATION" != off ] || return 0
+  names="$(docker ps -a --format '{{.Names}}')" \
+    || { err "could not enumerate containers before creating $name"; return 1; }
+  printf '%s\n' "$names" | tr ',' '\n' | grep -Fxq -- "$name" && return 0
+  endpoints="$(docker network inspect -f '{{range $key, $endpoint := .Containers}}{{$key}}|{{$endpoint.Name}}{{println}}{{end}}' "$RUNNER_NETWORK")" \
+    || { err "could not inspect $RUNNER_NETWORK endpoints before creating $name"; return 1; }
+  while IFS='|' read -r key endpoint; do
+    [ "$endpoint" = "$name" ] || continue
+    case "$key" in
+      ep-*) dangling=true ;;
+      *) return 0 ;;  # A container still owns this endpoint.
+    esac
+  done <<< "$endpoints"
+  [ "$dangling" = true ] || return 0
+  log "removing dangling $RUNNER_NETWORK endpoint left by a previous $name"
+  docker network disconnect -f "$RUNNER_NETWORK" "$name" >/dev/null \
+    || { err "could not remove the dangling $RUNNER_NETWORK endpoint for $name"; return 1; }
+}
+
 # Does container $1 sit on the network the CURRENT isolation mode expects? Used to
 # detect a mid-flight NETWORK_ISOLATION change (off <-> isolate/strict) so the mirror
 # and runners left on the old network get recreated on Start. off => default 'bridge';
@@ -2116,6 +2152,8 @@ start_one() {
     log "owned runner $name already exists; skipping"
     return 0
   fi
+  # A slot released after a proved failed start waits for the next pass.
+  case " ${CRF_REPLACED_STARTS:-} " in *" $name "*) return 75 ;; esac
   provider_call start_one "$idx" "$name"
 }
 
@@ -2170,7 +2208,8 @@ pool_start_target() {
 restore_warm_capacity() {
   local targets plan
   [ "$QUEUED_POOLS" = true ] || return 0
-  printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)' || return 0
+  shared_capacity_native_required ||
+    printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)' || return 0
   targets="$(php "$SCRIPT_DIR/build-demand.php" warm-targets "$RUNNER_POOLS")" || return 1
   plan="$(shared_capacity_call demand-warm "$RUNNER_POOLS" "$targets")" \
     || { err "native warm recovery unavailable; preserving owners"; return 1; }
@@ -2180,7 +2219,8 @@ restore_warm_capacity() {
 # Fresh queue evidence owns burst starts and idle retirement after warm recovery.
 start_queued_capacity() {
   local plan scan observation targets
-  if printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'; then
+  if shared_capacity_native_required ||
+    printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'; then
     restore_warm_capacity || return 1
     # Read GitHub before acquiring a short native configuration lease.
     # A missing native capability during rollout preserves existing owners.
@@ -3196,7 +3236,7 @@ redact_log_stream() {
   done | sed -E \
     -e 's/([A-Za-z0-9_.@-]{1,64}-)?glrt(r)?-[A-Za-z0-9_.-]{10,507}/[REDACTED_GITLAB_TOKEN]/g' \
     -e 's/github_pat_[A-Za-z0-9_]{10,}/[REDACTED_GITHUB_TOKEN]/g' \
-    -e 's/gh[pousr]_[A-Za-z0-9_]{10,}/[REDACTED_GITHUB_TOKEN]/g' \
+    -e 's/gh[pousr]_[A-Za-z0-9_.-]{10,}/[REDACTED_GITHUB_TOKEN]/g' \
     -e 's/glpat-[A-Za-z0-9_-]{8,}/[REDACTED_GITLAB_TOKEN]/g'
 }
 # JSON-encode stdin as a string literal (with surrounding quotes), preserving newlines
@@ -4398,6 +4438,15 @@ cmd_boot_autostart() {
     || { err "boot-autostart: could not publish worker PID"; return 1; }
   trap 'rm -f "$BOOT_AUTOSTART_PID" 2>/dev/null || true' EXIT
   trap 'rm -f "$BOOT_AUTOSTART_PID" 2>/dev/null || true; exit 0' HUP INT TERM
+  # A PAT is ready as soon as its file exists, but an App token needs GitHub to
+  # be reachable, which can lag boot. Retry the mint for the same window the
+  # Docker wait below allows instead of skipping the fleet for the whole boot.
+  if [ "$GITHUB_APP_MODE" = true ]; then
+    local deadline=$(( $(date +%s) + 600 ))
+    while github_app_refresh; ! provider_token_ready && [ "$(date +%s)" -lt "$deadline" ]; do
+      sleep 8
+    done
+  fi
   provider_token_ready || { log "boot-autostart: no valid $(provider_token_name) configured yet — skipping"; return 0; }
   local i
   for i in $(seq 1 150); do

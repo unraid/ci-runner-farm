@@ -3,7 +3,7 @@
 # Sourced by runner-farm.sh after configuration and common helpers are loaded.
 
 github_token_ready() { [ -n "$ACCESS_TOKEN" ]; }
-github_token_name()  { echo "GitHub token"; }
+github_token_name()  { if [ "$GITHUB_APP_MODE" = true ]; then echo "GitHub App installation token"; else echo "GitHub token"; fi; }
 github_builtin_image() { echo "$BUILTIN_IMAGE"; }
 github_validate_settings() {
   github_validate_docker_cache_policy && crf_validate_user_share_mounts && crf_shared_cache_mount
@@ -37,6 +37,12 @@ github_kvm_gid() {
   stat -c '%g' /dev/kvm
 }
 
+# CPU pinning applies to a slot only when it is enabled and the slot has a
+# whole-number CPU limit to size its cpuset from.
+github_cpu_pinning_applies() {
+  [ "${CPU_PINNING:-false}" = true ] && [[ "$RUNNER_CPUS" =~ ^[1-9][0-9]{0,3}$ ]]
+}
+
 github_confgen() {
   # Include the DinD runtime contract in the fingerprint. Changing Docker's
   # cgroup namespace for existing slots must drain and recreate them; otherwise
@@ -63,6 +69,10 @@ github_confgen() {
     esac
   done
   [ -z "$SHARED_CACHE_ROOT" ] || runtime_salt="${runtime_salt}-shared-cache-v1-${SHARED_CACHE_ROOT}"
+  # Enabling CPU pinning recreates slots that can be pinned through the normal
+  # drain. The chosen cpuset is placement, not configuration, so it stays out;
+  # farms without pinning keep their fingerprint.
+  github_cpu_pinning_applies && runtime_salt="${runtime_salt}-cpu-pinning-v1"
   case ",$RUNNER_LABELS," in
     *,kvm,*)
       kvm_gid="$(github_kvm_gid 2>/dev/null || true)"
@@ -309,14 +319,118 @@ github_repo_for_index() {
   echo "${arr[$(( (idx-1) % n ))]}"
 }
 
+# GitHub REST budget. The farm PAT's hourly limit is shared by every host that
+# holds it and by anything else the account runs, so two rules keep background
+# polling from starving runner registration:
+# - GETs are conditional. Each response is kept with its ETag under
+#   $RUNDIR/gh-etag, and GitHub does not count a 304 against the limit, so an
+#   unchanged run list or job list costs nothing to re-read.
+# - Every response records the core x-ratelimit headers in $RUNDIR/gh-ratelimit.
+#   Background readers (poison scan, Fleet queue and run counts) set
+#   GH_API_BACKGROUND=1, which makes every one of their requests skip GitHub
+#   (exit 3) while fewer than GH_API_RESERVE requests remain before the reset.
+GH_API_RESERVE="${CRF_GH_API_RESERVE:-500}"
+GH_ETAG_MAX_BYTES=262144
+
+gh_header_value() {
+  awk -v name="$2" 'tolower($1) == name ":" { sub(/^[^:]*:[[:space:]]*/, ""); value = $0 } END { print value }' "$1" 2>/dev/null \
+    | tr -d '\r'
+}
+
+gh_rate_record() {
+  local headers="$1" remaining reset resource tmpf
+  resource="$(gh_header_value "$headers" x-ratelimit-resource)"
+  [ -z "$resource" ] || [ "$resource" = core ] || return 0
+  remaining="$(gh_header_value "$headers" x-ratelimit-remaining)"
+  reset="$(gh_header_value "$headers" x-ratelimit-reset)"
+  case "$remaining" in ''|*[!0-9]*) return 0 ;; esac
+  case "$reset" in ''|*[!0-9]*) return 0 ;; esac
+  # Parallel requests finish out of order. Keep the lowest count seen for a
+  # reset window, and never let a response from an older window replace a
+  # newer one, so a late reply cannot restore a higher remaining count.
+  (
+    command -v flock >/dev/null 2>&1 && flock -w 2 9
+    local old_remaining old_reset
+    if [ -f "$RUNDIR/gh-ratelimit" ] && read -r old_remaining old_reset < "$RUNDIR/gh-ratelimit"; then
+      case "$old_remaining$old_reset" in *[!0-9]*) ;; *)
+        [ "$old_reset" -gt "$reset" ] && exit 0
+        [ "$old_reset" -eq "$reset" ] && [ "$old_remaining" -le "$remaining" ] && exit 0 ;;
+      esac
+    fi
+    tmpf="$(mktemp "$RUNDIR/gh-ratelimit.XXXXXX" 2>/dev/null)" || exit 0
+    if ! { printf '%s %s\n' "$remaining" "$reset" > "$tmpf" && mv -f "$tmpf" "$RUNDIR/gh-ratelimit"; }; then
+      rm -f "$tmpf"
+    fi
+  ) 9>"$RUNDIR/gh-ratelimit.lock"
+}
+
+gh_rate_allows_background() {
+  local remaining reset
+  [ -f "$RUNDIR/gh-ratelimit" ] || return 0
+  read -r remaining reset < "$RUNDIR/gh-ratelimit" 2>/dev/null || return 0
+  case "$remaining" in ''|*[!0-9]*) return 0 ;; esac
+  case "$reset" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$(date +%s)" -ge "$reset" ] && return 0
+  [ "$remaining" -ge "$GH_API_RESERVE" ]
+}
+
+# Cache entry: line 1 the request path (guards against key collisions), line 2
+# the ETag, then the body.
+gh_etag_file() {
+  printf '%s/gh-etag/%s\n' "$RUNDIR" "$(printf '%s' "$1" | cksum | awk '{ print $1 "-" $2 }')"
+}
+
+gh_etag_store() {
+  local cache="$1" path="$2" headers="$3" body="$4" etag tmpf
+  etag="$(gh_header_value "$headers" etag)"
+  if [ -z "$etag" ] || [ "$(wc -c < "$body")" -gt "$GH_ETAG_MAX_BYTES" ]; then
+    rm -f "$cache"; return 0
+  fi
+  mkdir -p "${cache%/*}" 2>/dev/null || return 0
+  tmpf="$(mktemp "$cache.XXXXXX" 2>/dev/null)" || return 0
+  if ! { { printf '%s\n%s\n' "$path" "$etag"; cat "$body"; } > "$tmpf" && mv -f "$tmpf" "$cache"; }; then
+    rm -f "$tmpf"
+  fi
+}
+
+gh_etag_prune() {
+  find "$RUNDIR/gh-etag" -type f -mmin +1440 -delete 2>/dev/null || true
+}
+
 # Long-lived PATs remain host-side; curl reads credentials from stdin so they do
 # not appear in /proc/<pid>/cmdline.
 gh_api() {
+  github_app_refresh
   [ -n "$ACCESS_TOKEN" ] || return 1
-  printf 'header = "Authorization: Bearer %s"\n' "$ACCESS_TOKEN" \
-    | curl -fsSL -m 10 -X "$1" --config - \
-      -H "Accept: application/vnd.github+json" \
-      "https://api.github.com$2" 2>/dev/null
+  if [ "${GH_API_BACKGROUND:-0}" = 1 ] && ! gh_rate_allows_background; then return 3; fi
+  local method="$1" path="$2" work cache="" etag="" code rc=0
+  local conditional=()
+  work="$(mktemp -d "${TMPDIR:-/tmp}/crf-gh.XXXXXX" 2>/dev/null)" || return 1
+  if [ "$method" = GET ]; then
+    cache="$(gh_etag_file "$path")"
+    # Snapshot the entry so a concurrent refresh cannot pair this ETag with
+    # another body.
+    if cp "$cache" "$work/cached" 2>/dev/null && [ "$(head -1 "$work/cached")" = "$path" ]; then
+      etag="$(sed -n 2p "$work/cached")"
+      [ -z "$etag" ] || conditional=(-H "If-None-Match: $etag")
+    fi
+  fi
+  code="$(printf 'header = "Authorization: Bearer %s"\n' "$ACCESS_TOKEN" \
+    | curl -sSL -m "${GH_API_TIMEOUT:-10}" -X "$method" --config - \
+      -H "Accept: application/vnd.github+json" "${conditional[@]}" \
+      -D "$work/headers" -o "$work/body" -w '%{http_code}' \
+      "https://api.github.com$path" 2>/dev/null)" || code=000
+  gh_rate_record "$work/headers"
+  case "$code" in
+    304)
+      if [ -n "$etag" ]; then tail -n +3 "$work/cached"; touch "$cache" 2>/dev/null || true; else rc=1; fi ;;
+    2??)
+      cat "$work/body" 2>/dev/null
+      [ -z "$cache" ] || [ "$code" != 200 ] || gh_etag_store "$cache" "$path" "$work/headers" "$work/body" ;;
+    *) rc=1 ;;
+  esac
+  rm -rf "$work"
+  return "$rc"
 }
 
 github_registration_token() {
@@ -373,19 +487,24 @@ github_deregister_runner_api() {
   fi
 }
 
+# With GH_API_BACKGROUND=1, stop launching batches once the reserve is reached
+# and return 3 so the caller keeps its previous snapshot instead of publishing
+# a partial count.
 github_fetch_all() {
   local suffix="$1" outdir="$2" maxpar="${3:-8}" timeout="${4:-10}"
-  local n=0 r
+  local n=0 r blocked=0
   for r in $GH_REPOS; do
     [ -n "$r" ] || continue
+    if [ "${GH_API_BACKGROUND:-0}" = 1 ] && [ $((n % maxpar)) -eq 0 ] && ! gh_rate_allows_background; then
+      blocked=1; break
+    fi
     n=$((n+1))
-    printf 'header = "Authorization: Bearer %s"\n' "$ACCESS_TOKEN" \
-      | curl -s --max-time "$timeout" --config - \
-        -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/repos/${r}${suffix}" > "$outdir/$n" 2>/dev/null &
+    GH_API_TIMEOUT="$timeout" gh_api GET "/repos/${r}${suffix}" > "$outdir/$n" 2>/dev/null &
     [ $((n % maxpar)) -eq 0 ] && wait
   done
   wait
+  [ "${GH_API_BACKGROUND:-0}" = 1 ] && ! gh_rate_allows_background && blocked=1
+  [ "$blocked" = 0 ] || return 3
 }
 
 github_public_repo_problem() {
@@ -422,9 +541,11 @@ github_public_repo_problem() {
 # step output exists only in the uploaded GitHub job log. So detection reads
 # what the jobs themselves saw — recent failed workflow runs, their jobs that
 # ran on THIS host's slots, and each such job's log — looking for the lease
-# signatures. Rate-bounded and cached so an idle fleet costs one runs listing
-# per repo per POISON_SCAN_INTERVAL, and log downloads happen at most once per
-# failed job ever (the seen cache).
+# signatures. Rate-bounded and cached: an idle fleet revalidates one runs
+# listing per repo per POISON_SCAN_INTERVAL (a free 304 while nothing new has
+# failed), job lists revalidate the same way, log downloads happen at most once
+# per failed job ever (the seen cache), and the whole scan pauses while the
+# credential is below GH_API_RESERVE.
 GITHUB_POISON_SIGNATURE='failed to solve: lease "[^"]*": not found|failed to stat parent: stat /var/lib/buildkit/runc-overlayfs/snapshots/snapshots/[0-9]+/fs: no such file or directory'
 
 # IDs of recent failed workflow runs for one repo, newest first. The pretty
@@ -470,19 +591,26 @@ github_failed_local_jobs() {
 # logs that matter are small. grep without -q reads to EOF, so pipefail cannot
 # turn an early-match SIGPIPE into a false negative.
 github_job_log_poisoned() {
-  local repo="$1" job_id="$2" status
+  local repo="$1" job_id="$2" status headers
+  github_app_refresh
   [ -n "$ACCESS_TOKEN" ] || return 2
+  # A job-log request spends the core limit too: honour the reserve (an
+  # uncertain result, so the job is retried later) and record the headers.
+  if [ "${GH_API_BACKGROUND:-0}" = 1 ] && ! gh_rate_allows_background; then return 2; fi
+  headers="$(mktemp "${TMPDIR:-/tmp}/crf-gh-log.XXXXXX" 2>/dev/null)" || return 2
   # Capture every pipe status, including transport failure. Only a complete
   # download can become a durable seen job; uncertain downloads retry later.
   local outcomes=()
   {
     printf 'header = "Authorization: Bearer %s"\n' "$ACCESS_TOKEN" \
       | curl -fsSL -m 30 --max-filesize 8000000 --config - \
-        -H "Accept: application/vnd.github+json" \
+        -H "Accept: application/vnd.github+json" -D "$headers" \
         "https://api.github.com/repos/${repo}/actions/jobs/${job_id}/logs" 2>/dev/null \
       | grep -E "$GITHUB_POISON_SIGNATURE" >/dev/null 2>&1
     outcomes=("${PIPESTATUS[@]}")
   } || true
+  gh_rate_record "$headers"
+  rm -f "$headers"
   [ "${outcomes[0]}" -eq 0 ] && [ "${outcomes[1]}" -eq 0 ] || return 2
   status="${outcomes[2]}"
   [ "$status" -le 1 ] || return 2
@@ -493,15 +621,22 @@ github_build_poison_scan() {
   [ "$DIND" = "true" ] || return 0     # no nested daemon, no buildkit store to poison
   [ -n "$ACCESS_TOKEN" ] || return 0
   local stampf="$RUNDIR/poison-scan.stamp" seenf="$RUNDIR/poison-scan.seen"
+  # Dynamic scope: every gh_api and job-log request below checks the reserve.
+  local GH_API_BACKGROUND=1
   local now last=0 cutoff repo run_id line jid slot snapshot id provider role index gen log_status
   now="$(date +%s)"
   [ -f "$stampf" ] && read -r last < "$stampf"
   case "$last" in ''|*[!0-9]*) last=0 ;; esac
   [ $((now - last)) -lt "$POISON_SCAN_INTERVAL" ] && return 0
+  gh_rate_allows_background || return 0
   echo "$now" > "$stampf"
+  gh_etag_prune
   # GNU date on Unraid; an environment without epoch -d support just drops the
-  # created filter and lets the seen cache bound the rework instead.
-  cutoff="$(date -u -d "@$((now - POISON_SCAN_LOOKBACK))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+  # created filter and lets the seen cache bound the rework instead. The cutoff
+  # is rounded down to the hour so each repo's run-list URL stays the same for
+  # an hour and revalidates with a free 304. The lookback is therefore 30-90
+  # minutes; the seen cache keeps the longer window from repeating work.
+  cutoff="$(date -u -d "@$(( (now - POISON_SCAN_LOOKBACK) / 3600 * 3600 ))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
   [ -f "$seenf" ] || : > "$seenf"
   for repo in $GH_REPOS; do
     [ -n "$repo" ] || continue
@@ -627,6 +762,14 @@ github_build_args() {
       --label net.unraid.ci-runner-farm.shared-cache=ci-shared-cache-v1 )
   fi
   [ -n "$RUNNER_CPUS" ]   && ARGS+=( --cpus="$RUNNER_CPUS" )
+  if [ "${CPU_PINNING:-false}" = true ]; then
+    # Keep --cpus: capacity accounting reads each runner's CPU cost from it.
+    # Placement failure is never fatal; the runner then starts unpinned.
+    local cpuset
+    if cpuset="$(crf_cpu_pinning_cpuset "$RUNNER_CPUS" "$name")" && [ -n "$cpuset" ]; then
+      ARGS+=( --cpuset-cpus="$cpuset" --label "net.unraid.ci-runner-farm.cpuset=${cpuset}" )
+    fi
+  fi
   [ -n "$RUNNER_MEMORY" ] && ARGS+=( --memory="$RUNNER_MEMORY" )
   [ "$NETWORK_ISOLATION" != "off" ] && ARGS+=( --network "$RUNNER_NETWORK" )
   if [ "$DIND" = "true" ]; then
@@ -718,7 +861,15 @@ github_build_args() {
 }
 
 github_start_one() {
-  local idx="$1" name="$2" rc
+  local idx="$1" name="$2" rc image
+  image="$(effective_image)" || return 1
+  # Queued native starts can bypass the full Start preflight. Prepare cold
+  # private images with host authentication before minting runner credentials.
+  if [ "$IMAGE_SOURCE" = remote ] && [ -n "$IMAGE" ] \
+     && ! docker image inspect "$image" >/dev/null 2>&1; then
+    github_prepare_remote_image "$image" >/dev/null \
+      || { err "runner $name not started (remote image preparation failed)"; return 1; }
+  fi
   github_build_args "$idx" "$name" || { err "runner $name not started (registration-token error)"; return 1; }
   log "starting $name (pool=${CRF_POOL_ID:-default} cpus=$RUNNER_CPUS mem=$RUNNER_MEMORY scope=$GH_SCOPE image=$(effective_image))"
   run_owned_github_container "$idx" >/dev/null
@@ -743,12 +894,15 @@ github_remove_runner() {
 }
 
 github_queued_refresh() {
-  [ -z "$ACCESS_TOKEN" ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
+  [ -z "$ACCESS_TOKEN" ] && [ "$GITHUB_APP_MODE" != true ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
   [ -n "$ACCESS_TOKEN" ] || { echo "github $(date +%s) -1" > "$RUNDIR/queued.cache"; return 0; }
+  # Keep the last count (its age is visible) rather than spend the reserve.
+  gh_rate_allows_background || return 0
   local total=0 got=0 r n body tmpd i=0
   tmpd="$(mktemp -d 2>/dev/null)"
   [ -n "$tmpd" ] || { echo "github $(date +%s) -1" > "$RUNDIR/queued.cache"; return 0; }
-  github_fetch_all "/actions/runs?status=queued&per_page=1" "$tmpd"
+  GH_API_BACKGROUND=1 github_fetch_all "/actions/runs?status=queued&per_page=1" "$tmpd" \
+    || { rm -rf "$tmpd"; return 0; }
   for r in $GH_REPOS; do
     [ -n "$r" ] || continue
     i=$((i+1)); body="$(cat "$tmpd/$i" 2>/dev/null)"
@@ -762,12 +916,14 @@ github_queued_refresh() {
 }
 
 github_stats_refresh() {
-  [ -z "$ACCESS_TOKEN" ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
+  [ -z "$ACCESS_TOKEN" ] && [ "$GITHUB_APP_MODE" != true ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
   [ -n "$ACCESS_TOKEN" ] || { echo "github $(date +%s) 0 0 0 0 -1" > "$RUNDIR/stats.cache"; return 0; }
+  gh_rate_allows_background || return 0
   local ok=0 fail=0 cancel=0 other=0 total got=0 r body c tmpd i=0
   tmpd="$(mktemp -d 2>/dev/null)"
   [ -n "$tmpd" ] || { echo "github $(date +%s) 0 0 0 0 -1" > "$RUNDIR/stats.cache"; return 0; }
-  github_fetch_all "/actions/runs?per_page=50" "$tmpd"
+  GH_API_BACKGROUND=1 github_fetch_all "/actions/runs?per_page=50" "$tmpd" \
+    || { rm -rf "$tmpd"; return 0; }
   for r in $GH_REPOS; do
     [ -n "$r" ] || continue
     i=$((i+1)); body="$(cat "$tmpd/$i" 2>/dev/null)"

@@ -17,6 +17,8 @@
 #   CHANNEL           stable (default) or nightly. Nightly emits a separate
 #                     preview artifact and release channel from the same source
 #                     tree while preserving the runtime/config contract.
+#   PACKAGE_TAG       Nightly only: the build's immutable prerelease tag that
+#                     hosts the package. Defaults to the moving nightly tag.
 #
 # The Unraid plugin-manager <version> ("external" version) is
 #   YYYY.MM.DD.HHMM.BUILD-INTERNAL  e.g. 2026.06.24.1530.42-0.1.0
@@ -63,7 +65,7 @@ build_native_capacity() {
   local temporary
   command -v go >/dev/null 2>&1 || { echo "Go is required to build native capacity" >&2; return 1; }
   temporary="$(mktemp -d)" || return 1
-  if ! GOTOOLCHAIN=go1.26.9 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+  if ! GOTOOLCHAIN=go1.26.10 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' \
     -o "$temporary/ci-runner-capacity" ./cmd/ci-runner-capacity; then
     rm -rf -- "$temporary"
@@ -372,9 +374,14 @@ SUPPORT_URL="https://github.com/${REPO}/issues"
 
 if [ "$CHANNEL" = nightly ]; then
   RELEASE_TAG="${RELEASE_TAG:-nightly}"
+  # Update checks follow the moving channel. The package comes from the
+  # build's own immutable prerelease when PACKAGE_TAG names one, so a
+  # descriptor never fetches bytes from a later build.
+  PACKAGE_TAG="${PACKAGE_TAG:-$RELEASE_TAG}"
+  [[ "$PACKAGE_TAG" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]] || { echo "PACKAGE_TAG is not a valid tag: $PACKAGE_TAG" >&2; exit 1; }
   PLUGIN_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${OUT}"
   PACKAGE_NAME="$TGZ"
-  PACKAGE_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${PACKAGE_NAME}"
+  PACKAGE_URL="https://github.com/${REPO}/releases/download/${PACKAGE_TAG}/${PACKAGE_NAME}"
 else
   RELEASE_TAG="v${INTERNAL_VERSION}"
   PLUGIN_URL="https://github.com/${REPO}/releases/latest/download/${OUT}"
@@ -385,8 +392,8 @@ else
   PACKAGE_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${PACKAGE_NAME}"
 fi
 
-# Stable packages are version-pinned; the nightly channel uses one moving
-# package name. In both cases the .tgz is rebuilt reproducibly at publish and
+# Stable packages are version-pinned; the nightly channel uses one package
+# name under each build's prerelease tag. In both cases the .tgz is rebuilt reproducibly at publish and
 # only the .plg descriptor is committed.
 
 # Portable MD5 (md5sum on Linux/CI, md5 on macOS/BSD dev boxes).

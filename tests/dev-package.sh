@@ -180,8 +180,8 @@ assert os.stat(sys.argv[1]).st_mode & 0o111
 PY
 capacity_go="$(go version "$extract_dir/bin/ci-runner-capacity")" \
   || fail "cannot read capacity helper build info"
-[ "${capacity_go##*: }" = "go1.26.9" ] \
-  || fail "capacity helper was not built with go1.26.9: $capacity_go"
+[ "${capacity_go##*: }" = "go1.26.10" ] \
+  || fail "capacity helper was not built with go1.26.10: $capacity_go"
 
 # A checkout made with umask 0002 can contain group-writable files. The Linux
 # check environment uses umask 0022, so the renderer must preserve source modes
