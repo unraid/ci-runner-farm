@@ -17,7 +17,7 @@ import (
 
 // This fixture is an actual local process, not Docker, QEMU, or host cgroup
 // qualification. Its private process group cannot contain a peer workload.
-func TestInterchangeableProcessFixture(t *testing.T) {
+func TestInterchangeableProcessFixture(_ *testing.T) {
 	if os.Getenv("FARM_INTERCHANGEABLE_PROCESS_FIXTURE") != "1" {
 		return
 	}
