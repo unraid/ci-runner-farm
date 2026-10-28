@@ -1549,6 +1549,32 @@ ensure_network() {
     || { err "could not create network $RUNNER_NETWORK"; return 1; }
 }
 
+# A failed bring-up can leave a runner-network endpoint without its container.
+# Docker then refuses every later start under that name, including a recreated
+# slot. Docker keys such an endpoint "ep-<id>" instead of a container ID. Remove
+# it by name only while no container holds that name: with a container present,
+# a forced disconnect would detach that container instead. Callers hold fleet.lock.
+clear_dangling_endpoint() {
+  local name="$1" names endpoints key endpoint dangling=false
+  [ "$NETWORK_ISOLATION" != off ] || return 0
+  names="$(docker ps -a --format '{{.Names}}')" \
+    || { err "could not enumerate containers before creating $name"; return 1; }
+  printf '%s\n' "$names" | tr ',' '\n' | grep -Fxq -- "$name" && return 0
+  endpoints="$(docker network inspect -f '{{range $key, $endpoint := .Containers}}{{$key}}|{{$endpoint.Name}}{{println}}{{end}}' "$RUNNER_NETWORK")" \
+    || { err "could not inspect $RUNNER_NETWORK endpoints before creating $name"; return 1; }
+  while IFS='|' read -r key endpoint; do
+    [ "$endpoint" = "$name" ] || continue
+    case "$key" in
+      ep-*) dangling=true ;;
+      *) return 0 ;;  # A container still owns this endpoint.
+    esac
+  done <<< "$endpoints"
+  [ "$dangling" = true ] || return 0
+  log "removing dangling $RUNNER_NETWORK endpoint left by a previous $name"
+  docker network disconnect -f "$RUNNER_NETWORK" "$name" >/dev/null \
+    || { err "could not remove the dangling $RUNNER_NETWORK endpoint for $name"; return 1; }
+}
+
 # Does container $1 sit on the network the CURRENT isolation mode expects? Used to
 # detect a mid-flight NETWORK_ISOLATION change (off <-> isolate/strict) so the mirror
 # and runners left on the old network get recreated on Start. off => default 'bridge';
@@ -2124,6 +2150,8 @@ start_one() {
     log "owned runner $name already exists; skipping"
     return 0
   fi
+  # A slot released after a proved failed start waits for the next pass.
+  case " ${CRF_REPLACED_STARTS:-} " in *" $name "*) return 75 ;; esac
   provider_call start_one "$idx" "$name"
 }
 

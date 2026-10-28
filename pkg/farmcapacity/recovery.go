@@ -43,6 +43,11 @@ func (c *Controller) recoverReleasedOwners(ctx context.Context, snapshot *shared
 			problems = append(problems, c.CancelQueued(ctx, name, owned.ID))
 			continue
 		}
+		// A charged inert replacement only follows a proved failed start.
+		if owned.ReleasePending && owned.ReplacementPrepared {
+			problems = append(problems, c.finishFailedStart(ctx, name, owned))
+			continue
+		}
 		binding, err := c.bindWithdrawalOwner(ctx, name, owned, bind)
 		if err != nil {
 			problems = append(problems, err)

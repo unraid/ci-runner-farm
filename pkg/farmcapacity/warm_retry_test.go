@@ -141,18 +141,19 @@ func TestRetainedGrantStartFailureDefersWithoutLosingGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A start that keeps failing for one owner must defer like a queued start
-	// instead of failing the tick, while keeping its grant for a later retry.
+	// A start whose outcome cannot be re-attested must defer like a queued
+	// start instead of failing the tick, while keeping its grant for a retry.
 	docker.startErr = errors.New("bind source path does not exist")
+	docker.onFailedStart = func() { docker.inspectErr = errors.New("daemon unavailable") }
 	err = c.Start(t.Context(), item.Name, id)
 	if !errors.Is(err, ErrQueued) || !strings.Contains(err.Error(), "bind source path does not exist") {
 		t.Fatal("retained grant start failure was not deferred with its cause", err)
 	}
 	after, err := c.Broker.Status(&c.Policy)
-	if err != nil || after.Grants["build:"+item.Name].Fence != before.Grants["build:"+item.Name].Fence {
-		t.Fatal("deferred start changed the retained grant", err)
+	if err != nil || after.Grants["build:"+item.Name].Fence != before.Grants["build:"+item.Name].Fence || docker.containers[id] == nil {
+		t.Fatal("deferred start changed the retained grant or owner", err)
 	}
-	docker.startErr = nil
+	docker.startErr, docker.inspectErr = nil, nil
 	if err := c.Start(t.Context(), item.Name, id); err != nil || !item.Running {
 		t.Fatal("deferred owner did not start once Docker recovered", err)
 	}
@@ -160,11 +161,12 @@ func TestRetainedGrantStartFailureDefersWithoutLosingGrant(t *testing.T) {
 
 func TestFreshAdmissionStartFailureIsNotDeferred(t *testing.T) {
 	c, docker, id := warmRetryFixture(t)
-	// Only an owner that already held its grant is deferred; a start failure
-	// right after a new admission keeps failing the tick as before.
+	// Only an owner that already held its grant is deferred; an unproved start
+	// failure right after a new admission keeps failing the tick as before.
 	docker.startErr = errors.New("unknown Docker start outcome")
+	docker.onFailedStart = func() { docker.inspectErr = errors.New("daemon unavailable") }
 	err := c.Start(t.Context(), demandSlotName(buildPool, 6), id)
-	if err == nil || errors.Is(err, ErrQueued) {
+	if err == nil || errors.Is(err, ErrQueued) || errors.Is(err, ErrStartReplaced) {
 		t.Fatal("fresh admission start failure was deferred", err)
 	}
 }

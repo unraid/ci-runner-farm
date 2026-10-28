@@ -28,8 +28,11 @@ var (
 	ErrQueued = errors.New("build admission queued")
 	// ErrCredentialsExpired asks the native owner to refresh only inert demand.
 	ErrCredentialsExpired = errors.New("inert build registration credential requires refresh")
-	namePattern           = regexp.MustCompile(`^ci-runner-build(-[a-z][a-z0-9-]{0,17})?-([1-9]|[1-5][0-9]|6[0-4])$`)
-	idPattern             = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	// ErrStartReplaced asks the native owner to recreate a slot whose exact
+	// never-started container was removed and released after a proved failed start.
+	ErrStartReplaced = errors.New("never-started build released after a failed start")
+	namePattern      = regexp.MustCompile(`^ci-runner-build(-[a-z][a-z0-9-]{0,17})?-([1-9]|[1-5][0-9]|6[0-4])$`)
+	idPattern        = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
 // Container is an immutable Docker identity and its enforced resource limits.
@@ -166,10 +169,13 @@ func (c *Controller) Start(ctx context.Context, name, id string) error {
 		}
 	}
 	if err := c.Docker.Start(ctx, id); err != nil {
-		// Warm recovery retries a charged owner that never started on every
-		// pass. Defer its failed start like a queued one so one broken
-		// container cannot fail every tick and stall queue-driven planning;
-		// the receipt, grant and reservation are retained exactly as before.
+		if c.failedStartProved(ctx, name, container) {
+			return c.replaceFailedStart(ctx, name, owned, err)
+		}
+		// An unproved outcome is retried by warm recovery on every pass. Defer
+		// it like a queued start so one broken container cannot fail every
+		// tick and stall queue-driven planning; the receipt, grant and
+		// reservation are retained exactly as before.
 		if decision.Reason == "existing" && container.NeverStarted {
 			return errors.Join(ErrQueued, fmt.Errorf("retained grant start failed: %w", err))
 		}

@@ -19,6 +19,8 @@ type fakeDocker struct {
 	startErr   error
 	inspectErr error
 	starts     int
+	// onFailedStart changes what Docker reports after a refused start.
+	onFailedStart func()
 }
 
 func (d *fakeDocker) Inspect(_ context.Context, identity string) (*Container, error) {
@@ -36,6 +38,9 @@ func (d *fakeDocker) Inspect(_ context.Context, identity string) (*Container, er
 func (d *fakeDocker) Start(_ context.Context, id string) error {
 	d.starts++
 	if d.startErr != nil {
+		if d.onFailedStart != nil {
+			d.onFailedStart()
+		}
 		return d.startErr
 	}
 	d.containers[id].Running = true

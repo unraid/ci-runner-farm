@@ -22,5 +22,8 @@ func main() {
 	if errors.Is(err, farmcapacity.ErrCredentialsExpired) {
 		os.Exit(76)
 	}
+	if errors.Is(err, farmcapacity.ErrStartReplaced) {
+		os.Exit(77)
+	}
 	os.Exit(1)
 }
