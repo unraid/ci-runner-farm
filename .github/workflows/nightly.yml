@@ -2,13 +2,13 @@ name: Nightly Plugin
 
 # Mainline nightlies use a hosted runner so publication still works when the
 # farm is stopped for maintenance. Stable release assets remain owned by
-# release-please.
+# release-please. Publish only when main moves: a rebuild of an already
+# published commit changes the version and digests in place and breaks
+# consumers that pin the current nightly manifest.
 on:
   push:
     branches:
       - main
-  schedule:
-    - cron: '17 3 * * *'
   workflow_dispatch:
 
 permissions:
@@ -24,18 +24,37 @@ jobs:
     name: Build and publish nightly plugin
     runs-on: ubuntu-24.04
     steps:
+      - name: Skip a commit that is already the published nightly
+        id: published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NIGHTLY_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current="$(gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/nightly" --jq .object.sha 2>/dev/null || true)"
+          if [ "$current" = "$NIGHTLY_SHA" ]; then
+            echo "Nightly already published for ${NIGHTLY_SHA}; leaving its assets unchanged."
+            printf 'publish=false\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'publish=true\n' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout mainline
+        if: steps.published.outputs.publish == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up pinned capacity compiler
+        if: steps.published.outputs.publish == 'true'
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version: '1.26.10'
           cache-dependency-path: go.sum
 
       - name: Build nightly plugin
+        if: steps.published.outputs.publish == 'true'
         id: build
         env:
           CHANNEL: nightly
@@ -48,10 +67,11 @@ jobs:
           base_version="$(python3 -c 'import json; print(json.load(open(".release-please-manifest.json"))["."])')"
           nightly_version="${base_version}-nightly.${GITHUB_RUN_NUMBER}"
           build_date="$(git show -s --format=%ct HEAD | python3 -c 'import datetime, sys; print(datetime.datetime.fromtimestamp(int(sys.stdin.read()), datetime.timezone.utc).strftime("%Y.%m.%d.%H%M"))')"
-          DATE="$build_date" INTERNAL_VERSION="$nightly_version" bash ./build-plg.sh
+          DATE="$build_date" INTERNAL_VERSION="$nightly_version" PACKAGE_TAG="v${nightly_version}" bash ./build-plg.sh
           printf 'version=%s\n' "$nightly_version" >> "$GITHUB_OUTPUT"
 
       - name: Validate nightly package
+        if: steps.published.outputs.publish == 'true'
         env:
           NIGHTLY_SHA: ${{ github.sha }}
         shell: bash
@@ -69,15 +89,63 @@ jobs:
           diff -r "$extracted" src/usr/local/emhttp/plugins/ci-runner-farm
           grep -qF "Nightly build of main commit ${NIGHTLY_SHA}." "$plg"
 
-      - name: Move nightly tag and publish release assets
+      - name: Publish the build prerelease and move the nightly channel
+        if: steps.published.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           NIGHTLY_SHA: ${{ github.sha }}
           NIGHTLY_VERSION: ${{ steps.build.outputs.version }}
+          # Older per-build prereleases are deleted; pins must move forward
+          # within this window or to a stable vX.Y.Z release.
+          KEEP_BUILDS: 30
         shell: bash
         run: |
           set -euo pipefail
+          download="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download"
+          build_tag="v${NIGHTLY_VERSION}"
+          # The moving channel serves the same descriptor and package; its
+          # descriptor installs the package from the immutable build release.
           release_base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/nightly"
+          assets=(ci-runner-farm-nightly.plg ci-runner-farm-nightly.tgz ci-runner-farm-nightly.json)
+
+          plugin_sha256="$(sha256sum ci-runner-farm-nightly.plg | cut -d' ' -f1)"
+          package_sha256="$(sha256sum ci-runner-farm-nightly.tgz | cut -d' ' -f1)"
+          cat > ci-runner-farm-nightly.json <<EOF
+          {"channel":"nightly","commit":"${NIGHTLY_SHA}","plugin_version":"${NIGHTLY_VERSION}","plugin_url":"${download}/${build_tag}/ci-runner-farm-nightly.plg","package_url":"${download}/${build_tag}/ci-runner-farm-nightly.tgz","plugin_sha256":"${plugin_sha256}","package_sha256":"${package_sha256}"}
+          EOF
+
+          notes="$(mktemp)"
+          downloaded="$(mktemp -d)"
+          trap 'rm -rf "$downloaded" "$notes"' EXIT
+          verify() {
+            local base="$1" asset
+            for asset in "${assets[@]}"; do
+              curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
+                --output "$downloaded/$asset" "$base/$asset"
+              cmp "$asset" "$downloaded/$asset"
+            done
+          }
+
+          # Each build is published once under its own tag and never replaced.
+          # A retried run of the same build may only confirm identical assets.
+          cat > "$notes" <<EOF
+          CI Runner Farm build of main commit ${NIGHTLY_SHA}.
+
+          Plugin version: ${NIGHTLY_VERSION}
+
+          This prerelease never changes. Pin its ci-runner-farm-nightly.json
+          manifest for a reproducible farm build. It contains unreleased
+          changes and is intended for the CI Runner Farm fleet.
+          EOF
+          if gh release view "$build_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            verify "$download/$build_tag"
+          else
+            gh release create "$build_tag" --repo "$GITHUB_REPOSITORY" \
+              --title "CI Runner Farm ${NIGHTLY_VERSION}" --notes-file "$notes" \
+              --prerelease --latest=false --target "$NIGHTLY_SHA" "${assets[@]}"
+            verify "$download/$build_tag"
+          fi
+
           ref="repos/${GITHUB_REPOSITORY}/git/refs/tags/nightly"
           if gh api "$ref" >/dev/null 2>&1; then
             gh api --method PATCH "$ref" -f sha="$NIGHTLY_SHA" -F force=true >/dev/null
@@ -86,45 +154,37 @@ jobs:
               -f ref=refs/tags/nightly -f sha="$NIGHTLY_SHA" >/dev/null
           fi
 
-          notes="$(mktemp)"
-          trap 'rm -f "$notes"' EXIT
           cat > "$notes" <<EOF
-          CI Runner Farm nightly build.
+          CI Runner Farm nightly channel.
 
           Mainline commit: ${NIGHTLY_SHA}
           Plugin version: ${NIGHTLY_VERSION}
+          Build release: ${build_tag}
 
-          This moving prerelease channel contains unreleased changes and is
-          intended for the CI Runner Farm fleet, not general production use.
+          This channel moves to every new main commit. Pin the build release,
+          not this one. It contains unreleased changes and is intended for the
+          CI Runner Farm fleet, not general production use.
           EOF
-
           if gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release edit nightly --repo "$GITHUB_REPOSITORY" \
               --title "CI Runner Farm Nightly" --notes-file "$notes" --prerelease
           else
             gh release create nightly --repo "$GITHUB_REPOSITORY" \
               --title "CI Runner Farm Nightly" --notes-file "$notes" \
-              --prerelease --target "$NIGHTLY_SHA"
+              --prerelease --latest=false --target "$NIGHTLY_SHA"
           fi
+          for asset in "${assets[@]}"; do
+            gh release upload nightly --repo "$GITHUB_REPOSITORY" "$asset" --clobber
+          done
+          verify "$release_base"
 
-          gh release upload nightly --repo "$GITHUB_REPOSITORY" \
-            ci-runner-farm-nightly.tgz --clobber
-          gh release upload nightly --repo "$GITHUB_REPOSITORY" \
-            ci-runner-farm-nightly.plg --clobber
-
-          plugin_sha256="$(sha256sum ci-runner-farm-nightly.plg | cut -d' ' -f1)"
-          package_sha256="$(sha256sum ci-runner-farm-nightly.tgz | cut -d' ' -f1)"
-          cat > ci-runner-farm-nightly.json <<EOF
-          {"channel":"nightly","commit":"${NIGHTLY_SHA}","plugin_version":"${NIGHTLY_VERSION}","plugin_url":"${release_base}/ci-runner-farm-nightly.plg","package_url":"${release_base}/ci-runner-farm-nightly.tgz","plugin_sha256":"${plugin_sha256}","package_sha256":"${package_sha256}"}
-          EOF
-          gh release upload nightly --repo "$GITHUB_REPOSITORY" \
-            ci-runner-farm-nightly.json --clobber
-
-          downloaded="$(mktemp -d)"
-          trap 'rm -rf "$downloaded" "$notes"' EXIT
-          for asset in ci-runner-farm-nightly.plg ci-runner-farm-nightly.tgz ci-runner-farm-nightly.json; do
-            curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
-              --output "$downloaded/$asset" \
-              "$release_base/$asset"
-            cmp "$asset" "$downloaded/$asset"
+          # Keep the newest KEEP_BUILDS build prereleases. Stable vX.Y.Z
+          # releases and the moving nightly never match this pattern.
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 \
+            --json tagName,isPrerelease,createdAt \
+            --jq '[.[] | select(.isPrerelease and (.tagName | test("^v[0-9]+[.][0-9]+[.][0-9]+-nightly[.][0-9]+$")))]
+                  | sort_by(.createdAt) | reverse | .['"$KEEP_BUILDS"':][] | .tagName' |
+          while IFS= read -r old_tag; do
+            [ "$old_tag" != "$build_tag" ] || continue
+            gh release delete "$old_tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
           done
