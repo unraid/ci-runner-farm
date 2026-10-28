@@ -82,6 +82,12 @@ echo 'job Docker cache: exact job scope, preserved references/custom volumes, lo
  # The opt-out reaches the hook without a builder allowlist, and changing it
  # replaces existing slots. The default keeps the previous fingerprint.
  DIND=true; EPHEMERAL=false; SHARE_DOCKER_SOCK=false; DOCKER_CACHE_BUILDERS=''
+ for threshold in -1 101 bad; do
+  DOCKER_CACHE_MIN_FREE_PERCENT="$threshold"
+  if github_build_args 1 test-runner >/dev/null 2>&1; then
+   echo "invalid threshold accepted without builders: $threshold" >&2; exit 1
+  fi
+ done
  DOCKER_CACHE_MIN_FREE_PERCENT=15
  default_generation="$(github_confgen)"
  unset DOCKER_CACHE_MIN_FREE_PERCENT
