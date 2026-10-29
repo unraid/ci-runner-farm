@@ -2,13 +2,13 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name          "ci-runner-farm">
 <!ENTITY author        "Lime Technology">
-<!ENTITY version       "2026.10.28.1408.143-1.16.2">
-<!ENTITY pluginVersion "1.16.2">
-<!ENTITY releaseTag    "v1.16.2">
+<!ENTITY version       "2026.10.29.1947.146-1.17.0">
+<!ENTITY pluginVersion "1.17.0">
+<!ENTITY releaseTag    "v1.17.0">
 <!ENTITY pluginURL     "https://github.com/unraid/ci-runner-farm/releases/latest/download/ci-runner-farm.plg">
-<!ENTITY packageName   "ci-runner-farm-2026.10.28.1408.143-1.16.2.tgz">
-<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/v1.16.2/ci-runner-farm-2026.10.28.1408.143-1.16.2.tgz">
-<!ENTITY packageMD5    "2e12148bdca247ed62c5713ca082df69">
+<!ENTITY packageName   "ci-runner-farm-2026.10.29.1947.146-1.17.0.tgz">
+<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/v1.17.0/ci-runner-farm-2026.10.29.1947.146-1.17.0.tgz">
+<!ENTITY packageMD5    "87b207df36c7d2a8a226d8ee4057006e">
 <!ENTITY plgdir        "/usr/local/emhttp/plugins/&name;">
 <!ENTITY cfgdir        "/boot/config/plugins/&name;">
 ]>
@@ -22,9 +22,8 @@
 
 <CHANGES>
 ### &version;
-### Bug Fixes
-* **cache:** make post-job prune opt-in and honor zero ([#177](https://github.com/unraid/ci-runner-farm/issues/177)) ([aff3ef5](https://github.com/unraid/ci-runner-farm/commit/aff3ef5ad424c2a42a897b58dfb14dfa6d351cd4))
-* **capacity:** replace builders whose start provably never ran ([#193](https://github.com/unraid/ci-runner-farm/issues/193)) ([e3c1fc2](https://github.com/unraid/ci-runner-farm/commit/e3c1fc2164c27553a599cb7fb12b63a2d5a22dea))
+### Features
+* **farm:** retain original worker identity for host qualification ([#195](https://github.com/unraid/ci-runner-farm/issues/195)) ([d98f466](https://github.com/unraid/ci-runner-farm/commit/d98f466a34df814b9f7e8f30a1d43dbaff272a79))
 </CHANGES>
 
 <!-- plugin package: Unraid downloads it to flash and verifies the MD5 -->
@@ -41,11 +40,11 @@ PLGDIR="/usr/local/emhttp/plugins/ci-runner-farm"
 CFGDIR="/boot/config/plugins/ci-runner-farm"
 mkdir -p "$CFGDIR" "$PLGDIR"
 # Sweep any older package versions off flash, keeping this build's package.
-find "$CFGDIR" -maxdepth 1 -name 'ci-runner-farm-*.tgz' ! -name 'ci-runner-farm-2026.10.28.1408.143-1.16.2.tgz' -delete 2>/dev/null || true
+find "$CFGDIR" -maxdepth 1 -name 'ci-runner-farm-*.tgz' ! -name 'ci-runner-farm-2026.10.29.1947.146-1.17.0.tgz' -delete 2>/dev/null || true
 # Extract ONLY into the plugin dir; --no-same-owner forces root ownership;
 # --no-overwrite-dir leaves existing dir metadata alone. System dirs untouched.
 # The .tgz is kept on flash so the on-boot reinstall works without a download.
-tar -xzf "$CFGDIR/ci-runner-farm-2026.10.28.1408.143-1.16.2.tgz" --no-same-owner --no-overwrite-dir -C "$PLGDIR"
+tar -xzf "$CFGDIR/ci-runner-farm-2026.10.29.1947.146-1.17.0.tgz" --no-same-owner --no-overwrite-dir -C "$PLGDIR"
 chown -R root:root "$PLGDIR"
 find "$PLGDIR" -type d -exec chmod 0755 {} +
 find "$PLGDIR" -type f -exec chmod 0644 {} +
@@ -109,7 +108,7 @@ fi
 ( nohup "$PLGDIR/include/runner-farm.sh" boot-autostart >>"$CFGDIR/boot.log" 2>&1 & ) || true
 echo ""
 echo "+=============================================================+"
-echo "| ci-runner-farm 2026.10.28.1408.143-1.16.2 installed.                         "
+echo "| ci-runner-farm 2026.10.29.1947.146-1.17.0 installed.                         "
 echo "| Settings > Utilities > CI Runner Farm                        "
 echo "| Select GitHub or GitLab, save its token, then Start.         "
 echo "+=============================================================+"
