@@ -144,3 +144,90 @@ registration labels so a compatible image derives its OS payload role without
 opening job routing before durable identity publication. Install that compatible
 image before activating shared OS classes; KVM device validation and existing
 artifact mounts still apply.
+
+## Optional original worker provenance (source implementation, not rollout)
+
+`ci-runner-capacity status --owners` extends the existing **local** status
+command. It requires the same root invocation, inherited native fleet lock on
+FD 8, and protected host-configuration lease. Unqualified `status` keeps its
+existing diagnostic encoding. The UI `status-json` projection is unchanged.
+No remote endpoint, credential, Account capability or new resource pool is added.
+
+The qualified projection has exactly `schema` (`ci-runner-farm-owners/v1`),
+`observedAt`, `hostSelectorLabel`, `diagnostics`, and `owners`. Each owner row has
+`slot`, `runnerId`, `state`, `reason`, `original`, and `current`; unavailable
+records are null. States are `complete`, `unknown`, or `stale`. It is a
+point-in-time correlation, never stopped-workload proof or release authority.
+It neither queries GitHub nor reads registration credentials. It reads the
+existing ledger diagnostically and existing receipts without creating a store,
+repairing records, refreshing UI caches, or changing routing.
+
+A fresh, positively never-started native slot prepares an optional
+`originalRegistration` record in its existing private receipt before start.
+The first registration may bind that record to the actual init process before
+job-eligible routing. Existing registrations, adopted workers, failed initial
+observations and later registration retries never acquire fabricated history.
+Old receipts remain compatible and report unknown provenance. Missing optional
+provenance does not become a prerequisite for ordinary untargeted jobs.
+
+The original record contains `schema` (1), `host`, `epoch`, `containerId`,
+`confgen`, `incarnationSHA256`, `runnerId`, `runnerName`, and `runtime`.
+`runtime` contains `containerId`, `name`, `confgen`, `bootId`, `initPid`,
+`initBirth`, and `namespaces` (exactly `pid`, `mnt`, `user`, `cgroup`, `net`).
+The init process is observed from the existing local Docker daemon and local
+`/proc`; the daemon and process identities are sampled again to detect races.
+Optional provenance refuses an unproved or non-local Docker endpoint instead
+of joining a remote daemon's PID numbers to this host's `/proc`. It does not
+change Docker contexts, endpoints or credentials.
+A restart, replacement, PID reuse, reboot, namespace change, missing grant,
+changed hard limits, ambiguous runner ID, unsafe receipt or mismatched original
+remains unqualified. No recorded execution original is overwritten with a current process. An inert
+queued refresh may prepare intent for its new never-started container only
+after the old ID is proved absent, with no registration, fence or charged
+grant. Its queue age and accounting stay unchanged; pending intent is not
+original execution proof.
+These are the Farm worker container init identities, not proof of future nested
+job containers, QEMU children, guest boot or teardown. Common and the actual
+Caller job must supply those separate lifecycle links.
+
+`confgen` names the Docker configuration generation. The allocation incarnation
+is the lowercase full SHA-256 of the UTF-8 bytes
+`ci-runner-farm-owner-v1`, NUL, protected epoch, NUL, immutable container ID,
+NUL, original raw fence. The raw release fence is never exposed. This is not a
+new numeric generation counter and cannot replace the actual fence at release.
+Host/process mappings stay in protected local receipts and private operator
+evidence, not public workflow logs, labels, or ordinary UI output. No argv,
+environment, mount paths, passwords or license material are included.
+
+### Opt-in host placement through existing registration labels
+
+The reserved host selector is exactly `crf-host-` followed by the lowercase
+**full 64 hex characters** of SHA-256 over UTF-8
+`ci-runner-farm-host-v1`, NUL, and the exact protected `host-capacity.json`
+`host` value. There is no case normalization or truncation. Case variants,
+duplicate reserved labels and wrong-host tokens are refused. The host key is an
+operator-configured identity validated against the local hostname; it is **not
+hardware or chassis attestation**.
+
+An operator may later configure this token through the existing
+`RUNNER_LABELS`/per-pool label setting and original registration path. The native
+routing publisher refuses a reserved host label without complete matching
+original provenance, a current matching allocation fence and the unchanged
+charged hard limits. A refused targeted owner stays gated and charged. No label
+is added automatically by this implementation and no existing busy registration
+is relabeled. Label changes still follow existing configuration-generation and
+idle-maintenance rules in a separately authorized rollout.
+
+A targeted qualification job retains its existing approved runner group and
+all required platform/build/KVM labels, adding only that host label to the
+existing label conjunction. Ordinary jobs omit the host selector and retain the
+same interchangeable fleet and budget. Multiple workers on one host may share
+the selector: this selects a **host**, not an exact worker/process incarnation.
+An offline target does not silently fall back to another host.
+
+Before rollout, the existing fleet coordinator must establish global selector
+uniqueness within the approved group and the configured host-to-physical-host
+mapping. Local source tests do not prove either fact. The actual picked Actions
+job runner ID must join Common's actual admission/worker evidence. No host
+access, inventory query, image adoption, label mutation, guest execution or
+Account/license allocation follows from these source tests.

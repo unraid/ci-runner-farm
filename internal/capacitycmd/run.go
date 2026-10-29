@@ -40,7 +40,7 @@ func Run(arguments []string, output io.Writer) (result error) {
 		return runMetadata(lease.Config, arguments[0], output)
 	}
 	if os.Geteuid() != 0 || !validArguments(arguments) {
-		return errors.New("root and initialize, expand-pools <epoch> <request>, start|prepare-release|release|refresh-queued|reconcile-idle <name> <id>, demand-observe <pools>, demand-apply|demand-warm <pools> <targets>, or rebalance|retire|status are required")
+		return errors.New("root and initialize, expand-pools <epoch> <request>, start|prepare-release|release|refresh-queued|reconcile-idle <name> <id>, demand-observe <pools>, demand-apply|demand-warm <pools> <targets>, or rebalance|retire|status [--owners] are required")
 	}
 	if err := verifyFleetLock(); err != nil {
 		return err
@@ -57,6 +57,7 @@ func Run(arguments []string, output io.Writer) (result error) {
 		return expandPools(lease, arguments[1], arguments[2])
 	}
 	controller := farmcapacity.Controller{
+		Host: config.Host, Epoch: config.Epoch, OwnerContext: ctx, Organization: config.Organization,
 		Broker: sharedcapacity.Broker{Path: config.LedgerPath}, Policy: config.Policy,
 		ReceiptRoot: config.ReceiptRoot, Docker: farmcapacity.NativeDocker{},
 		RepairCache: farmcapacity.RepairNativeCache, Poisoned: farmcapacity.NativePoisoned,
@@ -72,7 +73,7 @@ func Run(arguments []string, output io.Writer) (result error) {
 		if err != nil {
 			return err
 		}
-		return json.NewEncoder(output).Encode(diagnostics)
+		return writeStatus(ctx, &controller, diagnostics, len(arguments) == 2, output)
 	}
 	if config.Mode != "active" {
 		return errors.New("farm shared capacity is closed for ownership reconciliation")
@@ -85,7 +86,7 @@ func validArguments(arguments []string) bool {
 		return arguments[0] == "initialize" || arguments[0] == "rebalance" || arguments[0] == "retire" || arguments[0] == "status"
 	}
 	if len(arguments) == 2 {
-		return arguments[0] == "demand-observe"
+		return arguments[0] == "demand-observe" || (arguments[0] == "status" && arguments[1] == "--owners")
 	}
 	return len(arguments) == 3 && (arguments[0] == "expand-pools" || arguments[0] == "start" || arguments[0] == "prepare-release" || arguments[0] == "release" || arguments[0] == "refresh-queued" || arguments[0] == "reconcile-idle" || arguments[0] == "demand-apply" || arguments[0] == "demand-warm")
 }
@@ -202,4 +203,22 @@ func decodeDemandTarget(decoder *json.Decoder, request any) error {
 		return errors.New("farm demand target has trailing data")
 	}
 	return nil
+}
+
+// writeStatus preserves the unqualified projection and opt-in metadata boundary.
+func writeStatus(ctx context.Context, controller *farmcapacity.Controller, diagnostics sharedcapacity.Diagnostics, owners bool, output io.Writer) error {
+	if !owners {
+		return json.NewEncoder(output).Encode(diagnostics)
+	}
+	rows, err := controller.ObserveOwners(ctx, diagnostics)
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(output).Encode(struct {
+		Schema            string                          `json:"schema"`
+		ObservedAt        time.Time                       `json:"observedAt"`
+		HostSelectorLabel string                          `json:"hostSelectorLabel"`
+		Diagnostics       sharedcapacity.Diagnostics      `json:"diagnostics"`
+		Owners            []farmcapacity.OwnerObservation `json:"owners"`
+	}{"ci-runner-farm-owners/v1", time.Now().UTC(), farmcapacity.HostSelectorLabel(controller.Host), diagnostics, rows})
 }

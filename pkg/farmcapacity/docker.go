@@ -7,7 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -37,8 +42,38 @@ func terminatedNative(status string, pid *int, running, paused, restarting *bool
 func nativeFlag(value *bool) bool { return value != nil && *value }
 
 // Inspect enumerates exact IDs/names before inspection so daemon failures fail closed.
-func (NativeDocker) Inspect(ctx context.Context, identity string) (*Container, error) {
-	listing, err := exec.CommandContext(ctx, "docker", "ps", "-a", "--no-trunc", "--format", "{{.ID}}|{{.Names}}").Output()
+func (d NativeDocker) Inspect(ctx context.Context, identity string) (*Container, error) {
+	return d.inspect(ctx, identity, false)
+}
+
+func (d NativeDocker) inspectLocalOwner(ctx context.Context, identity string) (*Container, error) {
+	return d.inspect(ctx, identity, true)
+}
+
+const localDockerEndpoint = "unix:///var/run/docker.sock"
+
+// nativeReadCommand pins only optional provenance reads. It never changes the
+// parent's environment, context, configuration, credentials or ordinary Inspect.
+func nativeReadCommand(ctx context.Context, local bool, args ...string) *exec.Cmd {
+	if !local {
+		return exec.CommandContext(ctx, "docker", args...)
+	}
+	command := exec.CommandContext(ctx, "docker", append([]string{"--host", localDockerEndpoint}, args...)...)
+	environment := []string{}
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		switch key {
+		case "DOCKER_CONTEXT", "DOCKER_HOST", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH":
+			continue
+		}
+		environment = append(environment, entry)
+	}
+	command.Env = environment
+	return command
+}
+
+func (NativeDocker) inspect(ctx context.Context, identity string, local bool) (*Container, error) {
+	listing, err := nativeReadCommand(ctx, local, "ps", "-a", "--no-trunc", "--format", "{{.ID}}|{{.Names}}").Output()
 	if err != nil {
 		return nil, errors.New("cannot enumerate Docker build ownership")
 	}
@@ -53,7 +88,7 @@ func (NativeDocker) Inspect(ctx context.Context, identity string) (*Container, e
 	if !found {
 		return nil, ErrContainerMissing
 	}
-	data, err := exec.CommandContext(ctx, "docker", "inspect", identity).Output()
+	data, err := nativeReadCommand(ctx, local, "inspect", identity).Output()
 	if err != nil {
 		return nil, errors.New("cannot inspect Docker build ownership")
 	}
@@ -123,6 +158,7 @@ func (NativeDocker) Inspect(ctx context.Context, identity string) (*Container, e
 	running := nativeFlag(item.State.Running)
 	paused := nativeFlag(item.State.Paused)
 	return &Container{
+		InitPID: nativePID(item.State.PID), Confgen: labels[prefix+"confgen"],
 		Terminated:       terminatedNative(item.State.Status, item.State.PID, item.State.Running, item.State.Paused, item.State.Restarting, item.HostConfig.RestartPolicy.Name),
 		RegistrationName: registrationName,
 		DockerRoot:       root, ID: item.ID, Name: strings.TrimPrefix(item.Name, "/"), Managed: labels[prefix+"managed"] == "true",
@@ -242,4 +278,177 @@ func (d NativeDocker) Owned(ctx context.Context) ([]Container, error) {
 		containers = append(containers, *item)
 	}
 	return containers, nil
+}
+
+// LocalWorkerIdentity is host-observed provenance, not a hardware certificate.
+// It contains no argv, environment, mount path, credential or release capability.
+type LocalWorkerIdentity struct {
+	ContainerID string            `json:"containerId"`
+	Name        string            `json:"name"`
+	Confgen     string            `json:"confgen"`
+	BootID      string            `json:"bootId"`
+	InitPID     int               `json:"initPid"`
+	InitBirth   string            `json:"initBirth"`
+	Namespaces  map[string]string `json:"namespaces"`
+}
+
+var bootPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+var confgenPattern = regexp.MustCompile(`^[0-9a-f]{12}$`)
+var birthPattern = regexp.MustCompile(`^[1-9][0-9]*$`)
+var namespacePattern = regexp.MustCompile(`^(pid|mnt|user|cgroup|net):\[[1-9][0-9]*\]$`)
+
+func nativePID(pid *int) int {
+	if pid == nil {
+		return 0
+	}
+	return *pid
+}
+
+func validLocalIdentity(row *LocalWorkerIdentity) bool {
+	if row == nil || !idPattern.MatchString(row.ContainerID) || !namePattern.MatchString(row.Name) || !confgenPattern.MatchString(row.Confgen) || !bootPattern.MatchString(row.BootID) || row.InitPID <= 0 || !birthPattern.MatchString(row.InitBirth) || len(row.Namespaces) != 5 {
+		return false
+	}
+	for _, key := range []string{"pid", "mnt", "user", "cgroup", "net"} {
+		value := row.Namespaces[key]
+		if !strings.HasPrefix(value, key+":") || !namespacePattern.MatchString(value) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameLocalIdentity(a, b *LocalWorkerIdentity) bool {
+	return validLocalIdentity(a) && validLocalIdentity(b) && a.ContainerID == b.ContainerID && a.Name == b.Name && a.Confgen == b.Confgen && a.BootID == b.BootID && a.InitPID == b.InitPID && a.InitBirth == b.InitBirth && maps.Equal(a.Namespaces, b.Namespaces)
+}
+
+// ObserveLocalOwner rechecks Docker and /proc around a bounded local sample.
+// Ordinary Inspect keeps its existing behavior when optional provenance is absent.
+func (d NativeDocker) ObserveLocalOwner(ctx context.Context, id string) (*LocalWorkerIdentity, error) {
+	return d.observeLocalOwner(ctx, id, "/proc")
+}
+
+func (d NativeDocker) observeLocalOwner(ctx context.Context, id, proc string) (*LocalWorkerIdentity, error) {
+	const localEndpoint = localDockerEndpoint
+	if endpoint := os.Getenv("DOCKER_HOST"); endpoint != "" && endpoint != localEndpoint {
+		return nil, errors.New("native owner observation requires the local Docker endpoint")
+	}
+	// The active context may otherwise redirect plain docker inspect to another
+	// machine whose PID numbers have no relationship to this host's /proc.
+	endpoint, endpointErr := exec.CommandContext(ctx, "docker", "context", "inspect", "--format", `{{(index .Endpoints "docker").Host}}`).Output()
+	if endpointErr != nil || strings.TrimSpace(string(endpoint)) != localEndpoint {
+		return nil, errors.New("native owner local Docker endpoint is unproved")
+	}
+
+	first, err := d.inspectLocalOwner(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if first.ID != id || !first.Running || first.Paused || first.InitPID <= 0 {
+		return nil, errors.New("native owner is not a stable running identity")
+	}
+	before, err := readLocalIdentity(first, proc)
+	if err != nil {
+		return nil, err
+	}
+	last, err := d.inspectLocalOwner(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	after, err := readLocalIdentity(last, proc)
+	if err != nil {
+		return nil, err
+	}
+	if !sameLocalIdentity(before, after) || !last.Running || last.Paused || first.Managed != last.Managed || first.Provider != last.Provider || first.Role != last.Role || first.Pool != last.Pool || first.MemoryBytes != last.MemoryBytes || first.NanoCPUs != last.NanoCPUs || first.RegistrationName != last.RegistrationName {
+		return nil, errors.New("native owner changed during identity observation")
+	}
+	return before, nil
+}
+
+func readLocalIdentity(item *Container, proc string) (*LocalWorkerIdentity, error) {
+	if item == nil || item.InitPID <= 0 {
+		return nil, errors.New("positive native init PID required")
+	}
+	// /proc stat and boot_id are kernel records; cap reads rather than following
+	// arbitrary input paths. The alternate root is used only by local tests.
+	read := func(path string) (string, error) {
+		f, err := os.Open(path)
+		if err != nil {
+			return "", err
+		}
+		defer f.Close()
+		data, err := io.ReadAll(io.LimitReader(f, 8193))
+		if err != nil {
+			return "", err
+		}
+		if len(data) > 8192 {
+			return "", errors.New("kernel identity record exceeds bound")
+		}
+		return strings.TrimSpace(string(data)), nil
+	}
+	boot, err := read(filepath.Join(proc, "sys/kernel/random/boot_id"))
+	if err != nil {
+		return nil, err
+	}
+	directory := filepath.Join(proc, strconv.Itoa(item.InitPID))
+	data, err := read(filepath.Join(directory, "stat"))
+	if err != nil {
+		return nil, err
+	}
+	end := strings.LastIndexByte(data, ')')
+	if end < 0 {
+		return nil, errors.New("native process stat is incomplete")
+	}
+	fields := strings.Fields(data[end+1:])
+	if len(fields) < 20 || fields[0] == "Z" || fields[0] == "X" {
+		return nil, errors.New("native process is absent or terminated")
+	}
+	row := &LocalWorkerIdentity{ContainerID: item.ID, Name: item.Name, Confgen: item.Confgen, BootID: boot, InitPID: item.InitPID, InitBirth: fields[19], Namespaces: map[string]string{}}
+	for _, key := range []string{"pid", "mnt", "user", "cgroup", "net"} {
+		value, err := os.Readlink(filepath.Join(directory, "ns", key))
+		if err != nil {
+			return nil, err
+		}
+		row.Namespaces[key] = value
+	}
+	if !validLocalIdentity(row) {
+		return nil, errors.New("native process provenance is incomplete")
+	}
+	return row, nil
+}
+
+// verifyLocalRegistration re-attests only the existing public .runner fields.
+// Unlike legacy Registration recovery, original provenance requires a live
+// local owner and cannot fall back to an exited identity or another endpoint.
+func (d NativeDocker) verifyLocalRegistration(ctx context.Context, current *LocalWorkerIdentity, organization string, runnerID int64, runnerName string) error {
+	return d.verifyLocalRegistrationAt(ctx, current, organization, runnerID, runnerName, "/proc")
+}
+
+func (d NativeDocker) verifyLocalRegistrationAt(ctx context.Context, current *LocalWorkerIdentity, organization string, runnerID int64, runnerName, proc string) error {
+	if !validLocalIdentity(current) || organization == "" || runnerID <= 0 || runnerName == "" {
+		return errors.New("local registration input is incomplete")
+	}
+	// Same public identity locations and UTF-8 BOM format as Registration. No
+	// registration token, credential file or remote API is read by this path.
+	const publicIdentity = `for file in .runner /home/runner/.runner /home/runner/actions-runner/.runner /actions-runner/.runner /runner/.runner; do if [ -f "$file" ]; then cat "$file"; exit; fi; done; exit 1`
+	data, err := nativeReadCommand(ctx, true, "exec", current.ContainerID, "sh", "-c", publicIdentity).Output()
+	if err != nil {
+		return errors.New("local public registration is unavailable")
+	}
+	var identity struct {
+		AgentID   int64  `json:"agentId"`
+		AgentName string `json:"agentName"`
+		GitHubURL string `json:"gitHubUrl"`
+	}
+	if err = json.Unmarshal(bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf}), &identity); err != nil || identity.AgentID != runnerID || identity.AgentName != runnerName || strings.TrimSuffix(identity.GitHubURL, "/") != "https://github.com/"+organization {
+		return errors.New("local public registration does not match")
+	}
+	item, err := d.inspectLocalOwner(ctx, current.ContainerID)
+	if err != nil || item.ID != current.ContainerID || item.RegistrationName != runnerName || !item.Running || item.Paused || !item.Managed || item.Provider != githubProvider || item.Role != runnerRole || !ownedBuildPool(item.Pool, item.Name) {
+		return errors.New("local registration container changed")
+	}
+	after, err := readLocalIdentity(item, proc)
+	if err != nil || !sameLocalIdentity(current, after) {
+		return errors.New("local registration process changed")
+	}
+	return nil
 }

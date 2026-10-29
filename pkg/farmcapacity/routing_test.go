@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -201,5 +202,71 @@ func TestPublishedRoutingRejectsJobDriftAndMissingPlatforms(t *testing.T) {
 		if publishedRoutingMatches(actual, wanted) {
 			t.Fatalf("routing drift accepted: %v", actual)
 		}
+	}
+}
+
+func TestReservedHostSelectorRequiresCurrentOriginalAndChargedGrant(t *testing.T) {
+	for _, mode := range []string{"complete", "wrong host", "duplicate", "case variant", "missing original", "PID reuse", "wrong fence", "wrong hard limits"} {
+		t.Run(mode, func(t *testing.T) {
+			c, d, id := projectionFixture(t)
+			label := HostSelectorLabel(c.Host)
+			d.containers[id].RoutingLabels = []string{buildPool, label}
+			owned, _ := c.load(testName)
+			switch mode {
+			case "wrong host":
+				d.containers[id].RoutingLabels[1] = HostSelectorLabel("another-host")
+			case "duplicate":
+				d.containers[id].RoutingLabels = append(d.containers[id].RoutingLabels, label)
+			case "case variant":
+				d.containers[id].RoutingLabels[1] = strings.ToUpper(label)
+			case "missing original":
+				owned.OriginalRegistration = nil
+				if err := c.save(testName, owned); err != nil {
+					t.Fatal(err)
+				}
+			case "PID reuse":
+				d.current.InitBirth = "999"
+			case "wrong fence":
+				owned.Fence = "changed"
+				if err := c.save(testName, owned); err != nil {
+					t.Fatal(err)
+				}
+			case "wrong hard limits":
+				d.containers[id].MemoryBytes += 1024 * 1024
+			}
+			puts := 0
+			owner := remoteFixture(t, func(request *http.Request) (*http.Response, error) {
+				if request.Method == http.MethodPut {
+					puts++
+					return ownerResponse(http.StatusOK, `{}`), nil
+				}
+				return ownerResponse(http.StatusOK, `{"id":123,"name":"owned-runner","status":"online","busy":false,"labels":[{"name":"crf-shared-awaiting-identity"}]}`), nil
+			})
+			owner.ID, owner.Name = id, testName
+			err := c.PublishRouting(t.Context(), owner)
+			if mode == "complete" {
+				if err != nil || puts != 1 {
+					t.Fatal("complete original could not publish existing routing", err, puts)
+				}
+			} else if err == nil || puts != 0 {
+				t.Fatal("unqualified host selector published", mode, err, puts)
+			}
+			after, _ := c.Broker.Diagnose(&c.Policy)
+			if len(after.Grants) != 1 || len(after.Pending) != 0 {
+				t.Fatal("routing qualification changed admission")
+			}
+		})
+	}
+}
+
+func TestHostLabelEncodingAndUntargetedLegacyRouting(t *testing.T) {
+	const expected = "crf-host-5f54a3e71ad287ed62ce5aab6c0056d2008eb5b0b087878ec1702b7f2dd3e05f"
+	if HostSelectorLabel("approved-host") != expected || HostSelectorLabel("bad\nhost") != "" || HostSelectorLabel("Approved-host") == expected {
+		t.Fatal("host selector encoding changed")
+	}
+	c, d, id := fixture(t)
+	d.containers[id].RoutingLabels = []string{buildPool, platformLinuxLabel}
+	if err := c.requireHostRouting(t.Context(), &receipt{}, d.containers[id]); err != nil {
+		t.Fatal("untargeted legacy routing gained an optional origin prerequisite", err)
 	}
 }

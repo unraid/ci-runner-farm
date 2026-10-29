@@ -37,6 +37,8 @@ var (
 
 // Container is an immutable Docker identity and its enforced resource limits.
 type Container struct {
+	InitPID              int
+	Confgen              string
 	ID                   string
 	Name                 string
 	Managed              bool
@@ -64,28 +66,34 @@ type Docker interface {
 }
 
 type receipt struct {
-	Start               *sharedcapacity.StartReservation `json:"start,omitempty"`
-	ID                  string                           `json:"containerId"`
-	DockerRoot          string                           `json:"dockerRoot,omitempty"`
-	CacheCaptured       bool                             `json:"cacheCaptured,omitempty"`
-	Retiring            bool                             `json:"retiring,omitempty"`
-	PreserveCache       bool                             `json:"preserveCache,omitempty"`
-	Maintenance         bool                             `json:"maintenance,omitempty"`
-	Fence               string                           `json:"fence"`
-	ReleasePending      bool                             `json:"releasePending,omitempty"`
-	ReplacementPrepared bool                             `json:"replacementPrepared,omitempty"`
-	Withdrawal          *sharedcapacity.Withdrawal       `json:"withdrawal,omitempty"`
+	OriginalRegistration *OriginalRegistration            `json:"originalRegistration,omitempty"`
+	Start                *sharedcapacity.StartReservation `json:"start,omitempty"`
+	ID                   string                           `json:"containerId"`
+	DockerRoot           string                           `json:"dockerRoot,omitempty"`
+	CacheCaptured        bool                             `json:"cacheCaptured,omitempty"`
+	Retiring             bool                             `json:"retiring,omitempty"`
+	PreserveCache        bool                             `json:"preserveCache,omitempty"`
+	Maintenance          bool                             `json:"maintenance,omitempty"`
+	Fence                string                           `json:"fence"`
+	ReleasePending       bool                             `json:"releasePending,omitempty"`
+	ReplacementPrepared  bool                             `json:"replacementPrepared,omitempty"`
+	Withdrawal           *sharedcapacity.Withdrawal       `json:"withdrawal,omitempty"`
 }
 
 // Controller is called only while the native farm's fleet lock is held.
 // Receipts survive uncertain starts; neither grants nor receipts expire.
 type Controller struct {
-	Broker      sharedcapacity.Broker
-	Policy      sharedcapacity.Policy
-	ReceiptRoot string
-	Docker      Docker
-	RepairCache func(context.Context, string, string) error
-	Poisoned    func(string, string) (bool, error)
+	// OwnerContext bounds optional provenance reads by the existing native request.
+	OwnerContext context.Context
+	Organization string
+	Host         string
+	Epoch        string
+	Broker       sharedcapacity.Broker
+	Policy       sharedcapacity.Policy
+	ReceiptRoot  string
+	Docker       Docker
+	RepairCache  func(context.Context, string, string) error
+	Poisoned     func(string, string) (bool, error)
 }
 
 func (c *Controller) validate(container *Container, name string) error {
@@ -146,6 +154,9 @@ func (c *Controller) Start(ctx context.Context, name, id string) error {
 		return ErrQueued
 	}
 	owned.Fence = decision.Grant.Fence
+	if origin := owned.OriginalRegistration; origin != nil && origin.IncarnationSHA256 == "" {
+		origin.IncarnationSHA256 = ownerIncarnation(origin.Epoch, owned.ID, owned.Fence)
+	}
 	if err := c.save(name, owned); err != nil {
 		return err
 	}
@@ -292,7 +303,7 @@ func (c *Controller) load(name string) (*receipt, error) {
 	if !filepath.IsAbs(c.ReceiptRoot) || !namePattern.MatchString(name) {
 		return nil, errors.New("invalid build receipt path")
 	}
-	file, err := os.OpenFile(filepath.Join(c.ReceiptRoot, name+".json"), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	file, err := os.OpenFile(filepath.Join(c.ReceiptRoot, name+".json"), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, os.ErrNotExist
 	}
@@ -365,6 +376,11 @@ func (c *Controller) prepareStartReceipt(ctx context.Context, name string, conta
 			return nil, replaceErr
 		}
 	}
+	if owned != nil {
+		if err := c.prepareRefreshedOrigin(ctx, name, container, owned, snapshot); err != nil {
+			return nil, err
+		}
+	}
 	if owned != nil && owned.ReplacementPrepared {
 		return nil, errors.New("queued replacement is prepared; finish native refresh before admission")
 	}
@@ -373,6 +389,9 @@ func (c *Controller) prepareStartReceipt(ctx context.Context, name string, conta
 			return nil, errors.New("running or charged build requires owner adoption")
 		}
 		owned = &receipt{ID: container.ID}
+		if container.NeverStarted && validOwnerContext(c.Host, c.Epoch) && confgenPattern.MatchString(container.Confgen) {
+			owned.OriginalRegistration = &OriginalRegistration{Schema: 1, Host: c.Host, Epoch: c.Epoch, ContainerID: container.ID, Confgen: container.Confgen}
+		}
 		if saveErr := c.save(name, owned); saveErr != nil {
 			return nil, saveErr
 		}

@@ -3,7 +3,9 @@ package capacitycmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -115,5 +117,34 @@ func TestIdleReconciliationRequiresExactOwnerArguments(t *testing.T) {
 		if validArguments(args) {
 			t.Fatal("incomplete reconciliation arguments accepted")
 		}
+	}
+}
+
+func TestOptInOwnerStatusDoesNotChangeUnqualifiedStatus(t *testing.T) {
+	if !validArguments([]string{"status", "--owners"}) || validArguments([]string{"status", "owners"}) || validArguments([]string{"status", "--owners", "extra"}) {
+		t.Fatal("status qualifier is not closed")
+	}
+	diagnostics := sharedcapacity.Diagnostics{Schema: "test-diagnostics", PolicyMatches: true}
+	var old, want bytes.Buffer
+	if err := json.NewEncoder(&want).Encode(diagnostics); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeStatus(t.Context(), nil, diagnostics, false, &old); err != nil || old.String() != want.String() {
+		t.Fatal("unqualified status changed", old.String(), err)
+	}
+	c := &farmcapacity.Controller{Host: "approved-host", Epoch: strings.Repeat("e", 32), ReceiptRoot: filepath.Join(t.TempDir(), "absent")}
+	var qualified bytes.Buffer
+	if err := writeStatus(t.Context(), c, diagnostics, true, &qualified); err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal(qualified.Bytes(), &result); err != nil || len(result) != 5 {
+		t.Fatal(qualified.String(), err)
+	}
+	if string(result["schema"]) != `"ci-runner-farm-owners/v1"` || string(result["owners"]) != "[]" {
+		t.Fatal("qualified projection schema differs", qualified.String())
+	}
+	if _, err := os.Stat(c.ReceiptRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("readonly status created its absent receipt store", err)
 	}
 }

@@ -73,6 +73,9 @@ func (c *Controller) PublishRouting(ctx context.Context, owner *FrozenOwner) err
 	if !item.RoutingGated || !item.Running || item.Paused || item.ID != owner.ID {
 		return errors.New("routing requires an attested live gated listener")
 	}
+	if err := c.requireHostRouting(ctx, owned, item); err != nil {
+		return err
+	}
 	publicationErr := owner.publishRouting(ctx, item.RoutingLabels)
 	if errors.Is(publicationErr, os.ErrNotExist) {
 		// Scope-authorized absence cannot publish routing. Keep the exact owner
