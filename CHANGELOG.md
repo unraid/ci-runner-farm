@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.0](https://github.com/unraid/ci-runner-farm/compare/v1.16.2...v1.17.0) (2026-10-29)
+
+
+### Features
+
+* **farm:** retain original worker identity for host qualification ([#195](https://github.com/unraid/ci-runner-farm/issues/195)) ([d98f466](https://github.com/unraid/ci-runner-farm/commit/d98f466a34df814b9f7e8f30a1d43dbaff272a79))
+
 ## [1.16.2](https://github.com/unraid/ci-runner-farm/compare/v1.16.1...v1.16.2) (2026-10-28)
 
 
