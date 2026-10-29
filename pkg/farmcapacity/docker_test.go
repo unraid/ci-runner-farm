@@ -147,13 +147,14 @@ func TestNativeOwnerSamplesDetectInspectAndKernelIdentityRaces(t *testing.T) {
 			}
 			t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
 			row, err := (NativeDocker{}).observeLocalOwner(t.Context(), id, proc)
-			if mode == "stable" {
+			switch {
+			case mode == "stable":
 				if err != nil || !validLocalIdentity(row) {
 					t.Fatal(row, err)
 				}
-			} else if err == nil {
+			case err == nil:
 				t.Fatal("racing native identity accepted", mode, row)
-			} else if mode != "missing" && err.Error() != "native owner changed during identity observation" {
+			case mode != "missing" && err.Error() != "native owner changed during identity observation":
 				t.Fatal("fixture failed for the wrong reason", mode, err)
 			}
 		})
