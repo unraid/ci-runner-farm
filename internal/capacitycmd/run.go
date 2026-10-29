@@ -57,7 +57,7 @@ func Run(arguments []string, output io.Writer) (result error) {
 		return expandPools(lease, arguments[1], arguments[2])
 	}
 	controller := farmcapacity.Controller{
-		Host: config.Host, Epoch: config.Epoch, OwnerContext: ctx,
+		Host: config.Host, Epoch: config.Epoch, OwnerContext: ctx, Organization: config.Organization,
 		Broker: sharedcapacity.Broker{Path: config.LedgerPath}, Policy: config.Policy,
 		ReceiptRoot: config.ReceiptRoot, Docker: farmcapacity.NativeDocker{},
 		RepairCache: farmcapacity.RepairNativeCache, Poisoned: farmcapacity.NativePoisoned,

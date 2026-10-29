@@ -117,8 +117,9 @@ func TestLiveLegacyRegistrationUsesImmutableNameAfterHostRename(t *testing.T) {
 // Projection fixtures model protected host observations, never a live host.
 type projectionDocker struct {
 	*fakeDocker
-	current    *LocalWorkerIdentity
-	observeErr error
+	current        *LocalWorkerIdentity
+	observeErr     error
+	plainForbidden bool
 }
 
 func (d *projectionDocker) ObserveLocalOwner(_ context.Context, _ string) (*LocalWorkerIdentity, error) {
@@ -133,10 +134,29 @@ func (d *projectionDocker) ObserveLocalOwner(_ context.Context, _ string) (*Loca
 	return &sample, nil
 }
 
+func (d *projectionDocker) inspectLocalOwner(ctx context.Context, id string) (*Container, error) {
+	return d.fakeDocker.Inspect(ctx, id)
+}
+
+func (d *projectionDocker) Inspect(ctx context.Context, id string) (*Container, error) {
+	if d.plainForbidden {
+		return nil, errors.New("unpinned inspection used by provenance")
+	}
+	return d.fakeDocker.Inspect(ctx, id)
+}
+
+func (d *projectionDocker) verifyLocalRegistration(_ context.Context, current *LocalWorkerIdentity, organization string, runnerID int64, runnerName string) error {
+	if current.ContainerID != d.current.ContainerID || organization != testRegistrationOrganization || runnerID != 123 || runnerName != ownerNameForRoutingTest {
+		return errors.New("pinned public registration differs")
+	}
+	return nil
+}
+
 func projectionPendingFixture(t *testing.T) (*Controller, *projectionDocker, string) {
 	t.Helper()
 	c, d, id := fixture(t)
 	c.Host, c.Epoch = "approved-host", strings.Repeat("e", 32)
+	c.Organization = testRegistrationOrganization
 	c.Broker.Path, _ = filepath.EvalSymlinks(c.Broker.Path)
 	c.ReceiptRoot, _ = filepath.EvalSymlinks(filepath.Dir(c.ReceiptRoot))
 	c.ReceiptRoot = filepath.Join(c.ReceiptRoot, "receipts")
@@ -463,5 +483,46 @@ func TestOwnerObservationErrorIsUnknownNotAnAssertedIdentityChange(t *testing.T)
 	rows, err := c.ObserveOwners(t.Context(), diag)
 	if err != nil || len(rows) != 1 || rows[0].State != "unknown" || rows[0].Reason != "observation_unavailable" {
 		t.Fatal(rows, err)
+	}
+}
+
+func TestCurrentProvenanceJoinNeverFallsBackToPlainInspect(t *testing.T) {
+	c, d, _ := projectionFixture(t)
+	d.plainForbidden = true
+	diag, err := c.Broker.Diagnose(&c.Policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := c.ObserveOwners(t.Context(), diag)
+	if err != nil || len(rows) != 1 || rows[0].State != "complete" {
+		t.Fatal("current owner join used an unpinned read", rows, err)
+	}
+}
+
+func TestForeignUnpinnedRegistrationCannotBecomeLocalOriginal(t *testing.T) {
+	c, _, id := projectionPendingFixture(t)
+	if err := c.RecordRegistration(testName, id, 987, ownerNameForRoutingTest); err != nil {
+		t.Fatal(err)
+	}
+	owned, err := c.load(testName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owned.OriginalRegistration.Runtime != nil {
+		t.Fatal("foreign public runner ID was bound as local original")
+	}
+}
+
+func TestHostProofRejectsUnpinnedRoutingMetadata(t *testing.T) {
+	c, d, id := projectionFixture(t)
+	d.containers[id].RoutingLabels = []string{HostSelectorLabel(c.Host), buildPool}
+	unpinned := *d.containers[id]
+	unpinned.RoutingLabels = []string{HostSelectorLabel(c.Host), "foreign-class"}
+	owned, err := c.load(testName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = c.requireHostRouting(t.Context(), owned, &unpinned); err == nil {
+		t.Fatal("nonlocal routing metadata influenced targeted publication")
 	}
 }

@@ -85,6 +85,7 @@ type receipt struct {
 type Controller struct {
 	// OwnerContext bounds optional provenance reads by the existing native request.
 	OwnerContext context.Context
+	Organization string
 	Host         string
 	Epoch        string
 	Broker       sharedcapacity.Broker

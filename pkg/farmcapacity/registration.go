@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -48,6 +49,12 @@ func (c *Controller) RecordRegistration(name, id string, runnerID int64, runnerN
 		}
 		ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 		current, item, observeErr := c.observeOwner(ctx, name, id)
+		verifier, verifies := c.Docker.(interface {
+			verifyLocalRegistration(context.Context, *LocalWorkerIdentity, string, int64, string) error
+		})
+		if observeErr == nil && (!verifies || verifier.verifyLocalRegistration(ctx, current, c.Organization, runnerID, runnerName) != nil) {
+			observeErr = errors.New("local public registration is unproved")
+		}
 		cancel()
 		if observeErr == nil && item.RoutingGated && original.Host == c.Host && original.Epoch == c.Epoch && original.ContainerID == id && original.Confgen == item.Confgen && original.IncarnationSHA256 == ownerIncarnation(c.Epoch, id, owned.Fence) && item.RegistrationName == runnerName {
 			original.RunnerID, original.RunnerName, original.Runtime = runnerID, runnerName, current
@@ -154,6 +161,7 @@ func (c *Controller) observeOwner(ctx context.Context, name, id string) (*LocalW
 	}
 	observer, ok := c.Docker.(interface {
 		ObserveLocalOwner(context.Context, string) (*LocalWorkerIdentity, error)
+		inspectLocalOwner(context.Context, string) (*Container, error)
 	})
 	if !ok {
 		return nil, nil, errors.New("local owner observation is unavailable")
@@ -162,7 +170,7 @@ func (c *Controller) observeOwner(ctx context.Context, name, id string) (*LocalW
 	if err != nil {
 		return nil, nil, err
 	}
-	item, err := c.Docker.Inspect(ctx, id)
+	item, err := observer.inspectLocalOwner(ctx, id)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -322,7 +330,7 @@ func (c *Controller) requireHostRouting(ctx context.Context, owned *receipt, ite
 	if err = c.matchOriginal(owned, last, current); err != nil {
 		return fmt.Errorf("targeted owner provenance: %w", err)
 	}
-	if last.MemoryBytes != item.MemoryBytes || last.NanoCPUs != item.NanoCPUs {
+	if last.MemoryBytes != item.MemoryBytes || last.NanoCPUs != item.NanoCPUs || last.Confgen != item.Confgen || last.RegistrationName != item.RegistrationName || !slices.Equal(last.RoutingLabels, item.RoutingLabels) {
 		return errors.New("targeted owner resource observation changed")
 	}
 	return nil

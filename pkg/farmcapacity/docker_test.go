@@ -137,7 +137,7 @@ func TestNativeOwnerSamplesDetectInspectAndKernelIdentityRaces(t *testing.T) {
 			case "missing":
 				mutation = "/bin/rm " + strconv.Quote(filepath.Join(proc, "44/stat")) + "; "
 			}
-			script := "#!/bin/sh\ncase \"$1\" in\ncontext) echo unix:///var/run/docker.sock;;\nps) echo '" + id + "|" + testName + "';;\ninspect) if [ -f " + strconv.Quote(filepath.Join(root, "seen")) + " ]; then " + mutation + "exec /bin/cat " + strconv.Quote(filepath.Join(root, "second")) + "; fi; /usr/bin/touch " + strconv.Quote(filepath.Join(root, "seen")) + "; exec /bin/cat " + strconv.Quote(filepath.Join(root, "first")) + ";;\n*) exit 1;;\nesac\n"
+			script := "#!/bin/sh\ncase \"$1\" in --host) [ \"$2\" = unix:///var/run/docker.sock ] || exit 2; shift 2;; esac\ncase \"$1\" in\ncontext) echo unix:///var/run/docker.sock;;\nps) echo '" + id + "|" + testName + "';;\ninspect) if [ -f " + strconv.Quote(filepath.Join(root, "seen")) + " ]; then " + mutation + "exec /bin/cat " + strconv.Quote(filepath.Join(root, "second")) + "; fi; /usr/bin/touch " + strconv.Quote(filepath.Join(root, "seen")) + "; exec /bin/cat " + strconv.Quote(filepath.Join(root, "first")) + ";;\n*) exit 1;;\nesac\n"
 			if err := os.WriteFile(filepath.Join(root, "docker"), []byte(script), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -185,5 +185,141 @@ func TestOwnerObservationCannotJoinRemoteDockerPIDsToLocalProc(t *testing.T) {
 				t.Fatal("probed a container before establishing local endpoint", err)
 			}
 		})
+	}
+}
+
+// Source-only review control: a context changes after the initial endpoint read.
+// Every Docker command is a private shell fixture. No daemon is contacted.
+func TestLocalEndpointContextFlipCannotAuthorizeRemotePIDJoin(t *testing.T) {
+	root := t.TempDir()
+	proc := filepath.Join(root, "proc")
+	localProcFixture(t, proc, 44, "100")
+	id := strings.Repeat("a", 64)
+	data, _ := json.Marshal([]any{map[string]any{
+		"Id": id, "Name": "/" + testName,
+		"State":      map[string]any{"Status": "running", "Running": true, "Paused": false, "Pid": 44},
+		"HostConfig": map[string]any{"Memory": uint64(12288 * 1024 * 1024), "NanoCpus": uint64(1000000000)},
+		"Config":     map[string]any{"Labels": map[string]string{"net.unraid.ci-runner-farm.confgen": "123456abcdef"}},
+	}})
+	identity := filepath.Join(root, "identity.json")
+	if err := os.WriteFile(identity, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	switched := strconv.Quote(filepath.Join(root, "context-switched"))
+	remote := filepath.Join(root, "remote-command")
+	script := "#!/bin/sh\npinned=0\n" +
+		"if [ \"${DOCKER_HOST-}\" = unix:///var/run/docker.sock ] && [ -z \"${DOCKER_CONTEXT-}\" ]; then pinned=1; fi\n" +
+		"case \"$1\" in --host|-H) [ \"$2\" = unix:///var/run/docker.sock ] || exit 2; pinned=1; shift 2;; --host=unix:///var/run/docker.sock) pinned=1; shift;; esac\n" +
+		"case \"$1\" in\ncontext) if [ -f " + switched + " ]; then echo ssh://remote-fixture; else echo unix:///var/run/docker.sock; /usr/bin/touch " + switched + "; fi;;\n" +
+		"ps|inspect) if [ \"$pinned\" = 0 ] && [ -f " + switched + " ]; then /usr/bin/touch " + strconv.Quote(remote) + "; fi; " +
+		"if [ \"$1\" = ps ]; then echo '" + id + "|" + testName + "'; else /bin/cat " + strconv.Quote(identity) + "; fi;;\n*) exit 1;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(root, "docker"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("DOCKER_HOST", "")
+	t.Setenv("DOCKER_CONTEXT", "")
+	row, err := (NativeDocker{}).observeLocalOwner(t.Context(), id, proc)
+	if _, remoteErr := os.Stat(remote); remoteErr == nil && err == nil {
+		t.Fatalf("accepted local provenance after unpinned Docker commands followed a changed remote context: %+v", row)
+	}
+}
+
+func TestPinnedLocalReadsVerifyRegistrationAndPreserveParentEnvironment(t *testing.T) {
+	for _, mode := range []string{"complete", "local environment", "foreign runner", "foreign organization", "unavailable", "init changed after public read"} {
+		t.Run(mode, func(t *testing.T) {
+			root := t.TempDir()
+			proc := filepath.Join(root, "proc")
+			localProcFixture(t, proc, 44, "100")
+			id := strings.Repeat("a", 64)
+			runnerName := "approved-host-" + testName
+			data, _ := json.Marshal([]any{map[string]any{"Id": id, "Name": "/" + testName, "State": map[string]any{"Status": "running", "Running": true, "Paused": false, "Pid": 44}, "HostConfig": map[string]any{"Memory": uint64(12288 * 1024 * 1024), "NanoCpus": uint64(1000000000)}, "Config": map[string]any{"Env": []string{"RUNNER_NAME=" + runnerName}, "Labels": map[string]string{"net.unraid.ci-runner-farm.confgen": "123456abcdef", "net.unraid.ci-runner-farm.managed": "true", "net.unraid.ci-runner-farm.provider": "github", "net.unraid.ci-runner-farm.role": "runner", "net.unraid.ci-runner-farm.pool": "build"}}}})
+			inspection := filepath.Join(root, "inspection")
+			if err := os.WriteFile(inspection, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			publicID := int64(123)
+			organization := testRegistrationOrganization
+			if mode == "foreign runner" {
+				publicID = 987
+			}
+			if mode == "foreign organization" {
+				organization = "foreign"
+			}
+			data, _ = json.Marshal(map[string]any{"agentId": publicID, "agentName": runnerName, "gitHubUrl": "https://github.com/" + organization})
+			publicFile := filepath.Join(root, "public-identity")
+			if err := os.WriteFile(publicFile, append([]byte{0xef, 0xbb, 0xbf}, data...), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			marker := filepath.Join(root, "unpinned")
+			switched := filepath.Join(root, "switched")
+			execBranch := "exec /bin/cat " + strconv.Quote(publicFile)
+			if mode == "unavailable" {
+				execBranch = "exit 1"
+			}
+			if mode == "init changed after public read" {
+				statPath := filepath.Join(proc, "44/stat")
+				statData, err := os.ReadFile(statPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				changed := filepath.Join(root, "changed-stat")
+				if err = os.WriteFile(changed, []byte(strings.TrimSuffix(string(statData), "100")+"999"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				execBranch = "/bin/cp " + strconv.Quote(changed) + " " + strconv.Quote(statPath) + "; " + execBranch
+			}
+			script := "#!/bin/sh\npinned=0\ncase \"$1\" in --host) [ \"$2\" = unix:///var/run/docker.sock ] || exit 2; pinned=1; shift 2;; esac\nif [ \"$1\" != context ]; then\n if [ \"$pinned\" != 1 ] || [ -n \"${DOCKER_CONTEXT-}${DOCKER_HOST-}${DOCKER_TLS_VERIFY-}${DOCKER_CERT_PATH-}\" ]; then /usr/bin/touch " + strconv.Quote(marker) + "; exit 3; fi\nfi\ncase \"$1\" in\ncontext) if [ -f " + strconv.Quote(switched) + " ]; then echo ssh://remote-fixture; else /usr/bin/touch " + strconv.Quote(switched) + "; echo unix:///var/run/docker.sock; fi;;\nps) echo '" + id + "|" + testName + "';;\ninspect) exec /bin/cat " + strconv.Quote(inspection) + ";;\nexec) " + execBranch + ";;\n*) exit 1;;\nesac\n"
+			if err := os.WriteFile(filepath.Join(root, "docker"), []byte(script), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// #nosec G302 -- private executable Docker fixture; no daemon or credential contacted.
+			if err := os.Chmod(filepath.Join(root, "docker"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+			parent := map[string]string{"DOCKER_HOST": "", "DOCKER_CONTEXT": "operator-context", "DOCKER_TLS_VERIFY": "1", "DOCKER_CERT_PATH": "/private/not-read-fixture"}
+			if mode == "local environment" {
+				parent["DOCKER_HOST"] = localDockerEndpoint
+			}
+			for key, value := range parent {
+				t.Setenv(key, value)
+			}
+			d := NativeDocker{}
+			row, err := d.observeLocalOwner(t.Context(), id, proc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = d.verifyLocalRegistrationAt(t.Context(), row, testRegistrationOrganization, 123, runnerName, proc)
+			if (err == nil) != (mode == "complete" || mode == "local environment") {
+				t.Fatal("pinned public identity result differs", mode, err)
+			}
+			if _, err = d.inspectLocalOwner(t.Context(), id); err != nil {
+				t.Fatal("final local reinspection was not pinned", err)
+			}
+			if _, err = os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatal("optional provenance used conflicting endpoint state", err)
+			}
+			for key, value := range parent {
+				if os.Getenv(key) != value {
+					t.Fatal("operator environment was mutated", key)
+				}
+			}
+		})
+	}
+}
+
+func TestOrdinaryInspectRetainsOperatorContextAndEnvironment(t *testing.T) {
+	id := strings.Repeat("a", 64)
+	installFailingDocker(t, id, "")
+	// Ordinary Inspect must keep using the operator's endpoint and environment.
+	// The existing fixture accepts only the original plain ps/inspect argv.
+	t.Setenv("DOCKER_CONTEXT", "ordinary-operator-context")
+	t.Setenv("DOCKER_HOST", "tcp://ordinary-fixture:2376")
+	if _, err := (NativeDocker{}).Inspect(t.Context(), id); err != nil {
+		t.Fatal("ordinary Inspect was changed", err)
+	}
+	if os.Getenv("DOCKER_CONTEXT") != "ordinary-operator-context" || os.Getenv("DOCKER_HOST") != "tcp://ordinary-fixture:2376" {
+		t.Fatal("operator endpoint was mutated")
 	}
 }
