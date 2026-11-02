@@ -199,6 +199,31 @@ Host/process mappings stay in protected local receipts and private operator
 evidence, not public workflow logs, labels, or ordinary UI output. No argv,
 environment, mount paths, passwords or license material are included.
 
+### Opt-in current owner metadata
+
+`ci-runner-capacity status --current-owner <runner-id>` selects one positive
+GitHub runner ID through existing protected native receipts. It requires the
+same root invocation, inherited fleet lock and protected configuration lease.
+This read joins an existing lease file read-only and refuses a missing lease
+or parent directory. It does not initialize either path.
+The `current-owner-read-v1` capability identifies support for this option.
+Ordinary `status` and `status --owners` retain their existing behavior.
+
+The separate `ci-runner-farm-current-owner/v1` result describes only the current
+container, local process identity, public runner registration, selected image
+metadata, configured hard limits and canonical memory-file metadata. It reads
+neither the memory-file contents nor container environment or arguments, and
+does not execute a command inside the container. A missing file remains
+unobserved. Configured memory is not historical effective-memory proof.
+
+The reader rejects duplicate registrations, busy or changing workers, mismatched
+fences, grants or limits, unsafe actual receipt directories or files, unproved
+local Docker endpoints and changed process or public registration identities.
+It uses the native private receipt boundary rather than imposing private-root
+permissions on shared filesystem mount ancestors. It never changes filesystem
+permissions, receipts, routing, capacity or registration. Missing original
+provenance remains unavailable; this result does not grant release authority.
+
 ### Opt-in host placement through existing registration labels
 
 The reserved host selector is exactly `crf-host-` followed by the lowercase

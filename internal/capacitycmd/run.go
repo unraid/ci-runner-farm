@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -20,7 +21,7 @@ import (
 // Run requires the native parent's fleet lock for every owner mutation.
 func Run(arguments []string, output io.Writer) (result error) {
 	if len(arguments) == 1 && arguments[0] == "capabilities" {
-		return json.NewEncoder(output).Encode([]string{"fenced-start-memory-v6", "resident-memory-v7", "standalone-owner-init-v1", "pool-expansion-v1"})
+		return json.NewEncoder(output).Encode([]string{"fenced-start-memory-v6", "resident-memory-v7", "standalone-owner-init-v1", "pool-expansion-v1", "current-owner-read-v1"})
 	}
 	if len(arguments) == 1 && arguments[0] == "version" {
 		_, err := fmt.Fprintln(output, "ci-runner-capacity protocol 1")
@@ -40,14 +41,23 @@ func Run(arguments []string, output io.Writer) (result error) {
 		return runMetadata(lease.Config, arguments[0], output)
 	}
 	if os.Geteuid() != 0 || !validArguments(arguments) {
-		return errors.New("root and initialize, expand-pools <epoch> <request>, start|prepare-release|release|refresh-queued|reconcile-idle <name> <id>, demand-observe <pools>, demand-apply|demand-warm <pools> <targets>, or rebalance|retire|status [--owners] are required")
+		return errors.New("root and initialize, expand-pools <epoch> <request>, start|prepare-release|release|refresh-queued|reconcile-idle <name> <id>, demand-observe <pools>, demand-apply|demand-warm <pools> <targets>, rebalance|retire, or status [--owners | --current-owner <runner-id>] are required")
 	}
 	if err := verifyFleetLock(); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	lease, err := hostcapacity.Acquire(ctx, hostcapacity.ConfigPath, arguments[0] == "initialize" || arguments[0] == "expand-pools")
+	var lease *hostcapacity.Lease
+	var err error
+	if _, currentOnly := currentOwnerSelector(arguments); currentOnly {
+		lease, err = hostcapacity.JoinExisting(ctx, hostcapacity.ConfigPath)
+		if err != nil {
+			return errors.New("current owner configuration lease is unavailable")
+		}
+	} else {
+		lease, err = hostcapacity.Acquire(ctx, hostcapacity.ConfigPath, arguments[0] == "initialize" || arguments[0] == "expand-pools")
+	}
 	if err != nil {
 		return err
 	}
@@ -73,6 +83,13 @@ func Run(arguments []string, output io.Writer) (result error) {
 		if err != nil {
 			return err
 		}
+		if runnerID, selected := currentOwnerSelector(arguments); selected {
+			observation, observeErr := controller.ObserveCurrentOwner(ctx, diagnostics, runnerID)
+			if observeErr != nil {
+				return observeErr
+			}
+			return json.NewEncoder(output).Encode(observation)
+		}
 		return writeStatus(ctx, &controller, diagnostics, len(arguments) == 2, output)
 	}
 	if config.Mode != "active" {
@@ -82,6 +99,9 @@ func Run(arguments []string, output io.Writer) (result error) {
 }
 
 func validArguments(arguments []string) bool {
+	if _, selected := currentOwnerSelector(arguments); selected {
+		return true
+	}
 	if len(arguments) == 1 {
 		return arguments[0] == "initialize" || arguments[0] == "rebalance" || arguments[0] == "retire" || arguments[0] == "status"
 	}
@@ -89,6 +109,14 @@ func validArguments(arguments []string) bool {
 		return arguments[0] == "demand-observe" || (arguments[0] == "status" && arguments[1] == "--owners")
 	}
 	return len(arguments) == 3 && (arguments[0] == "expand-pools" || arguments[0] == "start" || arguments[0] == "prepare-release" || arguments[0] == "release" || arguments[0] == "refresh-queued" || arguments[0] == "reconcile-idle" || arguments[0] == "demand-apply" || arguments[0] == "demand-warm")
+}
+
+func currentOwnerSelector(arguments []string) (int64, bool) {
+	if len(arguments) != 3 || arguments[0] != "status" || arguments[1] != "--current-owner" {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(arguments[2], 10, 64)
+	return id, err == nil && id > 0 && strconv.FormatInt(id, 10) == arguments[2]
 }
 
 func verifyFleetLock() error {
