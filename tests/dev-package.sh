@@ -168,7 +168,7 @@ trap 'rm -f -- "$log"; rm -rf -- "$extract_dir" "$mode_fixture"' EXIT HUP INT TE
 tar -xzf "$package" -C "$extract_dir"
 diff -r --exclude=bin "src/usr/local/emhttp/plugins/ci-runner-farm" "$extract_dir" >/dev/null \
   || fail "package contents differ from the runtime source tree"
-python3 - "$extract_dir/bin/ci-runner-capacity" <<'PY'
+python3 - "$extract_dir/bin/ci-runner-auth" <<'PY'
 import os
 import struct
 import sys
@@ -178,7 +178,7 @@ assert header[:6] == b'\x7fELF\x02\x01'
 assert struct.unpack_from('<H', header, 18)[0] == 62
 assert os.stat(sys.argv[1]).st_mode & 0o111
 PY
-capacity_go="$(go version "$extract_dir/bin/ci-runner-capacity")" \
+capacity_go="$(go version "$extract_dir/bin/ci-runner-auth")" \
   || fail "cannot read capacity helper build info"
 [ "${capacity_go##*: }" = "go1.26.10" ] \
   || fail "capacity helper was not built with go1.26.10: $capacity_go"

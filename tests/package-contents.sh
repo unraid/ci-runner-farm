@@ -12,6 +12,8 @@ mkdir -p "$tmp/build" "$tmp/extracted"
 tar -cf - build-plg.sh go.mod go.sum cmd internal pkg VERSION CHANGELOG.md "$RUNTIME" | tar -xf - -C "$tmp/build"
 (
   cd "$tmp/build"
+  mkdir -p "$RUNTIME/bin"
+  printf 'obsolete allocator fixture\n' > "$RUNTIME/bin/ci-runner-capacity"
   DATE=2026.01.02.0304 BUILD_NUMBER=7 INTERNAL_VERSION=0.0.0 REPO=unraid/ci-runner-farm \
     bash ./build-plg.sh >/dev/null
   python3 -c 'import xml.etree.ElementTree as ET; ET.parse("ci-runner-farm.plg")'
@@ -36,17 +38,41 @@ diff -r "$tmp/build/$RUNTIME" "$tmp/extracted" >/dev/null || {
 diff -r --exclude=bin "$RUNTIME" "$tmp/extracted" >/dev/null
 # Inspect the actual packaged executable without requiring x86 emulation on
 # ARM development hosts. A shell script or a host-native Mach-O is not valid.
-python3 - "$tmp/extracted/bin/ci-runner-capacity" <<'PY'
+python3 - "$tmp/extracted/bin/ci-runner-auth" <<'PY'
 import os
 import struct
 import sys
 with open(sys.argv[1], 'rb') as handle:
     header = handle.read(64)
-assert header[:6] == b'\x7fELF\x02\x01', 'capacity helper must be little-endian ELF64'
-assert struct.unpack_from('<H', header, 18)[0] == 62, 'capacity helper must target amd64'
-assert os.stat(sys.argv[1]).st_mode & 0o111, 'capacity helper must be executable'
+assert header[:6] == b'\x7fELF\x02\x01', 'authentication helper must be little-endian ELF64'
+assert struct.unpack_from('<H', header, 18)[0] == 62, 'authentication helper must target amd64'
+assert os.stat(sys.argv[1]).st_mode & 0o111, 'authentication helper must be executable'
 PY
-go version -m "$tmp/extracted/bin/ci-runner-capacity" | grep -qF 'go1.26.10'
+go version -m "$tmp/extracted/bin/ci-runner-auth" | grep -qF 'go1.26.10'
+
+# Execute only the generated obsolete-runtime cleanup in an isolated fixture.
+# An overlay extraction must not leave the retired allocation executable callable.
+python3 - "$tmp/build/ci-runner-farm.plg" "$tmp/extracted" <<'PYRETIRED'
+import pathlib
+import subprocess
+import sys
+text = pathlib.Path(sys.argv[1]).read_text()
+root = pathlib.Path(sys.argv[2])
+for name in ('bin/ci-runner-capacity', 'include/shared-capacity.sh', 'include/build-demand.php'):
+    path = root / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('obsolete fixture')
+config = root / 'host-capacity.json'
+config.write_text('retained policy fixture')
+start = text.index('# Remove obsolete allocation runtime only;')
+end = text.index('chown -R root:root', start)
+subprocess.run(['bash', '-euc', 'PLGDIR="$1"\n' + text[start:end], 'retired-runtime', str(root)], check=True)
+for name in ('bin/ci-runner-capacity', 'include/shared-capacity.sh', 'include/build-demand.php'):
+    assert not (root / name).exists(), name
+assert config.read_text() == 'retained policy fixture'
+config.unlink()
+assert (root / 'bin/ci-runner-auth').is_file()
+PYRETIRED
 
 # Exercise permissions from the generated install action. Archive permissions
 # alone do not prove that Unraid leaves the native controller executable.
@@ -58,7 +84,7 @@ text = pathlib.Path(sys.argv[1]).read_text()
 start = text.index('find "$PLGDIR" -type d -exec chmod 0755 {} +')
 end = text.index('# Config defaults', start)
 subprocess.run(['bash', '-euc', 'PLGDIR="$1"\n' + text[start:end], 'install-mode', sys.argv[2]], check=True)
-assert pathlib.Path(sys.argv[2], 'bin/ci-runner-capacity').stat().st_mode & 0o111, 'installed capacity controller must remain executable'
+assert pathlib.Path(sys.argv[2], 'bin/ci-runner-auth').stat().st_mode & 0o111, 'installed authentication helper must remain executable'
 assert pathlib.Path(sys.argv[2], 'include/runner-job-cleanup.sh').stat().st_mode & 0o111, 'installed job hook must remain executable'
 PYMODE
 
@@ -104,7 +130,7 @@ for required in \
   event/docker_started event/stopping_docker include/runner-farm.sh include/exec.php include/crf-core.php \
   include/boot-log.sh include/encoding.php include/providers/github.sh include/providers/gitlab.sh \
   include/runner-recommendations.sh include/runner-history.sh \
-  nchan/ci_runner_farm README.md bin/ci-runner-capacity
+  nchan/ci_runner_farm README.md bin/ci-runner-auth
 do
   [ -f "$tmp/extracted/$required" ] || {
     echo "package-contents: required runtime file missing from archive: $required" >&2
