@@ -1,3 +1,4 @@
+// Package authcmd supplies GitHub App authentication for runner registration.
 package authcmd
 
 import (

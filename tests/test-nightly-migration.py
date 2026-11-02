@@ -1,4 +1,3 @@
-import json
 import os
 
 # Executes only repository fixtures without a shell.
@@ -94,7 +93,6 @@ class NativeNightlyMigrationTests(unittest.TestCase):
                         (boot / "ci-runner-farm/descriptor-backups").glob("*.plg")
                     )
                     self.assertTrue(any(file.read_text() == "old" for file in saved))
-
 
 
 if __name__ == "__main__":
