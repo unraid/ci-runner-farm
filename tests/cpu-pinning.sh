@@ -222,7 +222,6 @@ SHARED_IMAGE_CACHE=false; NETWORK_ISOLATION=off; EPHEMERAL=false; RUN_AS_ROOT=fa
 host() { printf 'mockhost\n'; }
 runner_host_service_ipv4() { printf '192.0.2.10\n'; }
 github_kvm_gid() { return 1; }
-shared_capacity_enabled() { return 1; }
 legacy_confgen="$(printf '%s\0' '' "$GH_SCOPE" "$GH_OWNER" "$GH_REPOS" "$RUNNER_GROUP" "$RUNNER_LABELS" \
   "$EPHEMERAL" "$RUNNER_CPUS" "$RUNNER_MEMORY" "$WORK_TMPFS_SIZE" "$CACHE_MOUNTS" \
   "$USER_SHARE_MOUNTS" \
@@ -259,12 +258,6 @@ args_of | grep -qx -- "net.unraid.ci-runner-farm.confgen=$enabled_confgen" || fa
 run_owned_github_container 1 >/dev/null || fail "docker run path failed"
 grep -qx -- '--cpuset-cpus=0-3' "$tmp/run.argv" || fail "docker run did not receive --cpuset-cpus"
 grep -qx -- '--cpus=4' "$tmp/run.argv" || fail "docker run did not receive --cpus"
-shared_capacity_enabled() { return 0; }
-shared_capacity_start() { return 0; }
-run_owned_github_container 1 >/dev/null || fail "shared docker create path failed"
-grep -qx -- '--cpuset-cpus=0-3' "$tmp/create.argv" || fail "docker create did not receive --cpuset-cpus"
-grep -qx -- '--cpus=4' "$tmp/create.argv" || fail "docker create did not receive --cpus"
-shared_capacity_enabled() { return 1; }
 # A fractional limit keeps the quota, warns, and starts unpinned.
 RUNNER_CPUS='2.5'
 NO_REGISTER=1 github_build_args 1 ci-runner-build-1 2>"$tmp/build.err" || fail "fractional argv build failed"

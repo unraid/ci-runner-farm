@@ -28,7 +28,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up pinned capacity compiler
+      - name: Set up pinned helper compiler
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version: '1.26.10'
@@ -43,8 +43,8 @@ jobs:
       - name: Lint generated GitLab Runner configuration
         run: bash tests/gitlab-runner-lint.sh
 
-      - name: Verify shared runners avoid healthcheck execs during pause
-        run: bash tests/shared-healthcheck-runtime.sh
+      - name: Verify ordinary runner healthchecks and hard limits
+        run: bash tests/runner-healthcheck-runtime.sh
 
       - name: Verify pnpm disk store with a RAM workspace
         run: bash tests/pnpm-store-runtime.sh

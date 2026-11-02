@@ -50,7 +50,7 @@ REPO="${REPO:-unraid/ci-runner-farm}"
 # (never /usr or a root '.' entry that could clobber system-dir perms on extract;
 # the install step extracts --no-same-owner and chowns root:root regardless).
 make_tgz() {
-  build_native_capacity
+  build_native_auth
   local opts=()
   if tar --version 2>/dev/null | grep -qi 'gnu tar'; then
     opts=(--sort=name --mtime='UTC 2020-01-01' --owner=0 --group=0 --numeric-owner)
@@ -61,19 +61,20 @@ make_tgz() {
 
 # Pin the compiler and strip checkout paths/VCS state so tagged rebuilds produce
 # the same Linux executable. Never package a previously generated helper.
-build_native_capacity() {
+build_native_auth() {
   local temporary
-  command -v go >/dev/null 2>&1 || { echo "Go is required to build native capacity" >&2; return 1; }
+  command -v go >/dev/null 2>&1 || { echo "Go is required to build runner authentication" >&2; return 1; }
   temporary="$(mktemp -d)" || return 1
   if ! GOTOOLCHAIN=go1.26.10 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' \
-    -o "$temporary/ci-runner-capacity" ./cmd/ci-runner-capacity; then
+    -o "$temporary/ci-runner-auth" ./cmd/ci-runner-auth; then
     rm -rf -- "$temporary"
     return 1
   fi
   mkdir -p "$SRCDIR/bin"
-  chmod 755 "$temporary/ci-runner-capacity"
-  mv -f "$temporary/ci-runner-capacity" "$SRCDIR/bin/ci-runner-capacity"
+  rm -f -- "$SRCDIR/bin/ci-runner-capacity"
+  chmod 755 "$temporary/ci-runner-auth"
+  mv -f "$temporary/ci-runner-auth" "$SRCDIR/bin/ci-runner-auth"
   rm -rf -- "$temporary"
 }
 
@@ -470,10 +471,12 @@ find "\$CFGDIR" -maxdepth 1 -name '${NAME}-*.tgz' ! -name '${PACKAGE_NAME}' -del
 # --no-overwrite-dir leaves existing dir metadata alone. System dirs untouched.
 # The .tgz is kept on flash so the on-boot reinstall works without a download.
 tar -xzf "\$CFGDIR/${PACKAGE_NAME}" --no-same-owner --no-overwrite-dir -C "\$PLGDIR"
+# Remove obsolete allocation runtime only; keep saved configuration and ledgers.
+rm -f -- "\$PLGDIR/bin/ci-runner-capacity" "\$PLGDIR/include/shared-capacity.sh" "\$PLGDIR/include/build-demand.php"
 chown -R root:root "\$PLGDIR"
 find "\$PLGDIR" -type d -exec chmod 0755 {} +
 find "\$PLGDIR" -type f -exec chmod 0644 {} +
-chmod 0755 "\$PLGDIR/include/runner-farm.sh" "\$PLGDIR/include/runner-job-cleanup.sh" "\$PLGDIR/bin/ci-runner-capacity"
+chmod 0755 "\$PLGDIR/include/runner-farm.sh" "\$PLGDIR/include/runner-job-cleanup.sh" "\$PLGDIR/bin/ci-runner-auth"
 [ -d "\$PLGDIR/nchan" ] && find "\$PLGDIR/nchan" -type f -exec chmod 0755 {} +
 # Unraid's emhttp_event executes these on Docker service start/stop — must be +x
 [ -d "\$PLGDIR/event" ] && find "\$PLGDIR/event" -type f -exec chmod 0755 {} +

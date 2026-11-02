@@ -89,38 +89,8 @@ github_confgen() {
     | sha256sum | cut -c1-12
 }
 
-# Status sampling runs outside the fleet lock. Never spawn an exec that can
-# race native freeze; observe the captured owner from the host instead. These
-# display states do not authorize withdrawal or replace the provider's proof.
-github_shared_runner_state() {
-  local snapshot id provider role index gen state processes phase
-  snapshot="$(managed_runner_snapshot "$1")" || { echo starting; return; }
-  IFS='|' read -r id provider role index gen <<< "$snapshot"
-  [ "$provider" = github ] && [ "$role" = runner ] || { echo starting; return; }
-  state="$(timeout 10 docker inspect --format '{{.State.Status}}|{{.State.Paused}}' "$id" 2>/dev/null)" \
-    || { echo starting; return; }
-  case "$state" in
-    running\|true) echo paused; return ;;
-    running\|false) ;;
-    *) echo starting; return ;;
-  esac
-  processes="$(timeout 10 docker top "$id" -eo pid,comm 2>/dev/null)" \
-    || { echo starting; return; }
-  phase="$(printf '%s\n' "$processes" | awk '
-    NR==1 { if (NF!=2 || $1!="PID" || $2!="COMMAND") bad=1; next }
-    NF!=2 || $1!~/^[0-9]+$/ || $1==0 { bad=1 }
-    NF==2 && $1~/^[0-9]+$/ && $1>0 && $2=="Runner.Worker" { workers++ }
-    $2=="Runner.Listener" { listeners++ }
-    END {
-      if (workers) print "busy";
-      else if (!bad && listeners==1) print "idle";
-      else print "starting";
-    }')"
-  printf '%s\n' "$phase"
-}
-
+# Ordinary provider status samples the runner process and recent job output.
 github_runner_state() {
-  if shared_capacity_enabled; then github_shared_runner_state "$1"; return; fi
   local c="$1" p
   p="$(docker exec "$c" sh -c 'pgrep -x Runner.Worker >/dev/null 2>&1 && echo busy || { pgrep -x Runner.Listener >/dev/null 2>&1 && echo idle; }' 2>/dev/null)"
   case "$p" in busy) echo busy; return;; idle) echo idle; return;; esac
@@ -702,9 +672,6 @@ github_build_args() {
       ;;
   esac
   local registration_labels="$RUNNER_LABELS"
-  if shared_capacity_enabled; then
-    registration_labels=crf-shared-awaiting-identity
-  fi
   ARGS_TMPDIR=""
   ARGS=(
     -d --restart=no
@@ -727,11 +694,6 @@ github_build_args() {
     -e RUNNER_WORKDIR="/_work"
     -e npm_config_cache="/home/runner/.npm"
   )
-  if shared_capacity_enabled; then
-    ARGS+=( -e NO_DEFAULT_LABELS=true
-      -e "UNRAID_RUNNER_ROUTING_LABELS=$RUNNER_LABELS"
-      --label "net.unraid.ci-runner-farm.routing-labels=$RUNNER_LABELS" )
-  fi
   [ -z "$kvm_gid" ] || ARGS+=( --device /dev/kvm --group-add "$kvm_gid" -e "KVM_GID=$kvm_gid" )
   [ "$EPHEMERAL" = "true" ] && ARGS+=( -e EPHEMERAL="true" )
   local m hostdir
@@ -764,7 +726,7 @@ github_build_args() {
   fi
   [ -n "$RUNNER_CPUS" ]   && ARGS+=( --cpus="$RUNNER_CPUS" )
   if [ "${CPU_PINNING:-false}" = true ]; then
-    # Keep --cpus: capacity accounting reads each runner's CPU cost from it.
+    # Keep --cpus as the Docker CPU quota alongside the selected CPU set.
     # Placement failure is never fatal; the runner then starts unpinned.
     local cpuset
     if cpuset="$(crf_cpu_pinning_cpuset "$RUNNER_CPUS" "$name")" && [ -n "$cpuset" ]; then
@@ -857,9 +819,6 @@ github_build_args() {
     chmod 600 "$envf" 2>/dev/null \
       || { rm -rf "$envdir"; err "could not protect the registration-token file for $name"; return 1; }
     ARGS+=( --env-file "$envf" )
-    if shared_capacity_enabled; then
-      ARGS+=( --label "net.unraid.ci-runner-farm.registration-issued=$(date +%s)" )
-    fi
     ARGS_TMPDIR="$envdir"
   fi
   ARGS+=( "$image" )
@@ -868,8 +827,7 @@ github_build_args() {
 github_start_one() {
   local idx="$1" name="$2" rc image
   image="$(effective_image)" || return 1
-  # Queued native starts can bypass the full Start preflight. Prepare cold
-  # private images with host authentication before minting runner credentials.
+  # Prepare cold private images before minting runner credentials.
   if [ "$IMAGE_SOURCE" = remote ] && [ -n "$IMAGE" ] \
      && ! docker image inspect "$image" >/dev/null 2>&1; then
     github_prepare_remote_image "$image" >/dev/null \
@@ -953,20 +911,10 @@ github_status_resources() { return 0; }
 
 # Populate cmd_usage_refresh's dynamically scoped provider-neutral output fields.
 github_usage_context() {
-  local c="$1" jline jenv jref shared=false snapshot provider role index gen
-  if shared_capacity_enabled; then
-    shared=true
-    snapshot="$(managed_runner_snapshot "$c")" || return 0
-    IFS='|' read -r c provider role index gen <<< "$snapshot"
-    [ "$provider" = github ] && [ "$role" = runner ] || return 0
-  fi
+  local c="$1" jline jenv jref
   jline="$(docker logs --timestamps --tail 60 "$c" 2>&1 | grep 'Running job: ' | tail -1 | tr -d '\r')"
   job="${jline##*Running job: }"
   jstarted="$(echo "$jline" | awk '{print $1}' | grep -oE '^[0-9T:.Z-]+' | head -1)"; jstarted="${jstarted:-_}"
-  # The worker can finish after the busy sample, allowing native pause before
-  # this optional metadata read. Keep log-derived fields; unavailable repo/run
-  # links are preferable to spawning an exec into a freezeable shared owner.
-  [ "$shared" = false ] || return 0
   jenv="$(docker exec "$c" sh -c 'for p in /proc/[0-9]*/environ; do if tr "\0" "\n" < $p 2>/dev/null | grep -q "^GITHUB_REPOSITORY="; then tr "\0" "\n" < $p | grep -E "^GITHUB_(REPOSITORY|RUN_ID|REF_NAME)="; break; fi; done' 2>/dev/null)"
   if [ -n "$jenv" ]; then
     jrepo="$(echo "$jenv" | grep '^GITHUB_REPOSITORY=' | head -1 | cut -d= -f2)"
@@ -984,11 +932,7 @@ github_usage_context() {
 }
 
 github_validate() {
-  shared_capacity_require_starts_open || return 1
-  if shared_capacity_enabled; then
-    err "inert validation containers are disabled while shared host admission is active"
-    return 1
-  fi
+  runner_starts_allowed || return 1
   check_cache_root || return 1
   ensure_dirs || return 1
   registry_login || return 1

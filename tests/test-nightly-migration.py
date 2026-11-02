@@ -1,4 +1,3 @@
-import json
 import os
 
 # Executes only repository fixtures without a shell.
@@ -94,42 +93,6 @@ class NativeNightlyMigrationTests(unittest.TestCase):
                         (boot / "ci-runner-farm/descriptor-backups").glob("*.plg")
                     )
                     self.assertTrue(any(file.read_text() == "old" for file in saved))
-
-    def test_actual_provider_root_validation_rejects_trailing_newline(self):
-        source = Path(
-            "src/usr/local/emhttp/plugins/ci-runner-farm/include/shared-capacity.sh"
-        ).read_text()
-        script = source.split("shared_capacity_call() {", 1)[1]
-        script = script.split("php -r '\n", 1)[1].split("\n  '", 1)[0]
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            script = script.replace(
-                "/boot/config/plugins/qa-vm-service/", str(root) + "/"
-            )
-            script = script.replace(
-                "fileowner($file)!==0", f"fileowner($file)!=={os.geteuid()}"
-            )
-            for value, valid in [
-                ("/mnt/cache/appdata/qa-vm-service", True),
-                ("/mnt/cache/appdata/qa-vm-service\n", False),
-            ]:
-                for name, document in [
-                    ("host-policy.json", {"providerConfig": {"stateRoot": value}}),
-                    (
-                        "host-plan.json",
-                        {"manifest": {"providerConfig": {"stateRoot": value}}},
-                    ),
-                ]:
-                    file = root / name
-                    file.write_text(json.dumps(document))
-                    file.chmod(0o600)
-                result = subprocess.run(  # nosec
-                    ["php", "-r", script],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                self.assertEqual(result.returncode == 0, valid, result.stderr)
 
 
 if __name__ == "__main__":

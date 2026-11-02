@@ -654,135 +654,24 @@ runtime provider.
 Canonical releases use release-please and GitHub Release assets. Questions and
 bug reports: <https://github.com/unraid/ci-runner-farm/issues>
 
-### Shared host budget consumers
+### Runner resources
 
-Farm runs independently. Installing or operating Farm does not require QA Lab,
-its binary, its configuration or its service. Most installations need only the
-normal runner settings. Shared host admission is an optional integration for
-hosts that also run other workloads.
+Farm manages its own runner containers with the configured CPU quotas, CPU
+sets, memory limits, images, labels and per-pool counts. GitHub Actions or
+GitLab workflows own builds, temporary VMs, output and job artifacts.
 
-With this integration enabled, Farm owns the host policy and admission ledger.
-QA Lab can participate as a consumer through the public SDK. A standalone host
-does not configure a QA consumer. An installed consumer that is unavailable
-does not prevent Farm from using capacity within the protected shared policy.
-Its existing allocations remain charged until their owner proves they stopped.
+Farm does not expose a host-wide resource allocator, allocation SDK, ownership
+receipt API or shared memory-admission service. Other host workloads need their
+own resource configuration. Named-pool autoscaling grows within each configured
+pool maximum using current runner occupancy and its warm-idle target.
 
-The public `pkg/hostcapacity` SDK provides `WithConsumer` for a host participant.
-Its `Binding` selects Farm's protected config path, ownership epoch and declared
-consumer name. The participant stores no independent copy of the shared policy.
-Farm provides the ledger path, allocation classes and guest overhead under a
-shared policy lease.
-
-Acquire the participant's configuration and owner/capacity locks first. Put
-both the provider or listener effect and its state/receipt commit inside the
-`WithConsumer` callback. Pass its context to nested operations so they reuse
-the same lease. A different ownership binding or a context retained after the
-outer callback returns is rejected. Policy changes and ownership handoffs use
-the existing exclusive host lease and wait for the entire callback.
-
-The callback receives a private policy snapshot; changing that snapshot does
-not change the host policy. The participant still verifies actual workload
-limits and proves that its own stopped owners can release their fenced grants.
-This SDK does not activate a host or migrate its existing ledger. The current
-QA bridge remains active on legacy shared deployments until the participant
-and ownership handoff are deployed. The independent integration described here
-is not yet active on those deployments.
-
-The engine selects the packaged Farm controller when Farm's protected
-`host-capacity.json` or durable `shared-capacity.owner` marker is present. That
-path reads no QA configuration and calls no QA executable. Missing or invalid
-native owner configuration fails closed, including when only the marker remains.
-The legacy bridge continues protecting existing owners before migration.
-
-The Farm host contract can declare `scanRepositories`, a bounded list of unique
-repositories within its organization. Native poison detection uses that explicit
-inventory when `GH_REPOS` is empty. An undeclared inventory fails visibly instead
-of treating an empty group repository response as a complete scan. Native
-`build-limits` and `scan-repositories` queries read only the protected Farm
-contract under its existing shared lease, without opening credentials or the ledger.
-
-### Shared physical headroom
-
-The optional host policy field `sharedMemoryHeadroom` enables one physical
-headroom guard for builders and declared consumers. It requires soft CPU
-admission and a positive host memory reserve. Running workloads use measured
-resident memory instead of a nominal aggregate commitment allowance. The legacy
-`additionalMiB` field remains for policy and accounting compatibility but does not
-cap admission in this mode. Workload hard limits, class maxima, protected floors
-and release fences remain enforced.
-Ordinary standalone Farm policies do not enable this mode or require QA.
-
-Every new grant atomically reserves its full start cost against a fresh native
-memory sample, after the configured host reserve, unfilled guaranteed floors
-and other unfinished starts.
-The sample must be at most five seconds old. Missing, stale, future or failed
-samples block new starts. A fitting request can use stranded headroom when an
-older request cannot fit; the older request retains its identity and queue age.
-
-Owners must call `ReserveStart` immediately before dispatch, persist the start
-nonce, and call `ConfirmStarted` only after durable state/receipt commit and
-fresh proof of the exact running owner. Reservations never expire on timeout
-or restart. Unknown outcomes retain their charge. A restarted execution gets a
-new nonce; an old acknowledgement cannot clear its charge. Exact fenced
-stopped-owner release still removes both the grant and its start reservation.
-Farm confirms builders after registration and routing persistence.
-
-This mode uses ledger protocol v7. Existing v6 start nonces, confirmations and
-pending ages survive migration unchanged. Migration initially reserves every existing
-grant until its owner proves execution is already running. Older writers are
-rejected. All participants must support the start protocol before the ownership
-handoff enables it; installing this SDK alone does not activate the policy.
-The native CLI reports `resident-memory-v7` through `capabilities`. Diagnostics
-report `memoryAdmission: "resident"` and the actual available memory observation;
-`commitmentRemaining` is legacy accounting, not the admission ceiling.
-
-### Elastic general build classes
-
-For shared GitHub pools, `ELASTIC_POOLS="true"` makes each class ceiling a
-limit rather than a startup target. The standard pool keeps its protected
-minimum. Each class keeps `idle` warm slots (at least one) and grows when
-current owned `Runner.Worker` processes occupy those slots. Class ceilings
-may overlap, but each must fit the protected aggregate builder maximum.
-Native shared admission still charges the actual class RAM/CPU and gates
-every container start against the aggregate maximum and host budget.
-
-New shared GitHub owners disable inherited Docker image healthchecks. A
-healthcheck starts a container exec, which can race native pause and block the
-process inspection required for withdrawal. Shared status sampling also uses
-host-side inspection, preserving paused and unknown states. Native process and
-GitHub registration checks still own withdrawal safety. Existing containers
-receive this correction through normal native turnover; running jobs are not
-interrupted to replace them. Nonshared GitHub and GitLab behavior is unchanged.
-Shared job details retain the log-derived job name and start time. Repository,
-run and ref links are unavailable because collecting them required an exec
-that could race withdrawal after the worker finished.
-
-Unreadable, paused, starting or queued owners suppress further growth in
-that class and retain their exact slots. Queued starts keep their durable
-requests. This growth path never deletes an idle owner; native frozen
-withdrawal and fenced release remain responsible for priority reclamation.
-Existing fixed pool behavior remains the default.
-
-Queued native pools may opt into `QUEUED_POOLS="true"` together with
-`ELASTIC_POOLS="true"` and shared named-pool admission. A compatible
-qa-vm-service native capacity owner is required. It returns exact sparse slots
-from a fresh complete job snapshot and retires idle excess through fenced
-withdrawal. No successful snapshot means no queue-driven burst starts or retirement.
-Before queue scanning, Farm independently restores each class's static warm
-total, `max(minimum, idle)`, through the native additive `demand-warm` plan.
-This path preserves all existing owners and pending ages, prefers old pending
-slots, and still requires normal broker and measured-memory admission for each
-start. It never adds busy/unknown counts repeatedly during an API outage.
-GitHub must be reachable to complete registration; unknown native outcomes
-remain fenced for the next owned retry. A zero minimum and idle target adds
-no warm capacity. Legacy OS and nonqueued behavior remains unchanged.
-GitHub omits requested groups from queued jobs, so uncertain label demand adds
-at most one spare per class per tick; successful pickups drive further growth.
-
-Package-cache clearing requires a stopped fleet and refuses to delete caches
-while managed runner, validation, sidecar or executor containers exist, or when
-Docker cannot confirm their absence. The fleet lock serializes this check and
-deletion with runner starts. Shared pnpm stores remain shared across runners.
+The former shared host allocator and its QA bridge have been removed. Existing
+`host-capacity.json` or `shared-capacity.*` activation records and enabled
+`ELASTIC_POOLS`/`QUEUED_POOLS` settings block new runner starts until the
+operator completes the deployment migration. Farm never deletes those records
+or treats their removal as proof that another workload stopped. Migrate other
+consumers and account for their existing workloads before installing this
+breaking release. Running hosts are not migrated by source publication.
 
 ### Shared CI filesystem
 
@@ -891,48 +780,3 @@ package caches are outside this inventory's scope.
 These commands do not impose a size limit on active Docker stores. Keep
 build headroom when budgeting a shared filesystem; its configured object maximum
 does not reserve free disk space.
-
-### Native build queue ownership
-
-For Farm-owned build pools, CI Runner Farm reads the native private runner
-group's queues and computes desired class targets. The host-side registration
-credential attests the local group; a separate root-owned mode-0600
-`queue-token` provides read-only Actions and Metadata access. Neither credential
-is passed to a job or logged. Complete authenticated snapshots include queued
-jobs in both queued and in-progress runs at their current attempt. Unknown,
-stale, redirected or partial evidence preserves owners.
-
-Farm performs its bounded GitHub scan before the short native
-`farm-capacity demand-observe` and `demand-apply` configuration leases. The
-existing shared resource broker remains the sole allocator. Native apply checks
-policy, organization and pool identities, snapshot age and all class bounds,
-then reobserves exact owners. Busy, unknown and guaranteed floor slots remain
-protected by the existing fenced lifecycle. Native OS profiles use this same
-protocol with their configured routing labels. Their configured warm floor is
-restored independently of queue scans. Provider-owned OS profiles retain the
-legacy provider queue path.
-
-Qualify both Farm and provider packages before rollout. Install Farm first on
-one host, then upgrade that host's compatible provider through its native lease.
-Until the new native actions exist, scaling fails closed and running jobs
-continue. Normal ticks resume after upgrade. Keep the other host serving and
-verify live registrations, exact grants and unchanged busy jobs before the
-second host. Related to [QUA-203](https://linear.app/lime-technology/issue/QUA-203).
-
-#### Expand allocation pools
-
-A root operator can increase pool minima and maxima without replacing active
-owners. Prepare a private, root-owned JSON request containing the complete
-`previous` and `revised` allocation policies. Only monotonic changes to existing
-pool limits are accepted. Budgets, costs, priorities, reserves, classes and
-ownership epoch remain unchanged.
-
-With the existing native fleet lock held on descriptor 8, run
-`ci-runner-capacity expand-pools <expected-epoch> <absolute-request-path>`.
-The controller takes the exclusive shared policy lease, validates the existing
-ledger and publishes a durable closed transition before changing its policy.
-It reopens admission only after both the ledger and protected configuration
-match the reviewed destination. After interruption, reuse the exact request;
-an unrelated closure or different transition is rejected. This operation
-starts no workloads. Consumers still materialize their own reviewed capacity
-plans, and every subsequent start uses normal physical memory admission.

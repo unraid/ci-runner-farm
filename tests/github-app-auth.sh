@@ -14,7 +14,7 @@ PAT='github_pat_long_lived_secret_1234567890'
 
 fail() { printf 'GITHUB APP AUTH FAIL: %s\n' "$*" >&2; exit 1; }
 
-# A counting stand-in for `ci-runner-capacity github-app-token`.
+# A counting stand-in for `ci-runner-auth github-app-token`.
 MINT_LOG="$tmp/mint.log"; : > "$MINT_LOG"
 cat > "$tmp/minter" <<'EOF'
 #!/usr/bin/env bash

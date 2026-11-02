@@ -5,7 +5,7 @@
 // (15,000 requests an hour on GitHub Enterprise Cloud), lasts one hour, and is
 // scoped to the App's permissions. Minter keeps one current installation token
 // in a private file. Every Farm consumer (the shell engine, the PHP queue
-// reader and the native capacity binary) reads that file exactly as it read the
+// reader and the runner authentication helper) reads that file exactly as it read the
 // PAT file, so this package is the only place that knows about Apps.
 //
 // Ensure is safe to call on every tick: it reuses the current token until it

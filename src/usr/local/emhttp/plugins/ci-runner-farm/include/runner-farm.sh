@@ -57,8 +57,8 @@ RUNNER_COUNT=4
 RUNNER_LABELS="self-hosted,unraid,build"
 RUNNER_MODE="single"                  # single | pools (provider-neutral classic pools)
 RUNNER_POOLS=""                       # semicolon-separated validated V3 pool records
-QUEUED_POOLS="false"                  # native queued-job sizing and fenced idle retirement
-ELASTIC_POOLS="false"                 # shared GitHub pools grow from occupied slots plus warm headroom
+QUEUED_POOLS="false"                  # retired setting; true requires configuration migration
+ELASTIC_POOLS="false"                 # retired setting; true requires configuration migration
 DOCKER_CACHE_MIN_FREE_PERCENT="15"     # reclaim completed DinD stores below this free-space threshold; 0 disables
 DOCKER_CACHE_BUILDERS=""              # optional comma-separated reusable Buildx builder names eligible for pressure eviction
 DOCKER_JOB_PRUNE="false"              # persistent DinD: prune job Docker state and, under pressure, unused images and other checkouts after each job
@@ -148,7 +148,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-pools.sh
 . "$SCRIPT_DIR/runner-pools.sh"
 # shellcheck source=/dev/null
-. "$SCRIPT_DIR/shared-capacity.sh"
 # shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-recommendations.sh
 . "$SCRIPT_DIR/runner-recommendations.sh"
 # shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-history.sh
@@ -216,27 +215,39 @@ load_cfg() {
 load_cfg
 [ "$CI_PROVIDER" = "gitlab" ] || CI_PROVIDER="github"
 
+# A removed allocator's saved state is not proof of unused host capacity.
+# Migration belongs to deployment; runner starts never delete or reinterpret it.
+runner_starts_allowed() {
+  local name
+  for name in host-capacity.json shared-capacity.owner shared-capacity.enabled shared-capacity.closed; do
+    if [ -e "$CFGDIR/$name" ] || [ -L "$CFGDIR/$name" ]; then
+      err "Shared host allocation was removed; migrate its saved configuration before starting runners."
+      return 1
+    fi
+  done
+  [ "$QUEUED_POOLS" = false ] && [ "$ELASTIC_POOLS" = false ] || {
+    err "Shared queued and elastic allocation modes were removed; update the saved runner settings."
+    return 1
+  }
+}
+
+start_owned_container() {
+  runner_starts_allowed || return 1
+  docker start "$2"
+}
+
+run_owned_github_container() {
+  runner_starts_allowed || return 1
+  crf_shared_cache_mount || return 1
+  clear_dangling_endpoint "${NAME_PREFIX}-$1" || return 1
+  docker run "${ARGS[@]}"
+}
+
 validate_runner_mode() {
-  case "$QUEUED_POOLS" in true|false) ;; *) pool_error "Invalid queued pool mode."; return 1 ;; esac
-  if [ "$QUEUED_POOLS" = true ]; then
-    [ "$ELASTIC_POOLS" = true ] || { pool_error "Queued pools require elastic admission."; return 1; }
-  fi
-  case "$ELASTIC_POOLS" in true|false) ;; *) pool_error "Invalid elastic pool mode."; return 1 ;; esac
-  if [ "$ELASTIC_POOLS" = true ]; then
-    [ "$AUTOSCALE" = true ] && [ "$RUNNER_MODE" = pools ] && [ "$CI_PROVIDER" = github ] && shared_capacity_enabled \
-      || { pool_error "Elastic pools require shared GitHub named-pool autoscaling."; return 1; }
-  fi
+  runner_starts_allowed || return 1
   pool_config_validate "$RUNNER_MODE" "$RUNNER_POOLS" "$GH_SCOPE" "$CI_PROVIDER" || return 1
   if pool_mode_enabled; then
-    if [ "$AUTOSCALE" = true ] && ! shared_capacity_enabled; then
-      pool_error "Named-pool autoscaling requires shared host capacity admission."; return 1
-    fi
     [ "$IMAGE_AUTOUPDATE" != true ] || { pool_error "Runner pools require explicit image updates per pool; disable global image auto-update."; return 1; }
-  fi
-  if shared_capacity_enabled; then
-    [ "$RUNNER_MODE" = pools ] && [ "$CI_PROVIDER" = github ] \
-      && shared_capacity_validate_pools \
-      || { pool_error "Shared capacity requires bounded named GitHub build size pools and four default builders."; return 1; }
   fi
 }
 read_secret_file() {
@@ -646,8 +657,7 @@ scale_down_idle() {
 # empty => treated as fine, so this is a safe no-op until the new image ships).
 # Caches/DinD roots persist as bind mounts across the recycle.
 reap_dead_runners() {
-  shared_capacity_require_starts_open || return 0
-  shared_capacity_enabled && return 0
+  runner_starts_allowed || return 0
   local c st health provider sock side phase job_container failf failcount github_liveness_ready=true
   local names sidecars snapshot id role index gen failed=0
   names="$(managed_names)" || return 1
@@ -824,39 +834,13 @@ autoscale_queue_depth() {
 
 # one autoscaling evaluation: keep AUTOSCALE_MIN_IDLE warm runners, within [MIN,MAX]
 autoscale_tick() {
-  shared_capacity_require_starts_open || return 0
+  runner_starts_allowed || return 0
   [ "$AUTOSCALE" = "true" ] || return 0
   crf_storage_pressure_cleanup
   if pool_mode_enabled; then
     validate_runner_mode || return 1
-    pool_activate build || return 1
-    # Bound native registration reads across restarts independently of queue
-    # quota. A queue-reader cooldown must not strand completed owner grants.
-    if [ "$QUEUED_POOLS" = true ] && (shared_capacity_native_required ||
-      printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'); then
-      php "$SCRIPT_DIR/build-demand.php" begin-recovery "$CFGDIR" "$RUNDIR" "$RUNNER_POOLS" >/dev/null || return 75
-    fi
-    restore_warm_capacity || err "shared capacity: warm restoration incomplete; settling existing owners"
-    if shared_capacity_call rebalance; then :; else
-      # Unknown recovery retains its charged grant. Independent starts still
-      # require the broker, so one unproved owner must not stall the fleet.
-      [ "$?" -eq 75 ] || err "shared capacity: rebalance incomplete; retaining allocations and retrying gated starts"
-    fi
-    # Queued starts can return healthy waiting before settlement frees grants.
-    # Retry warm restoration before a queue cooldown can defer burst planning.
-    restore_warm_capacity || return 1
-    if shared_capacity_native_required; then
-      reconcile_stale_runners || err "shared capacity: config migration deferred; preserving native owners"
-      restore_warm_capacity || return 1
-    fi
-    # Preserve the broad queue cooldown without coupling it to owner recovery.
-    if [ "$QUEUED_POOLS" = true ] && (shared_capacity_native_required ||
-      printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'); then
-      php "$SCRIPT_DIR/build-demand.php" begin "$CFGDIR" "$RUNDIR" "$RUNNER_POOLS" >/dev/null || return 75
-    fi
-    shared_capacity_poison_scan || err "shared capacity: poison scan unavailable; preserving existing owner intents"
-    # The shared broker, rather than local count arithmetic, owns admission.
-    # Retrying every stable slot preserves queue age and repairs inert creates.
+    start_stopped_managed || return 1
+    reconcile_stale_runners || return 1
     start_configured_capacity
     return $?
   fi
@@ -1023,13 +1007,9 @@ autoscale_status() {
 # Run the provider lifecycle watchdog independently of autoscaling. A fixed-size
 # farm must receive the same cleanup and recycle protection as an autoscaled one.
 lifecycle_tick() {
-  shared_capacity_require_starts_open || return 0
+  runner_starts_allowed || return 0
   crf_storage_pressure_cleanup
-  replenish_fixed_native_capacity || return 1
   replenish_fixed_github_capacity || return 1
-  # Shared idle withdrawal owns local admission closure and exact worker proof.
-  # Legacy log-derived idle recycling cannot race a frozen owner.
-  shared_capacity_enabled && return 0
   local candidate snapshot provider role index gen
   candidate="$(provider_call lifecycle_candidate)" \
     || { err "lifecycle: provider could not inspect idle job scope"; return 1; }
@@ -1050,30 +1030,12 @@ lifecycle_tick() {
     || { err "lifecycle: could not recycle $candidate; will retry"; return 1; }
 }
 
-# Native fixed fleets share the existing durable registration cadence. The
-# lifecycle daemon runs frequently, so record the gate before any remote reads.
-replenish_fixed_native_capacity() {
-  [ "$AUTOSCALE" != true ] && shared_capacity_native_required || return 0
-  validate_runner_mode && pool_activate build || return 1
-  php "$SCRIPT_DIR/build-demand.php" begin-recovery "$CFGDIR" "$RUNDIR" "$RUNNER_POOLS" >/dev/null || return 0
-  if shared_capacity_call rebalance; then :; else
-    [ "$?" -eq 75 ] || return 1
-  fi
-  reconcile_stale_runners || return 1
-  if [ "$QUEUED_POOLS" = true ]; then
-    # A queued profile retains its warm floor without a queue scan here.
-    restore_warm_capacity
-  else
-    start_configured_capacity
-  fi
-}
-
 # Fixed fleets have no autoscale tick to restore a removed completed slot.
 # Their saved slot configuration is also the retry authority after a failed
 # replacement or a crash between cleanup and creation.
 replenish_fixed_github_capacity() {
   [ "$CI_PROVIDER" = github ] && [ "$AUTOSCALE" != true ] || return 0
-  shared_capacity_enabled && return 0
+  validate_runner_mode || return 1
   local names pools=default pool wanted idx name
   names="$(managed_names)" || return 1
   if pool_mode_enabled; then pools="$(pool_records | cut -d'|' -f2)"; fi
@@ -2113,54 +2075,21 @@ clear_args_tmpdir() {
     || { err "could not remove temporary argv dir '$dir'"; return 1; }
 }
 
-# Retry one existing queued owner without requiring a new queue scan. The native
-# controller retains its pending age and authorizes every create/start effect.
-cmd_resume_queued() {
-  shared_capacity_require_starts_open || return 1
-  shared_capacity_enabled && [ "$QUEUED_POOLS" = true ] || return 1
-  validate_runner_mode || return 1
-  local name="$1" snapshot id provider role idx generation current_generation pool state
-  snapshot="$(managed_runner_snapshot "$name")" || return 1
-  IFS='|' read -r id provider role idx generation <<< "$snapshot"
-  [ "$provider" = github ] && [ "$role" = runner ] || return 1
-  state="$(docker inspect -f '{{.State.Status}}' "$id")" || return 1
-  [ "$state" = created ] || { err "queued resume requires a never-started owner"; return 1; }
-  pool="$(runner_pool "$name")" || return 1
-  pool_activate "$pool" || return 1
-  current_generation="$(crf_confgen)" || return 1
-  [ -n "$current_generation" ] || return 1
-  if [ "$generation" != "$current_generation" ]; then
-    provision_base || return 1
-    firewall_prepare_replacement || return 1
-    shared_capacity_call refresh-queued "$name" "$id" || return 1
-    provider_call start_one "$idx" "$name"
-    return $?
-  fi
-  shared_capacity_start "$name" "$id"
-}
-
 start_one() {
-  shared_capacity_require_starts_open || return 1
+  runner_starts_allowed || return 1
   local idx="$1" name="${NAME_PREFIX}-$1" snapshot
   if docker inspect "$name" >/dev/null 2>&1; then
     snapshot="$(managed_runner_snapshot "$name")" \
       || { err "refusing fixed-name collision while starting $name"; return 1; }
-    if shared_capacity_enabled; then
-      shared_capacity_start "$name" "${snapshot%%|*}"
-      return $?
-    fi
     log "owned runner $name already exists; skipping"
     return 0
   fi
-  # A slot released after a proved failed start waits for the next pass.
-  case " ${CRF_REPLACED_STARTS:-} " in *" $name "*) return 75 ;; esac
   provider_call start_one "$idx" "$name"
 }
 
 # Growth uses only current native process evidence on immutable owned IDs.
 # Logs cannot prove idle. Unknown/paused/starting owners retain their exact slots
-# and suppress growth; queued owners are retried without replacing their intent.
-# This never removes an owner. Shrink/priority withdrawal remains provider-owned.
+# and suppress growth. This target calculation never removes a runner.
 pool_start_target() {
   local pool="$1" maximum minimum warm names c observed_pool snapshot id idx state processes counts listeners workers
   local busy=0 highest=0 unknown=false target
@@ -2204,64 +2133,14 @@ pool_start_target() {
   printf '%s\n' "$target"
 }
 
-# Static warm restoration is additive and independent of queue evidence.
-restore_warm_capacity() {
-  local targets plan
-  [ "$QUEUED_POOLS" = true ] || return 0
-  shared_capacity_native_required ||
-    printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)' || return 0
-  targets="$(php "$SCRIPT_DIR/build-demand.php" warm-targets "$RUNNER_POOLS")" || return 1
-  plan="$(shared_capacity_call demand-warm "$RUNNER_POOLS" "$targets")" \
-    || { err "native warm recovery unavailable; preserving owners"; return 1; }
-  start_native_capacity_plan "$plan"
-}
-
-# Fresh queue evidence owns burst starts and idle retirement after warm recovery.
-start_queued_capacity() {
-  local plan scan observation targets
-  if shared_capacity_native_required ||
-    printf '%s' "$RUNNER_POOLS" | grep -qiE '(^|[|,])general-build([|,;]|$)'; then
-    restore_warm_capacity || return 1
-    # Read GitHub before acquiring a short native configuration lease.
-    # A missing native capability during rollout preserves existing owners.
-    scan="$(php "$SCRIPT_DIR/build-demand.php" scan "$CFGDIR" "$RUNDIR" "$RUNNER_POOLS")" || return 1
-    observation="$(shared_capacity_call demand-observe "$RUNNER_POOLS")" || { err "native demand observation unavailable; preserving owners"; return 1; }
-    targets="$(php "$SCRIPT_DIR/build-demand.php" targets "$RUNNER_POOLS" "$scan" "$observation")" || return 1
-    plan="$(shared_capacity_call demand-apply "$RUNNER_POOLS" "$targets")" || { err "native demand apply unavailable; preserving owners"; return 1; }
-  else
-    plan="$(shared_capacity_call scale "$RUNNER_POOLS")" || { err "queued capacity unavailable; preserving owners"; return 1; }
-  fi
-  start_native_capacity_plan "$plan"
-}
-
-start_native_capacity_plan() {
-  local plan="$1" pool idx failed=0 rc
-  while IFS='|' read -r pool idx; do
-    [ -n "$pool" ] || continue
-    case "$pool" in build|build-small|build-large) ;; *) return 1 ;; esac
-    case "$idx" in ''|*[!0-9]*) return 1 ;; esac
-    [ "$idx" -gt 0 ] && [ "$idx" -le "$(pool_max "$pool")" ] || return 1
-    pool_activate "$pool" || return 1
-    if start_one "$idx"; then :; else
-      rc=$?; [ "$rc" -eq 75 ] || failed=1
-    fi
-  done <<< "$plan"
-  return "$failed"
-}
-
 start_configured_capacity() {
-  if [ "$QUEUED_POOLS" = true ]; then start_queued_capacity; return $?; fi
-  local startn="$RUNNER_COUNT" i rec pool failed=0 rc
+  local startn="$RUNNER_COUNT" i rec pool failed=0
   if pool_mode_enabled; then
     while IFS= read -r rec; do
       pool="$(printf '%s' "$rec" | cut -d'|' -f2)"
       pool_activate "$pool" || { failed=1; continue; }
       if [ "$AUTOSCALE" = true ]; then
-        if [ "$ELASTIC_POOLS" = true ]; then
-          startn="$(pool_start_target "$pool")" || { failed=1; continue; }
-        else
-          startn="$(pool_max "$pool")" || { failed=1; continue; }
-        fi
+        startn="$(pool_start_target "$pool")" || { failed=1; continue; }
       else
         startn="$(pool_fixed "$pool")" || { failed=1; continue; }
       fi
@@ -2271,12 +2150,7 @@ start_configured_capacity() {
           || { err "could not prepare image $(effective_image) for pool $pool"; failed=1; continue; }
       fi
       for i in $(seq 1 "$startn"); do
-        if start_one "$i"; then :; else
-          rc=$?
-          # Durable queued admission is healthy waiting demand, not a failed
-          # registration or permission to bypass the broker on the next tick.
-          if [ "$rc" -ne 75 ] || ! shared_capacity_enabled; then failed=1; fi
-        fi
+        start_one "$i" || failed=1
       done
     done < <(pool_records)
   else
@@ -2307,9 +2181,7 @@ recreate_stopped_runner() {
 # routine outage would create needless remote churn and make recovery depend on
 # GitLab availability.
 start_stopped_managed() {
-  # The native demand owner decides whether an inert/stopped slot is still needed.
-  [ "$QUEUED_POOLS" != true ] || return 0
-  shared_capacity_require_starts_open || return 1
+  runner_starts_allowed || return 1
   local c st provider idx names snapshot id role gen
   names="$(managed_names)" || return 1
   for c in $names; do
@@ -2319,13 +2191,6 @@ start_stopped_managed() {
     st="$(docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null)" \
       || { err "could not inspect stopped/running state for owned runner $c"; return 1; }
     [ "$st" = "true" ] && continue
-    if shared_capacity_enabled; then
-      pool_activate "$(runner_pool "$c")" || return 1
-      if shared_capacity_start "$c" "$id"; then :; else
-        [ "$?" -eq 75 ] || return 1
-      fi
-      continue
-    fi
     if [ "$provider" = gitlab ] && [ "$CI_PROVIDER" = gitlab ] \
       && [ "$gen" = "$(crf_confgen)" ]; then
       log "restarting stopped GitLab manager $c with its persisted system ID"
@@ -2420,12 +2285,7 @@ cmd_mirror_up() {
 # caller already locked). A failed recycle returns non-zero so a drain stops at
 # the first unsafe slot rather than walking through and quiescing the whole fleet.
 reconcile_stale_runners() {
-  shared_capacity_require_starts_open || return 0
-  if shared_capacity_enabled; then
-    shared_capacity_native_required || return 0
-    reconcile_shared_stale_runners
-    return $?
-  fi
+  runner_starts_allowed || return 0
   # Re-read settings and secret files only after the caller holds fleet.lock.
   # Otherwise a drain waiting for the lock can recreate per-slot files from a
   # token that was cleared/rotated while it waited.
@@ -2458,30 +2318,6 @@ reconcile_stale_runners() {
     return 0                                          # one per pass; the drain/tick loop re-invokes
   done
   return 0
-}
-
-# Native shared owners must freeze and recheck both local and remote idle
-# evidence. Legacy recycle uses a snapshot and cannot supply that guarantee.
-reconcile_shared_stale_runners() {
-  reload_locked_snapshot || return 1
-  local names c snapshot id provider role index generation current pool rc
-  names="$(managed_names)" || return 1
-  for c in $names; do
-    snapshot="$(managed_runner_snapshot "$c")" || return 1
-    IFS='|' read -r id provider role index generation <<< "$snapshot"
-    [ "$provider" = github ] && [ "$role" = runner ] || continue
-    pool="$(runner_pool "$c")" || return 1
-    shared_capacity_build_pool "$pool" || continue
-    current="$(expected_runner_confgen "$c")" || return 1
-    [ "$generation" != "$current" ] || continue
-    [ "$(runner_state "$c")" = idle ] || continue
-    log "reconcile: requesting fenced idle replacement of stale native owner $c"
-    if shared_capacity_call reconcile-idle "$c" "$id"; then return 0; else rc=$?; fi
-    # Frozen settlement or a job-pickup race retains its charged owner. The
-    # existing rebalance loop recovers that intent before another replacement.
-    [ "$rc" -eq 75 ] && return 0
-    return "$rc"
-  done
 }
 
 # Detached worker behind the Settings "Apply" button: migrate every stale runner onto the
@@ -2588,8 +2424,7 @@ cmd_reconcile_network() {
 }
 
 reconcile_start() {
-  shared_capacity_require_starts_open || return 0
-  shared_capacity_enabled && return 0
+  runner_starts_allowed || return 0
   reconcile_stop || return 1
   nohup "$0" reconcile-drain >>"$RUNDIR/autoscale.log" 2>&1 &
   ( umask 077; printf '%s\n' "$!" > "$RECONCILE_PID" ) \
@@ -2601,14 +2436,7 @@ reconcile_stop() {
 }
 
 cmd_start() {
-  shared_capacity_require_starts_open || return 1
-  if shared_capacity_enabled; then
-    pool_activate build || return 1
-    shared_capacity_poison_scan || err "shared capacity: poison scan unavailable; preserving existing owner intents"
-    if shared_capacity_call rebalance; then :; else
-      [ "$?" -eq 75 ] || err "shared capacity: rebalance incomplete; retaining allocations and retrying gated starts"
-    fi
-  fi
+  runner_starts_allowed || return 1
   validate_runner_mode || { err "$POOL_CONFIG_ERROR"; return 1; }
   local start_failed=0
   pool_tokens_ready || { err "one or more required $(provider_token_name) credentials are missing or invalid"; return 1; }
@@ -2747,9 +2575,7 @@ remove_runner() {
   CRF_REMOVE_SLOT="$c"
   CRF_REMOVE_ID="$immutable_id"
   CRF_REMOVE_PROVIDER="$provider"
-  shared_capacity_prepare_release "$c" "$immutable_id" || return 1
   "${provider}_remove_runner" "$c" "$purge" || return 1
-  shared_capacity_release "$c" "$immutable_id"
 }
 
 # Stop every running GitLab manager concurrently before a full fleet teardown.
@@ -3729,7 +3555,7 @@ cmd_recommendations_json() {
 }
 
 cmd_recycle() {
-  shared_capacity_require_starts_open || return 1
+  runner_starts_allowed || return 1
   # Replace one slot without purging its Docker/cache roots. The old provider
   # owns removal ordering; the selected provider owns replacement startup.
   local name="$1" idx old_provider old_gen cur_gen image pool
@@ -3856,14 +3682,8 @@ cmd_recycle() {
     # a variable rather than a temp file so a full RUNDIR cannot stop the
     # replacement from being attempted at all. Docker diagnostics are untrusted,
     # so the detail is redacted on the way to the log.
-    local rout recreate_rc
+    local rout
     if rout="$(run_owned_github_container "$idx" 2>&1 >/dev/null)"; then :; else
-      recreate_rc=$?
-      if shared_capacity_enabled && [ "$recreate_rc" -eq 75 ]; then
-        clear_args_tmpdir
-        echo '{"ok":true,"queued":true}'
-        return 75
-      fi
       err "recycle: docker run failed:"
       printf '%s\n' "$rout" | redact_log_stream >&2
       clear_args_tmpdir
@@ -3901,7 +3721,6 @@ cmd_force_forget_gitlab() {
   gitlab_force_forget_local "$name" || return 1
   log "WARNING: locally forgot $name without contacting GitLab; remove any lingering offline manager from the GitLab UI"
 }
-
 
 cmd_logs_tail() {
   local name="$1" count="${2:-150}" snapshot id rc
@@ -4295,7 +4114,7 @@ crf_storage_pressure_cleanup() {
   if crf_docker_storage_pressure; then
     log "Docker cache storage pressure; checking completed owners"
     cmd_prune_completed_docker --pressure \
-      || err "completed Docker cleanup incomplete; retaining allocations for normal recovery"
+      || err "completed Docker cleanup incomplete; preserving runner state for normal recovery"
   fi
   return 0
 }
@@ -4553,11 +4372,6 @@ if [ "${CRF_SOURCE_ONLY:-0}" = 1 ]; then
 fi
 
 case "${1:-status}" in
-  admission-close) with_fleet_lock wait cmd_admission_close ;;
-  shared-prepare) with_fleet_lock wait cmd_shared_prepare ;;
-  shared-adopt) with_fleet_lock wait cmd_shared_adopt ;;
-  shared-activate) with_fleet_lock wait cmd_shared_activate ;;
-  resume-queued) with_fleet_lock wait cmd_resume_queued "${2:?usage: resume-queued <name>}" ;;
   start)        with_fleet_lock wait cmd_start ;;
   boot-autostart)   cmd_boot_autostart ;;
   docker-stopping)  cmd_docker_stopping ;;

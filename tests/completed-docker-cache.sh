@@ -19,8 +19,6 @@ runner_pool() { echo build; }
 pool_activate() { :; }
 crf_safe_cache_root() { echo "$fixture_root"; }
 crf_docker_storage_references() { [ "$1" = "$fixture_id" ] || return 1; printf '%s\n' "$fixture_references"; }
-shared_capacity_prepare_release() { echo prepare >> "$tmp/order"; [ "$fixture_failure" != prepare ]; }
-shared_capacity_release() { echo release >> "$tmp/order"; [ "$fixture_failure" != release ]; }
 github_remove_runner() { echo remove >> "$tmp/order"; touch "$tmp/removed"; rm -rf "$fixture_store"; }
 docker() {
   [ "$1" = inspect ] || return 1
@@ -45,13 +43,13 @@ cmd_prune_completed_docker --dry-run >/dev/null
 [ -f "$fixture_store/data" ] && [ ! -e "$tmp/order" ] || fail 'dry run changed owner'
 cmd_prune_completed_docker --apply >/dev/null
 [ ! -e "$fixture_store" ] || fail 'completed fixture_store retained'
-[ "$(cat "$tmp/order")" = $'prepare\nremove\nrelease' ] || fail 'release hooks bypassed'
+[ "$(cat "$tmp/order")" = remove ] || fail 'ordinary provider removal bypassed'
 for fixture_state in 'running|true|false|42|no' 'created|false|false|0|no' 'exited|false|true|0|no' 'exited|false|false|0|always'; do
   tested="$fixture_state"; fixture; fixture_state="$tested"
   cmd_prune_completed_docker --apply >/dev/null
   [ -f "$fixture_store/data" ] && [ ! -e "$tmp/order" ] || fail 'live/queued/restarting owner removed'
 done
-for fixture_failure in prepare inspect restart; do
+for fixture_failure in inspect restart; do
   tested="$fixture_failure"; fixture; fixture_failure="$tested"
   if cmd_prune_completed_docker --apply >/dev/null 2>&1; then fail "accepted $fixture_failure fixture_failure"; fi
   [ -f "$fixture_store/data" ] || fail 'uncertain owner removed'
@@ -65,8 +63,6 @@ fixture; fixture_bind="$fixture_root/unrelated"
 if cmd_prune_completed_docker --apply >/dev/null 2>&1; then fail 'wrong owned fixture_bind accepted'; fi
 fixture; mv "$fixture_root/docker" "$fixture_root/real-docker"; ln -s "$fixture_root/real-docker" "$fixture_root/docker"
 if cmd_prune_completed_docker --apply >/dev/null 2>&1; then fail 'symlink parent accepted'; fi
-fixture; fixture_failure=release
-if cmd_prune_completed_docker --apply >/dev/null 2>&1; then fail 'failed release reported success'; fi
 fixture
 DOCKER_CACHE_MIN_FREE_PERCENT=15
 df_mode=pressure
@@ -95,7 +91,6 @@ CI_PROVIDER=github DIND=true SHARE_DOCKER_SOCK=false CACHE_ROOT="$fixture_root"
 fixture_name=ci-runner-1; fixture_store="$fixture_root/docker/$fixture_name"
 fixture
 RUNNER_MODE=single RUNNER_COUNT=1 AUTOSCALE=false NAME_PREFIX=ci-runner
-shared_capacity_enabled() { return 1; }
 managed_names() {
   if [ ! -e "$tmp/removed" ] || [ -e "$tmp/recreated" ]; then echo "$fixture_name"; fi
 }
@@ -123,4 +118,4 @@ fixture
 cmd_prune_completed_docker() { echo attempted > "$tmp/pressure-cleanup"; return 1; }
 crf_storage_pressure_cleanup >/dev/null 2>&1 || fail 'cleanup failure blocks normal recovery'
 [ -f "$tmp/pressure-cleanup" ] || fail 'pressure cleanup not attempted'
-echo 'completed Docker cleanup: immutable offline owners, references, release failures and bounded pressure recovery passed'
+echo 'completed Docker cleanup: immutable offline owners, references, removal failures and bounded pressure recovery passed'
