@@ -1,0 +1,25 @@
+{
+  "schema": "limetech.ai-review-marker.v2",
+  "stage": "forecast",
+  "disposition": "PATCH",
+  "minimum_design": "Remove shared host allocation services and unmerged current-owner diagnostics; keep ordinary configured runner containers and existing authentication.",
+  "outcome": "Farm runs and manages its own runner containers without supplying host-wide allocation, ownership/provenance SDK or QA admission services.",
+  "expected_structural_delta": "Delete 3 allocation/controller packages and shared integration; rename existing token-only command. No new service/store/dependency. Old host admission files refuse new starts until explicit migration.",
+  "reuse_decisions": [
+    {
+      "name": "Direct Docker provider lifecycle",
+      "decision": "reuse",
+      "rationale": "Already creates and manages runners with configured CPU/memory limits."
+    },
+    {
+      "name": "GitHub App token minting",
+      "decision": "extend",
+      "rationale": "Move existing token-only command out of removed capacity CLI; same authentication implementation."
+    },
+    {
+      "name": "Cross-workload host allocator",
+      "decision": "delete",
+      "rationale": "Human explicitly removed this product boundary."
+    }
+  ]
+}
