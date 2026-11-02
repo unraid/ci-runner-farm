@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/unraid/ci-runner-farm/compare/v1.17.0...v2.0.0) (2026-11-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* **farm:** shared host allocation services and ci-runner-capacity are removed. Migrate consumers before installing; existing configuration and allocation records are preserved.
+
+### Code Refactoring
+
+* **farm:** remove shared host allocation services ([#198](https://github.com/unraid/ci-runner-farm/issues/198)) ([9bcbaba](https://github.com/unraid/ci-runner-farm/commit/9bcbababa3f07e10d56b0513cba25ddbf8db3ec6))
+
 ## [1.17.0](https://github.com/unraid/ci-runner-farm/compare/v1.16.2...v1.17.0) (2026-10-29)
 
 
