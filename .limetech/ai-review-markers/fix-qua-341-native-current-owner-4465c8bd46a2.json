@@ -1,0 +1,25 @@
+{
+  "disposition": "PATCH",
+  "expected_structural_delta": "0 owners/services/stores/dependencies; 1 explicit status selector; 1 separate current-only projection; three production surfaces plus regression tests.",
+  "minimum_design": "Extend the existing native status/controller with one selected current-only metadata read, protected receipt and current identity validation, and no lifecycle effects.",
+  "outcome": "An explicitly selected existing native runner can yield bounded current-only public identity/image/limits/memory-file metadata even when original registration history is unavailable, without any lifecycle/receipt/config/credential effect.",
+  "reuse_decisions": [
+    {
+      "decision": "extend",
+      "name": "Native CLI/controller ownership",
+      "rationale": "Add one opt-in current-only read under the same root/fleet/config admission; preserve all lifecycle writers."
+    },
+    {
+      "decision": "reuse",
+      "name": "Original registration provenance",
+      "rationale": "Keep existing unknown/original-unavailable semantics; never backfill history."
+    },
+    {
+      "decision": "extend",
+      "name": "Native local metadata primitives",
+      "rationale": "Use closed Docker fields and fixed kernel/public identity files; avoid environment and container execution."
+    }
+  ],
+  "schema": "limetech.ai-review-marker.v2",
+  "stage": "forecast"
+}
