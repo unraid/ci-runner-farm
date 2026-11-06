@@ -694,6 +694,14 @@ github_build_args() {
     -e RUNNER_WORKDIR="/_work"
     -e npm_config_cache="/home/runner/.npm"
   )
+  # Pool labels are exact: a pool that omits self-hosted must not also receive
+  # GitHub's defaults, or a generic runs-on: self-hosted job can land on it.
+  if pool_mode_enabled; then
+    case ",$registration_labels," in
+      *,self-hosted,*) ;;
+      *) ARGS+=( -e NO_DEFAULT_LABELS=true ) ;;
+    esac
+  fi
   [ -z "$kvm_gid" ] || ARGS+=( --device /dev/kvm --group-add "$kvm_gid" -e "KVM_GID=$kvm_gid" )
   [ "$EPHEMERAL" = "true" ] && ARGS+=( -e EPHEMERAL="true" )
   local m hostdir
