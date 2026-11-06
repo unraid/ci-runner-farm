@@ -1,25 +1,8 @@
 {
   "disposition": "NOT_REQUIRED",
-  "expected_structural_delta": "No new owner, service, store, or configuration key. One provider hook is renamed to plural and returns a list; one helper is extracted from lifecycle_tick.",
-  "minimum_design": "The GitHub lifecycle hook scans all slots once per tick and returns every confirmed exit; lifecycle_tick replaces each one and still rechecks the exact owner immediately before replacement. Confirmation counting stays one increment per tick.",
-  "outcome": "When several runner slots exit between lifecycle ticks, every confirmed slot is replaced in that tick, so a burst of short jobs does not leave slots empty for one 30-second tick each.",
-  "reuse_decisions": [
-    {
-      "decision": "extend",
-      "name": "lifecycle_tick and cmd_recycle",
-      "rationale": "The existing tick already owns replacement under the fleet lock; only its one-per-tick limit changes."
-    },
-    {
-      "decision": "reuse",
-      "name": "LIFECYCLE_CONFIRMATIONS marker files",
-      "rationale": "The existing per-slot confirmation stays. Calling the hook repeatedly in one tick would double count, so the hook returns all names in one pass instead."
-    },
-    {
-      "decision": "not applicable",
-      "name": "LIFECYCLE_INTERVAL",
-      "rationale": "The interval stays at 30 seconds. The change removes the serial limit only."
-    }
-  ],
+  "forecast_commit": "37b3376235161c8b49eb9332ecac180c0cde3c6b",
+  "reviewed_sha": "ae31b90bd73e71c5018e9a222e8a6da8f995d236",
   "schema": "limetech.ai-review-marker.v2",
-  "stage": "forecast"
+  "stage": "final",
+  "unresolved_proportionality_findings": []
 }
