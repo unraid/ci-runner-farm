@@ -37,6 +37,13 @@ printf '%s\n' "$args" | grep -qx 'net.unraid.ci-runner-farm.pool=qa-vm' || fail 
 printf '%s\n' "$args" | grep -qx 'LABELS=qa-vm-client,linux,x64' || fail 'GitHub routing labels missing'
 printf '%s\n' "$args" | grep -qx 'NO_DEFAULT_LABELS=true' \
   || fail 'pool without self-hosted kept GitHub default labels'
+# An existing pool that omits self-hosted must drain onto the exact labels.
+exact_generation="$(github_confgen)"
+github_pool_labels_exact() { return 1; }
+[ "$(github_confgen)" != "$exact_generation" ] || fail 'exact labels did not change the config generation'
+unset -f github_pool_labels_exact
+# shellcheck source=/dev/null
+source src/usr/local/emhttp/plugins/ci-runner-farm/include/providers/github.sh
 printf '%s\n' "$args" | grep -qx 'host.docker.internal:host-gateway' \
   || fail 'GitHub runner does not expose its local farm host gateway'
 printf '%s\n' "$args" | grep -qx 'runner-farm.host:192.0.2.10' \
