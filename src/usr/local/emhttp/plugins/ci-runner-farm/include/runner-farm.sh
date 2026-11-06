@@ -1013,7 +1013,7 @@ lifecycle_tick() {
   replenish_fixed_github_capacity || return 1
   local candidates candidate failed=0 yield=false
   candidates="$(provider_call lifecycle_candidates)" \
-    || { err "lifecycle: provider could not inspect idle job scope"; return 1; }
+    || { err "lifecycle: provider could not inspect idle job scope"; failed=1; }
   # Replace the whole batch: a burst of short jobs must not wait one interval
   # per slot. A slot that fails or is not reached stays a candidate for the next
   # tick.

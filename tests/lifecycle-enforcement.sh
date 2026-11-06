@@ -108,6 +108,23 @@ cmd_recycle() { printf '%s\n' "$1" >> "$recycle_log"; [ "$1" != ci-runner-1 ]; }
 if lifecycle_tick 2>/dev/null; then fail 'failed replacement in a batch reported success'; fi
 [ "$(tr '\n' ' ' < "$recycle_log")" = 'ci-runner-1 ci-runner-2 ci-runner-3 ' ] \
   || fail 'a failed slot blocked the rest of the batch'
+# A slot that cannot be inspected fails the scan, not the rest of the batch.
+cmd_recycle() { printf '%s\n' "$1" >> "$recycle_log"; }
+managed_runner_snapshot() {
+  [ "$1" != ci-runner-2 ] || return 1
+  printf '%s|github|runner|1|test-generation\n' "$OWNER_ID"
+}
+: > "$recycle_log"
+if lifecycle_tick 2>/dev/null; then fail 'failed slot inspection reported success'; fi
+[ "$(tr '\n' ' ' < "$recycle_log")" = 'ci-runner-1 ci-runner-3 ' ] \
+  || fail 'one uninspectable slot discarded the confirmed batch'
+managed_runner_snapshot() { printf '%s|github|runner|1|test-generation\n' "$OWNER_ID"; }
+# A failed slot list replaces nothing.
+managed_names() { return 1; }
+: > "$recycle_log"
+if lifecycle_tick 2>/dev/null; then fail 'failed slot enumeration reported success'; fi
+[ ! -s "$recycle_log" ] || fail 'failed slot enumeration replaced a runner'
+managed_names() { printf 'ci-runner-1\nci-runner-2\nci-runner-3\n'; }
 # A slot that restarts during the batch is rechecked and left alone.
 cmd_recycle() {
   printf '%s\n' "$1" >> "$recycle_log"
