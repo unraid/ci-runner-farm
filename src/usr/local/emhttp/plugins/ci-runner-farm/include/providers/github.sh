@@ -40,6 +40,13 @@ github_kvm_gid() {
 
 # CPU pinning applies to a slot only when it is enabled and the slot has a
 # whole-number CPU limit to size its cpuset from.
+# Pool labels are exact: a pool that omits self-hosted must not also receive
+# GitHub's defaults, or a generic runs-on: self-hosted job can land on it.
+github_pool_labels_exact() {
+  pool_mode_enabled || return 1
+  case ",$RUNNER_LABELS," in *,self-hosted,*) return 1 ;; esac
+}
+
 github_cpu_pinning_applies() {
   [ "${CPU_PINNING:-false}" = true ] && [[ "$RUNNER_CPUS" =~ ^[1-9][0-9]{0,3}$ ]]
 }
@@ -74,6 +81,7 @@ github_confgen() {
   # drain. The chosen cpuset is placement, not configuration, so it stays out;
   # farms without pinning keep their fingerprint.
   github_cpu_pinning_applies && runtime_salt="${runtime_salt}-cpu-pinning-v1"
+  github_pool_labels_exact && runtime_salt="${runtime_salt}-exact-labels-v1"
   case ",$RUNNER_LABELS," in
     *,kvm,*)
       kvm_gid="$(github_kvm_gid 2>/dev/null || true)"
@@ -694,6 +702,7 @@ github_build_args() {
     -e RUNNER_WORKDIR="/_work"
     -e npm_config_cache="/home/runner/.npm"
   )
+  github_pool_labels_exact && ARGS+=( -e NO_DEFAULT_LABELS=true )
   [ -z "$kvm_gid" ] || ARGS+=( --device /dev/kvm --group-add "$kvm_gid" -e "KVM_GID=$kvm_gid" )
   [ "$EPHEMERAL" = "true" ] && ARGS+=( -e EPHEMERAL="true" )
   local m hostdir

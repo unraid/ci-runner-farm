@@ -65,7 +65,10 @@ image. Containers are named `ci-runner-<pool>-<index>` and carry the pool as a
 provider-neutral ownership label.
 
 GitHub pools require organization scope. Their routing and additional labels
-are passed to the GitHub runner directly. GitLab pools require a separate
+are passed to the GitHub runner directly, and a pool that omits `self-hosted`
+registers with only those labels, so a generic `runs-on: self-hosted` job cannot
+reach it. Single-layout runners keep GitHub's default labels. GitLab pools
+require a separate
 runner configuration and modern `glrt-` authentication token per pool; create
 that runner in GitLab with tags matching the pool's labels, then save the token
 with the pool ID in Settings. This keeps GitLab's server-owned tag routing
