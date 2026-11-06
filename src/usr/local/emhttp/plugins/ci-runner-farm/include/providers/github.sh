@@ -142,7 +142,9 @@ github_runner_exited() {
   [ "$state" = 'exited|false|false|false|0' ]
 }
 
-github_lifecycle_candidate() {
+# Each call is one confirmation for every exited slot, so one tick calls this
+# once and receives all confirmed slots together.
+github_lifecycle_candidates() {
   local names c snapshot id provider role index gen marker marked_id count
   names="$(managed_names)" || return 1
   for c in $names; do
@@ -163,7 +165,6 @@ github_lifecycle_candidate() {
     printf '%s %s\n' "$id" "$count" > "$marker"
     if [ "$count" -ge "$LIFECYCLE_CONFIRMATIONS" ]; then
       printf '%s\n' "$c"
-      return 0
     fi
   done
 }

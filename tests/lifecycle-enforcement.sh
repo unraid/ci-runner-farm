@@ -30,17 +30,17 @@ docker() {
 marker="$CRF_RUNDIR/github-lifecycle.ci-runner-1"
 for NATIVE_STATE in 'running|true|false|false|123' 'running|true|true|false|123' 'restarting|false|false|true|0' 'exited|false|false|false|123' ''; do
   printf '%s 9\n' "$OWNER_ID" > "$marker"
-  [ -z "$(github_lifecycle_candidate)" ] || fail "unsafe native state became candidate: $NATIVE_STATE"
+  [ -z "$(github_lifecycle_candidates)" ] || fail "unsafe native state became candidate: $NATIVE_STATE"
   [ ! -e "$marker" ] || fail 'unknown/live state retained confirmation'
 done
 INSPECT_RESULT=1
-[ -z "$(github_lifecycle_candidate)" ] || fail 'failed inspection became candidate'
+[ -z "$(github_lifecycle_candidates)" ] || fail 'failed inspection became candidate'
 INSPECT_RESULT=0
 NATIVE_STATE='exited|false|false|false|0'
-[ -z "$(github_lifecycle_candidate)" ] || fail 'first exit check recycled runner'
+[ -z "$(github_lifecycle_candidates)" ] || fail 'first exit check recycled runner'
 OWNER_ID=owner-2
-[ -z "$(github_lifecycle_candidate)" ] || fail 'replacement inherited old confirmation'
-[ "$(github_lifecycle_candidate)" = ci-runner-1 ] || fail 'confirmed dead slot was not recovered'
+[ -z "$(github_lifecycle_candidates)" ] || fail 'replacement inherited old confirmation'
+[ "$(github_lifecycle_candidates)" = ci-runner-1 ] || fail 'confirmed dead slot was not recovered'
 recycle_log="$tmp/recycle.log"
 cmd_recycle() { printf '%s\n' "$1" >> "$recycle_log"; }
 rm -f "$marker"
@@ -57,6 +57,32 @@ lifecycle_tick
 DIND=false
 NATIVE_STATE='exited|false|false|false|0'
 rm -f "$marker"
-[ -z "$(github_lifecycle_candidate)" ] || fail 'first non-DinD exit check recycled runner'
-[ "$(github_lifecycle_candidate)" = ci-runner-1 ] || fail 'non-DinD dead slot was not recovered'
+[ -z "$(github_lifecycle_candidates)" ] || fail 'first non-DinD exit check recycled runner'
+[ "$(github_lifecycle_candidates)" = ci-runner-1 ] || fail 'non-DinD dead slot was not recovered'
+# A burst of exits drains in one tick, and one call counts as one confirmation.
+DIND=true
+provider_call() { "${CI_PROVIDER}_$1" "${@:2}"; }
+managed_names() { printf 'ci-runner-1\nci-runner-2\nci-runner-3\n'; }
+cmd_recycle() { printf '%s\n' "$1" >> "$recycle_log"; }
+rm -f "$CRF_RUNDIR"/github-lifecycle.*
+: > "$recycle_log"
+lifecycle_tick
+[ ! -s "$recycle_log" ] || fail 'one tick satisfied two confirmations'
+lifecycle_tick
+[ "$(tr '\n' ' ' < "$recycle_log")" = 'ci-runner-1 ci-runner-2 ci-runner-3 ' ] \
+  || fail 'confirmed exits were not all replaced in one tick'
+# One failed slot does not hold back the rest, and the tick still reports it.
+cmd_recycle() { printf '%s\n' "$1" >> "$recycle_log"; [ "$1" != ci-runner-1 ]; }
+: > "$recycle_log"
+if lifecycle_tick 2>/dev/null; then fail 'failed replacement in a batch reported success'; fi
+[ "$(tr '\n' ' ' < "$recycle_log")" = 'ci-runner-1 ci-runner-2 ci-runner-3 ' ] \
+  || fail 'a failed slot blocked the rest of the batch'
+# A slot that restarts during the batch is rechecked and left alone.
+cmd_recycle() {
+  printf '%s\n' "$1" >> "$recycle_log"
+  NATIVE_STATE='running|true|false|false|123'
+}
+: > "$recycle_log"
+lifecycle_tick
+[ "$(cat "$recycle_log")" = ci-runner-1 ] || fail 'restarted slot was replaced from a stale batch'
 echo 'lifecycle-enforcement: OK — positively exited immutable owners only'

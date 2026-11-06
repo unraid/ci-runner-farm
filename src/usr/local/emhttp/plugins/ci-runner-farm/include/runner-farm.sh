@@ -1010,10 +1010,21 @@ lifecycle_tick() {
   runner_starts_allowed || return 0
   crf_storage_pressure_cleanup
   replenish_fixed_github_capacity || return 1
-  local candidate snapshot provider role index gen
-  candidate="$(provider_call lifecycle_candidate)" \
+  local candidates candidate failed=0
+  candidates="$(provider_call lifecycle_candidates)" \
     || { err "lifecycle: provider could not inspect idle job scope"; return 1; }
-  [ -n "$candidate" ] || return 0
+  # Replace the whole batch: a burst of short jobs must not wait one interval
+  # per slot. A slot that fails stays a candidate for the next tick.
+  for candidate in $candidates; do
+    lifecycle_replace "$candidate" || failed=1
+  done
+  return "$failed"
+}
+
+# Replace one provider-selected slot, rechecking its exact owner first because
+# earlier replacements in the batch take time.
+lifecycle_replace() {
+  local candidate="$1" snapshot provider role index gen
   printf '%s' "$candidate" | grep -qE '^ci-runner-([0-9]+|[a-z][a-z0-9-]{0,23}-[0-9]+)$' \
     || { err "lifecycle: provider returned an invalid recycle target"; return 1; }
   snapshot="$(managed_runner_snapshot "$candidate")" \
