@@ -132,6 +132,7 @@ POISON_HEAL_MIN_INTERVAL="${CRF_POISON_HEAL_MIN_INTERVAL:-3600}"  # at most one 
 # independently of autoscaling so a fixed-size fleet receives the same cleanup.
 LIFECYCLE_INTERVAL="30"                  # seconds between idle-slot checks
 LIFECYCLE_CONFIRMATIONS="2"              # consecutive failed checks before recycle
+LIFECYCLE_YIELD="1"                      # seconds fleet.lock stays free between slots
 LIFECYCLE_PID_PRESSURE_PERCENT="75"      # idle-slot PID pressure that needs recycle
 # ---- image auto-update: keep the runner image current, roll the fleet --------
 IMAGE_AUTOUPDATE="false"             # true => a daemon periodically pulls the runner image and,
@@ -1008,10 +1009,36 @@ lifecycle_tick() {
   runner_starts_allowed || return 0
   crf_storage_pressure_cleanup
   replenish_fixed_github_capacity || return 1
-  local candidate snapshot provider role index gen
-  candidate="$(provider_call lifecycle_candidate)" \
-    || { err "lifecycle: provider could not inspect idle job scope"; return 1; }
-  [ -n "$candidate" ] || return 0
+  local candidates candidate failed=0 yield=false
+  candidates="$(provider_call lifecycle_candidates)" \
+    || { err "lifecycle: provider could not inspect idle job scope"; failed=1; }
+  # Replace the whole batch: a burst of short jobs must not wait one interval
+  # per slot. A slot that fails or is not reached stays a candidate for the next
+  # tick.
+  for candidate in $candidates; do
+    if [ "$yield" = true ]; then lifecycle_yield || break; fi
+    yield=true
+    lifecycle_replace "$candidate" || failed=1
+  done
+  return "$failed"
+}
+
+# Hand fleet.lock to any waiter between slots, as drain_and_recreate does. A
+# drain or stop gives up after 20 seconds, and a drain that gives up stays
+# paused, so one batch must not hold the lock for its whole length. Resume only
+# from the snapshot that exists after the lock is reacquired.
+lifecycle_yield() {
+  flock -u 8 2>/dev/null
+  sleep "$LIFECYCLE_YIELD"
+  flock -n 8 2>/dev/null || return 1
+  reload_locked_snapshot || return 1
+  runner_starts_allowed
+}
+
+# Replace one provider-selected slot, rechecking its exact owner first because
+# earlier replacements in the batch take time.
+lifecycle_replace() {
+  local candidate="$1" snapshot provider role index gen
   printf '%s' "$candidate" | grep -qE '^ci-runner-([0-9]+|[a-z][a-z0-9-]{0,23}-[0-9]+)$' \
     || { err "lifecycle: provider returned an invalid recycle target"; return 1; }
   snapshot="$(managed_runner_snapshot "$candidate")" \

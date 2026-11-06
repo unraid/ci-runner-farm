@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.0.1](https://github.com/unraid/ci-runner-farm/compare/v2.0.0...v2.0.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **farm:** register a pool with only its declared labels ([#202](https://github.com/unraid/ci-runner-farm/issues/202)) ([0d90a75](https://github.com/unraid/ci-runner-farm/commit/0d90a75c3cc4ad91b75b2bb8b31897faa36ffedd))
+* **farm:** replace every exited runner in one tick ([#201](https://github.com/unraid/ci-runner-farm/issues/201)) ([adcf6e6](https://github.com/unraid/ci-runner-farm/commit/adcf6e662373f41b097df5fb9793e89fd29910c5))
+
 ## [2.0.0](https://github.com/unraid/ci-runner-farm/compare/v1.17.0...v2.0.0) (2026-11-02)
 
 
