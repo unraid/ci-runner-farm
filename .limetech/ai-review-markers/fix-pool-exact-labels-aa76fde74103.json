@@ -1,20 +1,8 @@
 {
   "disposition": "NOT_REQUIRED",
-  "expected_structural_delta": "No new owner, field, or configuration key. One conditional environment argument in the GitHub provider, plus a README sentence and tests.",
-  "minimum_design": "In named-pool layout, when the effective labels omit self-hosted, pass NO_DEFAULT_LABELS=true to the runner image, which already supports it. Pools that list self-hosted and single-layout runners stay unchanged.",
-  "outcome": "A runner pool that omits self-hosted registers with only its declared labels, so a generic runs-on: self-hosted job cannot land on a small dedicated lane.",
-  "reuse_decisions": [
-    {
-      "decision": "reuse",
-      "name": "Runner image NO_DEFAULT_LABELS option",
-      "rationale": "The base image entrypoint already maps it to config.sh --no-default-labels."
-    },
-    {
-      "decision": "reuse",
-      "name": "Pool labels field",
-      "rationale": "The README already says pool labels pass to the runner directly, so no new record field or configuration key is needed."
-    }
-  ],
+  "forecast_commit": "4a8a46a453bf506555a119ddaf3d496f37cafaaf",
+  "reviewed_sha": "f415655a4d4d015d3e76b492f8edcfc42c5b825e",
   "schema": "limetech.ai-review-marker.v2",
-  "stage": "forecast"
+  "stage": "final",
+  "unresolved_proportionality_findings": []
 }
