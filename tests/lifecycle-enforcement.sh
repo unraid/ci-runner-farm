@@ -63,6 +63,16 @@ rm -f "$marker"
 DIND=true
 provider_call() { "${CI_PROVIDER}_$1" "${@:2}"; }
 managed_names() { printf 'ci-runner-1\nci-runner-2\nci-runner-3\n'; }
+# fd 8 is the caller's fleet.lock. FLOCK_TAKEN models a waiter that takes it.
+flock_log="$tmp/flock.log"
+FLOCK_TAKEN=false
+flock() {
+  printf '%s\n' "$*" >> "$flock_log"
+  [ "$1" = -n ] && [ "$FLOCK_TAKEN" = true ] && return 1
+  return 0
+}
+sleep() { :; }
+reload_locked_snapshot() { printf 'reload\n' >> "$flock_log"; }
 cmd_recycle() { printf '%s\n' "$1" >> "$recycle_log"; }
 rm -f "$CRF_RUNDIR"/github-lifecycle.*
 : > "$recycle_log"
@@ -71,6 +81,27 @@ lifecycle_tick
 lifecycle_tick
 [ "$(tr '\n' ' ' < "$recycle_log")" = 'ci-runner-1 ci-runner-2 ci-runner-3 ' ] \
   || fail 'confirmed exits were not all replaced in one tick'
+# fleet.lock is released between slots, never before the first slot or after
+# the last, and the batch resumes from a fresh snapshot.
+[ "$(tr '\n' ' ' < "$flock_log")" = '-u 8 -n 8 reload -u 8 -n 8 reload ' ] \
+  || fail "batch did not yield fleet.lock between slots: $(tr '\n' ' ' < "$flock_log")"
+# A waiter that takes the lock keeps it. The remaining slots wait for the next
+# tick, and they stay confirmed.
+FLOCK_TAKEN=true
+: > "$recycle_log"
+lifecycle_tick
+[ "$(cat "$recycle_log")" = ci-runner-1 ] || fail 'batch continued after losing fleet.lock'
+FLOCK_TAKEN=false
+: > "$recycle_log"
+lifecycle_tick
+[ "$(tr '\n' ' ' < "$recycle_log")" = 'ci-runner-1 ci-runner-2 ci-runner-3 ' ] \
+  || fail 'slots left by a yield were not replaced on the next tick'
+# A stop during the yield ends the batch without a failed replacement.
+runner_starts_allowed() { [ "$(wc -l < "$recycle_log")" -lt 1 ]; }
+: > "$recycle_log"
+lifecycle_tick || fail 'a stop during the yield reported failure'
+[ "$(cat "$recycle_log")" = ci-runner-1 ] || fail 'batch continued after starts were refused'
+runner_starts_allowed() { return 0; }
 # One failed slot does not hold back the rest, and the tick still reports it.
 cmd_recycle() { printf '%s\n' "$1" >> "$recycle_log"; [ "$1" != ci-runner-1 ]; }
 : > "$recycle_log"
