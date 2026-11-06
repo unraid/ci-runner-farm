@@ -673,29 +673,6 @@ or treats their removal as proof that another workload stopped. Migrate other
 consumers and account for their existing workloads before installing this
 breaking release. Running hosts are not migrated by source publication.
 
-### Shared CI filesystem
-
-Host provisioning can set the engine-only `SHARED_CACHE_ROOT` to the owned
-SeaweedFS mount, `/mnt/<pool>/ci_object_store/mounts/shared`. The GitHub provider
-exposes it in new job containers at `/mnt/ci-cache` and sets
-`CI_SHARED_CACHE=/mnt/ci-cache`. Jobs opt in by using a repository-specific
-subdirectory. No object credentials, SDK, or mount process runs in a job.
-
-The engine requires an exact `fuse.seaweedfs` mount named
-`ci-shared-cache-v1`, a canonical source, a responsive filesystem, and no
-conflicting bind destination. A plain directory, disconnected mount, or foreign
-filesystem fails closed. Boot waits for the client mount before starting the
-fleet. The configuration fingerprint uses the normal job-boundary replacement
-path, preserving busy runners. Existing containers gain the mount only after
-that replacement completes; verify every eligible runner before enabling a
-consumer. The option is not supported by the GitLab provider yet.
-
-This filesystem is rebuildable shared data in the trusted build-farm domain.
-Use separate repository paths, atomic file publication, and suitable cache keys
-or locks. Keep Docker/Podman graph directories, workspaces and mutable build
-engine state on their existing local disks. A disconnected client requires
-supported recovery and runner replacement; no local-directory fallback is used.
-
 ### Retired Docker storage
 
 Persistent GitHub DinD runners also receive a synchronous completed-job hook.

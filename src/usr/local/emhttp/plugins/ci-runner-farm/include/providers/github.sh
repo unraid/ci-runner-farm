@@ -6,7 +6,7 @@ github_token_ready() { [ -n "$ACCESS_TOKEN" ]; }
 github_token_name()  { if [ "$GITHUB_APP_MODE" = true ]; then echo "GitHub App installation token"; else echo "GitHub token"; fi; }
 github_builtin_image() { echo "$BUILTIN_IMAGE"; }
 github_validate_settings() {
-  github_validate_docker_cache_policy && crf_validate_user_share_mounts && crf_shared_cache_mount
+  github_validate_docker_cache_policy && crf_validate_user_share_mounts
 }
 github_validate_docker_cache_policy() {
   [ "$DIND" = true ] && [ "$EPHEMERAL" = false ] || return 0
@@ -69,7 +69,6 @@ github_confgen() {
       pnpm-store:*) runtime_salt="${runtime_salt}-pnpm-store-v1"; break ;;
     esac
   done
-  [ -z "$SHARED_CACHE_ROOT" ] || runtime_salt="${runtime_salt}-shared-cache-v1-${SHARED_CACHE_ROOT}"
   # Enabling CPU pinning recreates slots that can be pinned through the normal
   # drain. The chosen cpuset is placement, not configuration, so it stays out;
   # farms without pinning keep their fingerprint.
@@ -645,7 +644,6 @@ github_build_args() {
   local idx="$1"
   local name="${2:-${NAME_PREFIX}-${idx}}" role="${CRF_CONTAINER_ROLE:-runner}" host_service_ip image kvm_gid=''
   crf_user_share_mount_config_problem || return 1
-  crf_shared_cache_mount || return 1
   local pnpm_store_dest='' cache_spec cache_dest
   for cache_spec in $CACHE_MOUNTS; do
     case "$cache_spec" in
@@ -719,11 +717,6 @@ github_build_args() {
     [ "$share_mode" = ro ] && share_mount+=",readonly"
     ARGS+=( --mount "$share_mount" )
   done
-  if [ -n "$SHARED_CACHE_ROOT" ]; then
-    ARGS+=( --mount "type=bind,src=${SHARED_CACHE_ROOT},dst=/mnt/ci-cache"
-      -e CI_SHARED_CACHE=/mnt/ci-cache
-      --label net.unraid.ci-runner-farm.shared-cache=ci-shared-cache-v1 )
-  fi
   [ -n "$RUNNER_CPUS" ]   && ARGS+=( --cpus="$RUNNER_CPUS" )
   if [ "${CPU_PINNING:-false}" = true ]; then
     # Keep --cpus as the Docker CPU quota alongside the selected CPU set.

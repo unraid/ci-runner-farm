@@ -213,7 +213,7 @@ DOCKER_PS_FAIL=0
 # Disabled pinning must keep today's fingerprint byte-for-byte so existing
 # slots are not drained on upgrade; the chosen cpuset never enters it.
 reset_host "$smt_host"
-CACHE_ROOT="$tmp/cache"; CACHE_MOUNTS=''; USER_SHARE_MOUNTS=''; SHARED_CACHE_ROOT=''
+CACHE_ROOT="$tmp/cache"; CACHE_MOUNTS=''; USER_SHARE_MOUNTS=''
 mkdir -p "$CACHE_ROOT"
 GH_SCOPE=org; GH_OWNER='example-owner'; GH_REPOS=''; RUNNER_GROUP=''
 RUNNER_LABELS='self-hosted,build'; RUNNER_CPUS='4'; RUNNER_MEMORY='8g'
