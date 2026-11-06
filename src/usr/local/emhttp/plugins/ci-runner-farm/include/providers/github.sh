@@ -150,12 +150,15 @@ github_runner_exited() {
   [ "$state" = 'exited|false|false|false|0' ]
 }
 
-github_lifecycle_candidate() {
-  local names c snapshot id provider role index gen marker marked_id count
+# Each call is one confirmation for every exited slot, so one tick calls this
+# once and receives all confirmed slots together. A slot that cannot be inspected
+# fails the scan but does not hold back the other slots.
+github_lifecycle_candidates() {
+  local names c snapshot id provider role index gen marker marked_id count failed=0
   names="$(managed_names)" || return 1
   for c in $names; do
     [ -n "$c" ] || continue
-    snapshot="$(managed_runner_snapshot "$c")" || return 1
+    snapshot="$(managed_runner_snapshot "$c")" || { failed=1; continue; }
     IFS='|' read -r id provider role index gen <<< "$snapshot"
     [ "$provider" = github ] && [ "$role" = runner ] || continue
     marker="$RUNDIR/github-lifecycle.$c"
@@ -171,9 +174,9 @@ github_lifecycle_candidate() {
     printf '%s %s\n' "$id" "$count" > "$marker"
     if [ "$count" -ge "$LIFECYCLE_CONFIRMATIONS" ]; then
       printf '%s\n' "$c"
-      return 0
     fi
   done
+  return "$failed"
 }
 
 # Docker can report a healthy listener after its GitHub control-plane session

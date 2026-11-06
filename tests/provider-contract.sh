@@ -303,9 +303,9 @@ grep -q '^cmd_docker_stopping_locked()' "$ENGINE" \
   || bad "common engine lacks the GitLab pre-Docker-shutdown quiesce path"
 grep -q '^lifecycle_daemon()' "$ENGINE" \
   || bad "provider-neutral lifecycle watchdog is missing"
-grep -q '^github_lifecycle_candidate()' "$GITHUB_ADAPTER" \
+grep -q '^github_lifecycle_candidates()' "$GITHUB_ADAPTER" \
   || bad "GitHub lifecycle candidate hook is missing"
-grep -q '^gitlab_lifecycle_candidate()' "$GITLAB_ADAPTER" \
+grep -q '^gitlab_lifecycle_candidates()' "$GITLAB_ADAPTER" \
   || bad "GitLab lifecycle no-op hook is missing"
 sed -n '/^cmd_docker_stopping_locked()/,/^}/p' "$ENGINE" \
   | grep -F 'provider_stop_owned_runner "$c" "$id" "$provider" &' >/dev/null \
