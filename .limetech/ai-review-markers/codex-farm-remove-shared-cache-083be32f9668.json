@@ -1,0 +1,25 @@
+{
+  "disposition": "PATCH",
+  "expected_structural_delta": "Removes one engine option, one validation function, one job mount, and one test file. Adds one assertion for the retired key.",
+  "minimum_design": "Delete crf_shared_cache_mount, its callers, the runner bind, the fingerprint salt, the CFG_KEYS and default.cfg entries, the README section, and tests/shared-cache.sh. Rely on the existing load_cfg allowlist to ignore the retired key, and prove that with a focused test.",
+  "outcome": "Runner containers no longer receive a SeaweedFS bind or CI_SHARED_CACHE, and a saved configuration that still names SHARED_CACHE_ROOT loads without error.",
+  "reuse_decisions": [
+    {
+      "decision": "reuse",
+      "name": "load_cfg CFG_KEYS allowlist",
+      "rationale": "load_cfg already skips any key outside the allowlist, so an old line needs no migration code."
+    },
+    {
+      "decision": "reuse",
+      "name": "configuration fingerprint",
+      "rationale": "An empty root never added salt, so hosts that already cleared it keep their fingerprint and do not rotate."
+    },
+    {
+      "decision": "not applicable",
+      "name": "ARTIFACT_ENDPOINT",
+      "rationale": "A generic firewall feature that does not depend on SeaweedFS."
+    }
+  ],
+  "schema": "limetech.ai-review-marker.v2",
+  "stage": "forecast"
+}
