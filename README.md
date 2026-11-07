@@ -511,6 +511,23 @@ VM MCP transport; other host and LAN access remains blocked.
 See [GitHub's self-hosted runner security guidance](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/about-self-hosted-runners#self-hosted-runner-security)
 and [GitLab's self-managed runner security guidance](https://docs.gitlab.com/runner/security/).
 
+### Runner DNS
+
+On `isolate` and `strict` networks, runners resolve names through Docker's
+embedded DNS. It forwards each lookup to the host's resolvers, tries each one
+once for 4 seconds, and then returns `SERVFAIL`. A host with a single resolver,
+such as one handed out by DHCP, therefore turns one lost UDP packet into a
+failed lookup (`Could not resolve host`, `EAI_AGAIN`).
+
+`RUNNER_DNS="1.1.1.1 8.8.8.8"` (GitHub only, empty by default) gives each runner
+up to three IPv4 resolvers, tried in order. Docker then fails over to the next
+resolver instead. The setting lives only in `ci-runner-farm.cfg`. Empty keeps
+the host's resolvers and the existing runner fingerprint; setting or changing
+the list replaces idle runners through the normal drain. Start fails on an
+invalid list: loopback, unspecified and multicast addresses are rejected, and
+`strict` also rejects private and CGNAT addresses because its egress rules
+block them. Host DNS itself is unchanged.
+
 ## Fleet and autoscaling
 
 The Fleet tab shows provider-neutral runner, project, job, ref, CPU, and memory

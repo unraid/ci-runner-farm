@@ -52,6 +52,7 @@ bash tests/pool-runtime.sh
 bash tests/runner-only.sh
 bash tests/runner-pool-growth.sh
 bash tests/runner-network-endpoint.sh
+bash tests/runner-dns.sh
 bash tests/cold-image-auth.sh
 bash tests/numeric-config.sh
 bash tests/safe-paths.sh
