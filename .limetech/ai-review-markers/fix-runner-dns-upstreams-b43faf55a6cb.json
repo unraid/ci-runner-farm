@@ -1,45 +1,8 @@
 {
   "disposition": "PATCH",
-  "expected_structural_delta": "No new module, owner, state store, service or public operation. One config key and one validation function in the GitHub provider; about 40 production lines across runner-farm.sh, providers/github.sh, default.cfg and README; one new focused test script registered in tests/check.sh; one config-parity exemption.",
-  "minimum_design": "One opt-in RUNNER_DNS key in the existing config allowlist and engine defaults (config-file only, GitHub only). github_build_args adds --dns for each address. github_validate_settings and github_build_args reject anything except 1-3 distinct dotted-quad IPv4 addresses; loopback, unspecified and multicast are always rejected, and private, CGNAT and link-local addresses are rejected under strict isolation because its egress rules drop them. github_confgen adds an order-preserving salt of the list only when it is set, so a set or changed list drains slots onto new containers and an empty list keeps the fingerprint. default.cfg, config-parity exemption, README and one focused test.",
-  "outcome": "On a farm host whose inherited resolver list has one DHCP server, GitHub runner containers can be given up to three explicit upstream resolvers, so Docker's embedded DNS fails over to the next server instead of returning SERVFAIL when one UDP exchange is lost. Farms that leave the setting empty keep today's behaviour and fingerprint.",
-  "reuse_decisions": [
-    {
-      "decision": "reuse",
-      "name": "Host /etc/resolv.conf inherited by Docker embedded DNS",
-      "rationale": "Empty RUNNER_DNS keeps the inherited host resolvers; host DNS stays owned by the host deployment."
-    },
-    {
-      "decision": "reuse",
-      "name": "Docker --dns override for a container on a user-defined network",
-      "rationale": "Docker already tries up to three ordered upstreams with failover; no resolver of our own."
-    },
-    {
-      "decision": "extend",
-      "name": "CFG_KEYS allowlist, engine defaults, default.cfg and config-parity ENGINE_ONLY_IN_CFG",
-      "rationale": "Same config-file-only path as DOCKER_CACHE_BUILDERS and DOCKER_JOB_PRUNE."
-    },
-    {
-      "decision": "extend",
-      "name": "github_validate_settings",
-      "rationale": "Existing GitHub-only validation hook; fail closed instead of dropping an address."
-    },
-    {
-      "decision": "extend",
-      "name": "github_confgen runtime salt",
-      "rationale": "A baked container setting must drain stale slots; the empty default keeps the existing fingerprint."
-    },
-    {
-      "decision": "not applicable",
-      "name": "Settings page field",
-      "rationale": "Config-file-only precedent; avoids UI and parity surface for an operator setting."
-    },
-    {
-      "decision": "not applicable",
-      "name": "GitLab provider",
-      "rationale": "GitLab job containers are created by gitlab-runner, not by these arguments, and no OVH host uses GitLab."
-    }
-  ],
+  "forecast_commit": "a40b3d2ebf16066508766d328114e7ce89d72b90",
+  "reviewed_sha": "a77b07211f70797d854af20a097ee184460cbb05",
   "schema": "limetech.ai-review-marker.v2",
-  "stage": "forecast"
+  "stage": "final",
+  "unresolved_proportionality_findings": []
 }
