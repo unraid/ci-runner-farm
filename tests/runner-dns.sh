@@ -70,4 +70,16 @@ done
 RUNNER_DNS=127.0.0.1
 github_validate_settings 2>/dev/null && fail 'accepted a loopback resolver without strict isolation'
 
+# A daemon reload honours the file: deleting the line opts out, as for the
+# other config-file-only policies, instead of keeping the last loaded list.
+NETWORK_ISOLATION=strict
+printf 'RUNNER_DNS="1.1.1.1 8.8.8.8"\n' > "$CFG"
+load_cfg
+[ "$RUNNER_DNS" = '1.1.1.1 8.8.8.8' ] || fail "load_cfg did not read RUNNER_DNS: '$RUNNER_DNS'"
+[ "$(github_confgen)" = "$set_generation" ] || fail 'a loaded list changed the config generation'
+: > "$CFG"
+load_cfg
+[ -z "$RUNNER_DNS" ] || fail "a removed RUNNER_DNS line survived reload: '$RUNNER_DNS'"
+[ "$(github_confgen)" = "$inherited_generation" ] || fail 'a removed RUNNER_DNS line kept its config generation'
+
 echo "runner DNS ok"

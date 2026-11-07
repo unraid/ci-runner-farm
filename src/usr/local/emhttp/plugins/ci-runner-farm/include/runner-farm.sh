@@ -193,6 +193,7 @@ load_cfg() {
   # Omitting an optional policy is an explicit opt-out on daemon reload.
   DOCKER_CACHE_BUILDERS=""
   DOCKER_JOB_PRUNE="false"
+  RUNNER_DNS=""
   [ -f "$CFG" ] || return 0
   local line key val
   while IFS= read -r line || [ -n "$line" ]; do
