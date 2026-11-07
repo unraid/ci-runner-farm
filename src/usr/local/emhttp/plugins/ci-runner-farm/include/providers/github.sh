@@ -6,7 +6,36 @@ github_token_ready() { [ -n "$ACCESS_TOKEN" ]; }
 github_token_name()  { if [ "$GITHUB_APP_MODE" = true ]; then echo "GitHub App installation token"; else echo "GitHub token"; fi; }
 github_builtin_image() { echo "$BUILTIN_IMAGE"; }
 github_validate_settings() {
-  github_validate_docker_cache_policy && crf_validate_user_share_mounts
+  github_validate_docker_cache_policy && crf_validate_user_share_mounts && github_validate_runner_dns
+}
+# Docker's embedded DNS tries each upstream once, so a runner that inherits one
+# host resolver fails a lookup whenever one UDP exchange is lost. RUNNER_DNS
+# gives runners up to three explicit upstreams instead. Reject an address Docker
+# cannot use from the container, or one strict isolation's egress rules drop,
+# rather than starting runners whose resolver can never answer.
+github_validate_runner_dns() {
+  local -a servers
+  local addr seen=' '
+  read -r -a servers <<< "${RUNNER_DNS:-}"
+  [ "${#servers[@]}" -le 3 ] || { err "RUNNER_DNS accepts at most three resolvers"; return 1; }
+  for addr in "${servers[@]}"; do
+    [[ "$addr" =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$ ]] \
+      && (( BASH_REMATCH[1] <= 255 && BASH_REMATCH[2] <= 255 && BASH_REMATCH[3] <= 255 && BASH_REMATCH[4] <= 255 )) \
+      || { err "RUNNER_DNS entries must be IPv4 addresses"; return 1; }
+    case "$seen" in *" $addr "*) err "RUNNER_DNS lists $addr more than once"; return 1 ;; esac
+    seen="$seen$addr "
+    # Unspecified, loopback (the container's own namespace), multicast and reserved.
+    if (( BASH_REMATCH[1] == 0 || BASH_REMATCH[1] == 127 || BASH_REMATCH[1] >= 224 )); then
+      err "RUNNER_DNS cannot use $addr"; return 1
+    fi
+    # The same RFC1918 and CGNAT ranges firewall_allow_current_policy drops.
+    if [ "$NETWORK_ISOLATION" = strict ] && (( BASH_REMATCH[1] == 10 \
+        || (BASH_REMATCH[1] == 172 && BASH_REMATCH[2] >= 16 && BASH_REMATCH[2] <= 31) \
+        || (BASH_REMATCH[1] == 192 && BASH_REMATCH[2] == 168) \
+        || (BASH_REMATCH[1] == 100 && BASH_REMATCH[2] >= 64 && BASH_REMATCH[2] <= 127) )); then
+      err "strict isolation blocks runners from RUNNER_DNS resolver $addr"; return 1
+    fi
+  done
 }
 github_validate_docker_cache_policy() {
   [ "$DIND" = true ] && [ "$EPHEMERAL" = false ] || return 0
@@ -80,6 +109,11 @@ github_confgen() {
   # drain. The chosen cpuset is placement, not configuration, so it stays out;
   # farms without pinning keep their fingerprint.
   github_cpu_pinning_applies && runtime_salt="${runtime_salt}-cpu-pinning-v1"
+  # Resolvers are baked into each container, in order. Setting or changing the
+  # list drains slots onto it; farms that inherit host DNS keep their fingerprint.
+  local -a runner_dns
+  read -r -a runner_dns <<< "${RUNNER_DNS:-}"
+  [ "${#runner_dns[@]}" -eq 0 ] || runtime_salt="${runtime_salt}-runner-dns-v1-$(IFS=,; printf '%s' "${runner_dns[*]}")"
   github_pool_labels_exact && runtime_salt="${runtime_salt}-exact-labels-v1"
   case ",$RUNNER_LABELS," in
     *,kvm,*)
@@ -655,6 +689,7 @@ github_build_args() {
   local idx="$1"
   local name="${2:-${NAME_PREFIX}-${idx}}" role="${CRF_CONTAINER_ROLE:-runner}" host_service_ip image kvm_gid=''
   crf_user_share_mount_config_problem || return 1
+  github_validate_runner_dns || return 1
   local pnpm_store_dest='' cache_spec cache_dest
   for cache_spec in $CACHE_MOUNTS; do
     case "$cache_spec" in
@@ -740,6 +775,10 @@ github_build_args() {
   fi
   [ -n "$RUNNER_MEMORY" ] && ARGS+=( --memory="$RUNNER_MEMORY" )
   [ "$NETWORK_ISOLATION" != "off" ] && ARGS+=( --network "$RUNNER_NETWORK" )
+  local -a runner_dns
+  local dns
+  read -r -a runner_dns <<< "${RUNNER_DNS:-}"
+  for dns in "${runner_dns[@]}"; do ARGS+=( --dns "$dns" ); done
   if [ "$DIND" = "true" ]; then
     # The runner image bootstraps cgroup v2 before the base entrypoint starts
     # dockerd. Make the namespace boundary explicit so that bootstrap can never

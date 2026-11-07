@@ -101,6 +101,9 @@ NETWORK_ISOLATION="off"               # off     = runners on the default docker 
 RUNNER_NETWORK="ci-runner-net"        # name of the dedicated bridge (created when isolation != off).
                                       # Docker auto-allocates its subnet; we read it back for the rules.
 ARTIFACT_ENDPOINT=""                 # optional HTTP(S) artifact service allowed through strict isolation
+RUNNER_DNS=""                         # GitHub only: up to 3 space-separated IPv4 upstream resolvers given to runners
+                                      # as --dns; empty = inherit the host's. Docker's embedded DNS tries each
+                                      # upstream once (4 s), so a single upstream turns one lost packet into SERVFAIL.
 FW_TAG="ci-runner-farm"               # iptables comment tag used to find/remove our DOCKER-USER rules
 # ---- private registry auth: docker login so the host can pull a private IMAGE
 REGISTRY_SERVER=""                     # e.g. ghcr.io — registry to docker login (empty = skip)
@@ -167,7 +170,7 @@ GITLAB_ALLOWED_IMAGES GITLAB_ALLOWED_SERVICES GITLAB_PULL_POLICY GITLAB_SHM_SIZE
 RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS QUEUED_POOLS DOCKER_CACHE_MIN_FREE_PERCENT DOCKER_CACHE_BUILDERS DOCKER_JOB_PRUNE \
 RUNNER_CPUS CPU_PINNING RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE USER_SHARE_MOUNTS IMAGE_SOURCE IMAGE EPHEMERAL \
 RUN_AS_ROOT REGISTRY_SERVER REGISTRY_USERNAME CACHE_MOUNTS SHARE_DOCKER_SOCK DIND \
-SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK ARTIFACT_ENDPOINT MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
+SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK RUNNER_DNS ARTIFACT_ENDPOINT MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
 AUTOSCALE_MAX AUTOSCALE_MIN_IDLE AUTOSCALE_STEP AUTOSCALE_INTERVAL \
 AUTOSCALE_IDLE_GRACE IMAGE_AUTOUPDATE IMAGE_AUTOUPDATE_INTERVAL IMAGE_DRAIN_TIMEOUT \
 DASHBOARD_WIDGET_ENABLE"
