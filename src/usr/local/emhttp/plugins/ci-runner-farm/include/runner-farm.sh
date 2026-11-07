@@ -68,7 +68,6 @@ CPU_PINNING="false"                   # true => GitHub runners with a whole-numb
 RUNNER_MEMORY="16g"                   # per-runner memory cap (kept: memory isn't time-shared like CPU)
 CACHE_ROOT="/mnt/cache/github-runner" # must be a dedicated SUBDIR under a pool/disk, never a bare mount root (see crf_safe_cache_root)
 WORK_TMPFS_SIZE="8g"                  # empty => bind workdir to pool instead of RAM
-SHARED_CACHE_ROOT=""                  # optional owned SeaweedFS mount; jobs receive /mnt/ci-cache
 USER_SHARE_MOUNTS=""                  # optional user-share bind mounts exposed to jobs: host-path:container-path:ro|rw
 IMAGE_SOURCE="builtin"                # builtin = run the locally-built image; remote = pull IMAGE from a registry
 BUILTIN_IMAGE="ci-runner-farm-runner:latest"  # legacy/GitHub tag produced by build-image
@@ -166,7 +165,7 @@ HISTORY_FILE="${CRF_HISTORY_FILE:-${CFGDIR}/recommendations.history}"
 CFG_KEYS="CI_PROVIDER GH_SCOPE GH_OWNER GH_REPOS RUNNER_GROUP GH_APP_ID GH_APP_INSTALLATION_ID GITLAB_URL GITLAB_RUNNER_IMAGE GITLAB_PROJECTS GITLAB_SHUTDOWN_TIMEOUT \
 GITLAB_ALLOWED_IMAGES GITLAB_ALLOWED_SERVICES GITLAB_PULL_POLICY GITLAB_SHM_SIZE \
 RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS QUEUED_POOLS DOCKER_CACHE_MIN_FREE_PERCENT DOCKER_CACHE_BUILDERS DOCKER_JOB_PRUNE \
-RUNNER_CPUS CPU_PINNING RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE USER_SHARE_MOUNTS SHARED_CACHE_ROOT IMAGE_SOURCE IMAGE EPHEMERAL \
+RUNNER_CPUS CPU_PINNING RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE USER_SHARE_MOUNTS IMAGE_SOURCE IMAGE EPHEMERAL \
 RUN_AS_ROOT REGISTRY_SERVER REGISTRY_USERNAME CACHE_MOUNTS SHARE_DOCKER_SOCK DIND \
 SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK ARTIFACT_ENDPOINT MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
 AUTOSCALE_MAX AUTOSCALE_MIN_IDLE AUTOSCALE_STEP AUTOSCALE_INTERVAL \
@@ -239,7 +238,6 @@ start_owned_container() {
 
 run_owned_github_container() {
   runner_starts_allowed || return 1
-  crf_shared_cache_mount || return 1
   clear_dangling_endpoint "${NAME_PREFIX}-$1" || return 1
   docker run "${ARGS[@]}"
 }
@@ -3322,37 +3320,6 @@ crf_validate_user_share_mounts() {
   done
 }
 
-# Shared cache data is a filesystem owned by host provisioning, never a local
-# cache directory we create or clear. An exact FUSE mount identity is mandatory.
-crf_shared_cache_mount() {
-  [ -n "$SHARED_CACHE_ROOT" ] || return 0
-  [ "$CI_PROVIDER" = github ] || { err "shared cache mounts currently require the GitHub provider"; return 1; }
-  printf '%s' "$SHARED_CACHE_ROOT" | grep -qE '^/mnt/[A-Za-z0-9_-]+/ci_object_store/mounts/shared$' \
-    || { err "SHARED_CACHE_ROOT must name the owned CI storage mount"; return 1; }
-  [ -d "$SHARED_CACHE_ROOT" ] && [ ! -L "$SHARED_CACHE_ROOT" ] \
-    || { err "shared cache mount is missing or a symlink"; return 1; }
-  [ "$(realpath -e -- "$SHARED_CACHE_ROOT" 2>/dev/null)" = "$SHARED_CACHE_ROOT" ] \
-    || { err "shared cache mount must resolve to its configured path"; return 1; }
-  [ "$(findmnt -M "$SHARED_CACHE_ROOT" -n -o FSTYPE 2>/dev/null)" = fuse.seaweedfs ] \
-    && [ "$(findmnt -M "$SHARED_CACHE_ROOT" -n -o SOURCE 2>/dev/null)" = ci-shared-cache-v1 ] \
-    || { err "shared cache requires the mounted ci-shared-cache-v1 SeaweedFS filesystem"; return 1; }
-  timeout 5 stat "$SHARED_CACHE_ROOT" >/dev/null 2>&1 \
-    || { err "shared cache filesystem is not responding"; return 1; }
-  local spec destination
-  for spec in $CACHE_MOUNTS; do
-    destination="${spec#*:}"
-    if crf_mount_destinations_overlap /mnt/ci-cache "$destination"; then
-      err "shared cache destination overlaps CACHE_MOUNTS"; return 1
-    fi
-  done
-  for spec in $USER_SHARE_MOUNTS; do
-    destination="${spec#*:}"; destination="${destination%:*}"
-    if crf_mount_destinations_overlap /mnt/ci-cache "$destination"; then
-      err "shared cache destination overlaps USER_SHARE_MOUNTS"; return 1
-    fi
-  done
-}
-
 cmd_cache_usage_refresh() {
   # du can be slow on a multi-GB cache, so this runs detached and the result is
   # cached; the UI reads the cache and only triggers a refresh when it is stale.
@@ -4296,12 +4263,11 @@ cmd_boot_autostart() {
   provider_token_ready || { log "boot-autostart: no valid $(provider_token_name) configured yet — skipping"; return 0; }
   local i
   for i in $(seq 1 150); do
-    docker info >/dev/null 2>&1 && check_cache_root >/dev/null 2>&1 && crf_shared_cache_mount >/dev/null 2>&1 && break
+    docker info >/dev/null 2>&1 && check_cache_root >/dev/null 2>&1 && break
     sleep 4
   done
   docker info >/dev/null 2>&1 || { err "boot-autostart: dockerd not ready after wait — giving up"; return 1; }
   check_cache_root >/dev/null 2>&1 || { err "boot-autostart: cache pool not ready after wait — giving up"; return 1; }
-  crf_shared_cache_mount || { err "boot-autostart: shared cache mount not ready after wait"; return 1; }
   log "boot-autostart: docker + cache pool ready — bringing fleet up"
   # Serialize the actual fleet bring-up behind the same lock every other mutation
   # uses: on a Docker-service restart (no reboot) the autoscale/image daemons may

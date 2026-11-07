@@ -122,7 +122,6 @@ echo 'job Docker cache: exact job scope, preserved references/custom volumes, lo
  DOCKER_CACHE_BUILDERS=second,warm
  [ "$(github_confgen)" != "$first_generation" ]
  crf_validate_user_share_mounts() { return 0; }
- crf_shared_cache_mount() { return 0; }
  github_validate_settings
  DOCKER_CACHE_BUILDERS='warm,,second'
  if github_validate_settings >/dev/null 2>&1; then exit 1; fi

@@ -18,7 +18,6 @@ declare -F cmd_shared_activate >/dev/null && fail 'host allocation activation st
 declare -F cmd_resume_queued >/dev/null && fail 'allocation resume still exported'
 
 calls="$tmp/calls"
-crf_shared_cache_mount() { return 0; }
 clear_dangling_endpoint() { printf 'endpoint %s\n' "$1" >> "$calls"; }
 docker() { printf 'docker %s\n' "$*" >> "$calls"; }
 NAME_PREFIX=ci-runner-build
