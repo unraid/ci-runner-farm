@@ -2,13 +2,13 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name          "ci-runner-farm">
 <!ENTITY author        "Lime Technology">
-<!ENTITY version       "2026.11.07.0105.153-3.0.0">
-<!ENTITY pluginVersion "3.0.0">
-<!ENTITY releaseTag    "v3.0.0">
+<!ENTITY version       "2026.11.07.2312.155-3.1.0">
+<!ENTITY pluginVersion "3.1.0">
+<!ENTITY releaseTag    "v3.1.0">
 <!ENTITY pluginURL     "https://github.com/unraid/ci-runner-farm/releases/latest/download/ci-runner-farm.plg">
-<!ENTITY packageName   "ci-runner-farm-2026.11.07.0105.153-3.0.0.tgz">
-<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/v3.0.0/ci-runner-farm-2026.11.07.0105.153-3.0.0.tgz">
-<!ENTITY packageMD5    "f69fd870406d1830dcd1b83eadca657f">
+<!ENTITY packageName   "ci-runner-farm-2026.11.07.2312.155-3.1.0.tgz">
+<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/v3.1.0/ci-runner-farm-2026.11.07.2312.155-3.1.0.tgz">
+<!ENTITY packageMD5    "80dbb444b58cdbdce9e4577d0d7d0490">
 <!ENTITY plgdir        "/usr/local/emhttp/plugins/&name;">
 <!ENTITY cfgdir        "/boot/config/plugins/&name;">
 ]>
@@ -22,10 +22,8 @@
 
 <CHANGES>
 ### &version;
-### ⚠ BREAKING CHANGES
-* **farm:** SHARED_CACHE_ROOT is ignored, and jobs no longer receive /mnt/ci-cache or CI_SHARED_CACHE. Move consumers before you install this release.
-### Code Refactoring
-* **farm:** remove the SeaweedFS shared cache mount ([#203](https://github.com/unraid/ci-runner-farm/issues/203)) ([275c259](https://github.com/unraid/ci-runner-farm/commit/275c259fedc7f43d82ef9346c8371965542afa2d))
+### Features
+* **runner:** give runners explicit upstream resolvers ([#206](https://github.com/unraid/ci-runner-farm/issues/206)) ([e9f6986](https://github.com/unraid/ci-runner-farm/commit/e9f6986a02a44409eba3347472d2c59b4b5fd43d))
 </CHANGES>
 
 <!-- plugin package: Unraid downloads it to flash and verifies the MD5 -->
@@ -42,11 +40,11 @@ PLGDIR="/usr/local/emhttp/plugins/ci-runner-farm"
 CFGDIR="/boot/config/plugins/ci-runner-farm"
 mkdir -p "$CFGDIR" "$PLGDIR"
 # Sweep any older package versions off flash, keeping this build's package.
-find "$CFGDIR" -maxdepth 1 -name 'ci-runner-farm-*.tgz' ! -name 'ci-runner-farm-2026.11.07.0105.153-3.0.0.tgz' -delete 2>/dev/null || true
+find "$CFGDIR" -maxdepth 1 -name 'ci-runner-farm-*.tgz' ! -name 'ci-runner-farm-2026.11.07.2312.155-3.1.0.tgz' -delete 2>/dev/null || true
 # Extract ONLY into the plugin dir; --no-same-owner forces root ownership;
 # --no-overwrite-dir leaves existing dir metadata alone. System dirs untouched.
 # The .tgz is kept on flash so the on-boot reinstall works without a download.
-tar -xzf "$CFGDIR/ci-runner-farm-2026.11.07.0105.153-3.0.0.tgz" --no-same-owner --no-overwrite-dir -C "$PLGDIR"
+tar -xzf "$CFGDIR/ci-runner-farm-2026.11.07.2312.155-3.1.0.tgz" --no-same-owner --no-overwrite-dir -C "$PLGDIR"
 # Remove obsolete allocation runtime only; keep saved configuration and ledgers.
 rm -f -- "$PLGDIR/bin/ci-runner-capacity" "$PLGDIR/include/shared-capacity.sh" "$PLGDIR/include/build-demand.php"
 chown -R root:root "$PLGDIR"
@@ -112,7 +110,7 @@ fi
 ( nohup "$PLGDIR/include/runner-farm.sh" boot-autostart >>"$CFGDIR/boot.log" 2>&1 & ) || true
 echo ""
 echo "+=============================================================+"
-echo "| ci-runner-farm 2026.11.07.0105.153-3.0.0 installed.                         "
+echo "| ci-runner-farm 2026.11.07.2312.155-3.1.0 installed.                         "
 echo "| Settings > Utilities > CI Runner Farm                        "
 echo "| Select GitHub or GitLab, save its token, then Start.         "
 echo "+=============================================================+"
