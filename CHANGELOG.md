@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.0.0](https://github.com/unraid/ci-runner-farm/compare/v2.0.1...v3.0.0) (2026-11-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* **farm:** SHARED_CACHE_ROOT is ignored, and jobs no longer receive /mnt/ci-cache or CI_SHARED_CACHE. Move consumers before you install this release.
+
+### Code Refactoring
+
+* **farm:** remove the SeaweedFS shared cache mount ([#203](https://github.com/unraid/ci-runner-farm/issues/203)) ([275c259](https://github.com/unraid/ci-runner-farm/commit/275c259fedc7f43d82ef9346c8371965542afa2d))
+
 ## [2.0.1](https://github.com/unraid/ci-runner-farm/compare/v2.0.0...v2.0.1) (2026-11-06)
 
 
