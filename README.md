@@ -678,6 +678,13 @@ breaking release. Running hosts are not migrated by source publication.
 
 ### Retired Docker storage
 
+Farm no longer mounts the shared cache. Replacement GitHub runners do not
+receive `/mnt/ci-cache` or `CI_SHARED_CACHE`, and Farm ignores a saved
+`SHARED_CACHE_ROOT` key. A job that uses that path can fail or lose access to
+its shared data. Move affected workflows to another store before you upgrade. A
+runner that has the mount keeps it until the normal config-generation
+replacement after its current job finishes.
+
 Persistent GitHub DinD runners also receive a synchronous completed-job hook.
 The wrapper runs the image’s existing completion hook first and preserves its
 exit status. Images can use an absolute `.sh` or `.ps1` hook path.
@@ -691,8 +698,7 @@ current job finishes.
 
 Workflows still own reusable cache export and import. Configure Buildx with a
 repository/image/platform scope using GitHub Actions or OCI registry caches.
-The shared filesystem is available for explicit repository caches. Do not
-share writable Docker graph directories or BuildKit daemon state between
+Do not share writable Docker graph directories or BuildKit daemon state between
 independent daemons. Exported layer caches do not automatically preserve
 `RUN --mount=type=cache` compiler stores. Retain a stable builder with bounded
 garbage collection or explicitly persist those stores when the workflow needs
@@ -758,5 +764,4 @@ the output as input to a deletion command. Current job workspaces and warm
 package caches are outside this inventory's scope.
 
 These commands do not impose a size limit on active Docker stores. Keep
-build headroom when budgeting a shared filesystem; its configured object maximum
-does not reserve free disk space.
+build headroom when you budget disk space.

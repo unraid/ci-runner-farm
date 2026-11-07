@@ -26,6 +26,7 @@ fail() { printf 'NUMERIC CONFIG FAIL: %s\n' "$*" >&2; exit 1; }
   # A saved configuration can still name the retired shared cache mount. The
   # allowlist drops that line, and the keys around it still load.
   for retired in 'SHARED_CACHE_ROOT=""' 'SHARED_CACHE_ROOT="/mnt/cache/ci_object_store/mounts/shared"'; do
+    unset SHARED_CACHE_ROOT
     write_cfg "$retired" 'GH_OWNER="retired-key-neighbor"'
     load_cfg
     [ -z "${SHARED_CACHE_ROOT+set}" ] || fail "retired key was assigned: $retired"
