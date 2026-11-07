@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.0](https://github.com/unraid/ci-runner-farm/compare/v3.0.0...v3.1.0) (2026-11-07)
+
+
+### Features
+
+* **runner:** give runners explicit upstream resolvers ([#206](https://github.com/unraid/ci-runner-farm/issues/206)) ([e9f6986](https://github.com/unraid/ci-runner-farm/commit/e9f6986a02a44409eba3347472d2c59b4b5fd43d))
+
 ## [3.0.0](https://github.com/unraid/ci-runner-farm/compare/v2.0.1...v3.0.0) (2026-11-07)
 
 
