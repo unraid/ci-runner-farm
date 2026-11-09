@@ -92,11 +92,15 @@ v3|id|routing-label|additional-labels|fixed|min|max|idle|cpus|memory|image
 ```
 
 Records are separated by semicolons. `cpus` and `memory` may be `inherit`;
-`image` may be `builtin` or a full registry reference. The current classic-pool
-implementation uses `fixed` capacity and deliberately rejects global autoscale
-and global image auto-update in pool mode. `min`, `max`, and `idle` are retained
-in the versioned contract so adding per-pool autoscaling later does not require
-reformatting every pool. Saving pool changes does not interrupt jobs; use Fleet
+`image` may be `builtin` or a full registry reference. With autoscaling off, each
+pool runs exactly `fixed` runners. With `AUTOSCALE="true"`, `fixed` is ignored:
+each pool keeps at least `min` runners and grows toward `max` while fewer than
+`idle` of its own runners are free (target = busy runners + `idle`). Pool
+growth reads only the runners on that host, never the shared provider queue,
+so several hosts serving the same organization do not each grow for the same
+queued jobs. Pool mode never removes idle runners above `min`; they stay
+registered and take the next queued job. Global image auto-update is rejected
+in pool mode. Saving pool changes does not interrupt jobs; use Fleet
 **Restart** when ready to apply exact membership, images, and limits.
 
 ### Job-weight recommendations
@@ -584,6 +588,44 @@ limit larger than the host, or unreadable topology logs a warning and starts
 that runner unpinned. Turning the setting on or off changes the configuration
 fingerprint of pinnable slots, so they are recreated like any other baked
 setting; with it off, existing fingerprints are unchanged.
+
+### Growth backpressure
+
+`GROWTH_BACKPRESSURE="true"` (off by default) makes autoscale growth depend on
+live host resources. Before the farm starts a runner in a slot above the
+minimum (`AUTOSCALE_MIN`, or a pool's `min`), it checks two thresholds: host CPU
+busy percent, from `/proc/stat` between autoscale checks, must not be above
+`GROWTH_CPU_CEILING` (default `80`), and `MemAvailable` must be at least the
+runner's memory limit plus `GROWTH_MEMORY_RESERVE` (default `8g`). Each start
+admitted in one check deducts its memory limit, and at most two such starts
+are admitted per check, because new runners use no resources until they get a
+job. The gate only withholds starts: it never stops, drains, or removes a
+running or busy runner, and starts that refill slots up to the minimum are
+never checked. An exited ephemeral slot above the minimum stays exited until
+the host has headroom again. If the metrics cannot be read, the fleet does not
+grow past the minimum. Each change of decision is logged with its numbers in
+the autoscale or lifecycle log, and the latest decision appears next to the
+autoscale state on the Fleet tab and in `status`. The settings are read on
+every check and do not change the configuration fingerprint, so turning them
+on or off recreates no runners. Single-layout autoscale also adds the fresh
+provider queue depth to its growth target; each host reads the same queue, so
+several hosts can grow for the same jobs, and the surplus idle runners are
+removed by the normal scale-down: `AUTOSCALE_STEP` idle runners per
+`AUTOSCALE_IDLE_GRACE` checks while more than `AUTOSCALE_MIN_IDLE +
+AUTOSCALE_STEP` sit idle.
+
+Growth and CPU pinning work together, with one tradeoff. Once the farm's
+pinned runners, across all pools, outnumber the host's cpuset blocks (at most
+host CPUs divided by the runner's CPU limit), pinned runners share blocks:
+placement puts each extra runner on the least-loaded block, so a 32-thread
+host with only 4-CPU runners gives the 9th to 16th runners the same eight
+blocks, two runners each. Runners that share a block contend
+for those CPUs even while other host CPUs are idle, because the cpuset stops
+them from using any other CPU. Unpinned runners in the same state would spread
+across idle CPUs. The CPU ceiling measures the whole host, so it does not see
+one hot block. Use pinning with growth when tools that size themselves from
+`nproc` are the bigger problem. Leave pinning off when a pool is often far
+above that block count.
 
 ![Fleet state and controls](docs/images/fleet.png)
 
