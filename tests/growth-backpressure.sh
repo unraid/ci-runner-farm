@@ -98,6 +98,19 @@ set_host 10 11
 expect_admit small 4 ci-runner-small-4
 set_host 10 9
 expect_withhold small 4 ci-runner-small-4
+# Decimal sizes reach the gate exactly: a 1.5g runner plus a 0.5g reserve needs
+# 2 GiB (2097152 kB). Single layout reads the global runner memory, which
+# accepts decimals (pool records do not).
+mem_kib() { printf 'MemTotal: 131072000 kB\nMemAvailable: %s kB\n' "$1" > "$PROC/meminfo"; }
+saved_memory="$BASE_RUNNER_MEMORY"
+RUNNER_MODE=single AUTOSCALE_MIN=2 BASE_RUNNER_MEMORY=1.5g GROWTH_MEMORY_RESERVE=0.5g
+set_host 10 80; mem_kib 2097152
+expect_admit default 3 'runner 3'
+grep -qF 'MemAvailable 2048 MiB (need 1536 + reserve 512 MiB)' "$LOG" || fail "decimal sizes were not converted exactly"
+set_host 10 80; mem_kib 2097151
+expect_withhold default 3 'runner 3'
+[ "$(state)" = withheld:memory ] || fail "decimal memory threshold did not withhold on memory"
+RUNNER_MODE=pools BASE_RUNNER_MEMORY="$saved_memory" GROWTH_MEMORY_RESERVE=8g
 
 # Each admitted start deducts its memory limit within the tick.
 GROWTH_STARTS_PER_TICK=4
