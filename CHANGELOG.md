@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.4.4](https://github.com/unraid/ci-runner-farm/compare/v3.4.3...v3.4.4) (2026-11-10)
+
+
+### Bug Fixes
+
+* **dind:** evict a flagged Docker store before its slot restarts ([#226](https://github.com/unraid/ci-runner-farm/issues/226)) ([8fe67a7](https://github.com/unraid/ci-runner-farm/commit/8fe67a7a7b2e4f1ff073aa004fa673bc71a018f0))
+
 ## [3.4.3](https://github.com/unraid/ci-runner-farm/compare/v3.4.2...v3.4.3) (2026-11-10)
 
 
