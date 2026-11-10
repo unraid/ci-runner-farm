@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.3.0](https://github.com/unraid/ci-runner-farm/compare/v3.2.1...v3.3.0) (2026-11-10)
+
+
+### Features
+
+* **pinning:** place runners on the least-used CPU blocks ([#213](https://github.com/unraid/ci-runner-farm/issues/213)) ([db9eedd](https://github.com/unraid/ci-runner-farm/commit/db9eedd82c3620f9fd7df027131f18f1ada9e294))
+
 ## [3.2.1](https://github.com/unraid/ci-runner-farm/compare/v3.2.0...v3.2.1) (2026-11-10)
 
 
