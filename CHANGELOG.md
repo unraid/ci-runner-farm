@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.4.3](https://github.com/unraid/ci-runner-farm/compare/v3.4.2...v3.4.3) (2026-11-10)
+
+
+### Bug Fixes
+
+* **growth:** read process names with spaces when counting busy runners ([#224](https://github.com/unraid/ci-runner-farm/issues/224)) ([b04a794](https://github.com/unraid/ci-runner-farm/commit/b04a79465abbdffaf718fe6b9ba046a0e2468d8b))
+
 ## [3.4.2](https://github.com/unraid/ci-runner-farm/compare/v3.4.1...v3.4.2) (2026-11-10)
 
 
