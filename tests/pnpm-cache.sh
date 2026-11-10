@@ -37,7 +37,7 @@ CACHE_MOUNTS=$'npm:/home/runner/.npm\tpnpm-store:/opt/custom-store'
 [ "$(github_confgen)" != "$(old_confgen)" ] || fail 'tab-separated cache entries would not drain'
 for CACHE_MOUNTS in '' 'npm:/home/runner/.npm'; do
   github_build_args 1 test-runner || fail 'no-store configuration rejected'
-  if printf '%s\n' "${ARGS[@]}" | grep -Eqi '(PNPM_CONFIG_STORE_DIR|npm_config_store_dir)='; then
+  if grep -Eqi '(PNPM_CONFIG_STORE_DIR|npm_config_store_dir)=' <<< "$(printf '%s\n' "${ARGS[@]}")"; then
     fail 'configuration without a pnpm bind received store settings'
   fi
   [ "$(github_confgen)" = "$(old_confgen)" ] || fail 'unrelated slots would drain'

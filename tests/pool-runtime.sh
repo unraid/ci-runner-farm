@@ -56,12 +56,12 @@ pool_base_refresh
 validate_runner_mode || fail "$POOL_CONFIG_ERROR"
 pool_activate build || fail 'self-hosted pool activation failed'
 github_build_args 1 ci-runner-build-1 || fail 'self-hosted pool argv failed'
-printf '%s\n' "${ARGS[@]}" | grep -q NO_DEFAULT_LABELS && fail 'pool with self-hosted lost GitHub default labels'
+grep -q NO_DEFAULT_LABELS <<< "$(printf '%s\n' "${ARGS[@]}")" && fail 'pool with self-hosted lost GitHub default labels'
 RUNNER_MODE=single RUNNER_POOLS='' RUNNER_LABELS=ci-build
 pool_base_refresh
 validate_runner_mode || fail "$POOL_CONFIG_ERROR"
 github_build_args 1 ci-runner-1 || fail 'single-layout argv failed'
-printf '%s\n' "${ARGS[@]}" | grep -q NO_DEFAULT_LABELS && fail 'single-layout runner lost GitHub default labels'
+grep -q NO_DEFAULT_LABELS <<< "$(printf '%s\n' "${ARGS[@]}")" && fail 'single-layout runner lost GitHub default labels'
 RUNNER_MODE=pools RUNNER_POOLS="$build;$qa" RUNNER_LABELS='self-hosted,unraid,build'
 pool_base_refresh
 validate_runner_mode || fail "$POOL_CONFIG_ERROR"

@@ -490,22 +490,22 @@ grep -qx corrupt-system-id "$CRF_CFGDIR/gitlab-runners/ci-runner-4/.runner_syste
   || fail "invalid persisted GitLab system ID was mutated"
 
 gitlab_build_manager_args 1 || fail "default-name manager argv generation failed"
-printf '%s\n' "${ARGS[@]}" | grep -qx 'ci-runner-1' \
+grep -qx 'ci-runner-1' <<< "$(printf '%s\n' "${ARGS[@]}")" \
   || fail "GitLab default manager name did not use its function argument"
-if printf '%s\n' "${ARGS[@]}" | grep -qF "$GITLAB_RUNNER_TOKEN"; then fail "runner token leaked into Docker argv"; fi
-printf '%s\n' "${ARGS[@]}" | grep -qF 'wget -qO- http://127.0.0.1:9252/metrics' \
+if grep -qF "$GITLAB_RUNNER_TOKEN" <<< "$(printf '%s\n' "${ARGS[@]}")"; then fail "runner token leaked into Docker argv"; fi
+grep -qF 'wget -qO- http://127.0.0.1:9252/metrics' <<< "$(printf '%s\n' "${ARGS[@]}")" \
   || fail "GitLab manager health check is not a local metrics probe"
-printf '%s\n' "${ARGS[@]}" | grep -qx -- '--stop-signal' \
+grep -qx -- '--stop-signal' <<< "$(printf '%s\n' "${ARGS[@]}")" \
   || fail "GitLab manager does not explicitly use SIGQUIT stop semantics"
-printf '%s\n' "${ARGS[@]}" | grep -qx 'SIGQUIT' \
+grep -qx 'SIGQUIT' <<< "$(printf '%s\n' "${ARGS[@]}")" \
   || fail "GitLab manager SIGQUIT value is missing"
-printf '%s\n' "${ARGS[@]}" | grep -qx -- '--stop-timeout' \
+grep -qx -- '--stop-timeout' <<< "$(printf '%s\n' "${ARGS[@]}")" \
   || fail "GitLab manager Docker stop timeout is missing"
-printf '%s\n' "${ARGS[@]}" | grep -qx '7200' \
+grep -qx '7200' <<< "$(printf '%s\n' "${ARGS[@]}")" \
   || fail "GitLab manager Docker stop timeout value is missing"
-printf '%s\n' "${ARGS[@]}" | grep -qx "$CACHE_ROOT/gitlab-sockets/ci-runner-1:/runner-services" \
+grep -qx "$CACHE_ROOT/gitlab-sockets/ci-runner-1:/runner-services" <<< "$(printf '%s\n' "${ARGS[@]}")" \
   || fail "GitLab manager bind-mounts a stale socket inode instead of its socket directory"
-if printf '%s\n' "${ARGS[@]}" | grep -qx "$CACHE_ROOT/gitlab-sockets/ci-runner-1/docker.sock:/var/run/docker.sock"; then
+if grep -qx "$CACHE_ROOT/gitlab-sockets/ci-runner-1/docker.sock:/var/run/docker.sock" <<< "$(printf '%s\n' "${ARGS[@]}")"; then
   fail "GitLab manager still bind-mounts the replaceable DinD socket file"
 fi
 
@@ -577,7 +577,7 @@ grep -q 'tls-ca-file = "/etc/gitlab-runner/certs/gitlab-ca.crt"' "$cfg" || fail 
 [ -d "$CRF_CFGDIR/gitlab-runners/ci-runner-1/certs" ] || fail "custom-CA bind target directory is missing"
 cmp -s "$CRF_CFGDIR/gitlab-ca.crt" "$slot_ca" || fail "active CA was not snapshotted into the slot"
 [ "$(mode_of "$slot_ca")" = 600 ] || fail "per-slot CA snapshot is not mode 0600"
-printf '%s\n' "${ARGS[@]}" | grep -qx "$slot_ca:/etc/gitlab-runner/certs/gitlab-ca.crt:ro" \
+grep -qx "$slot_ca:/etc/gitlab-runner/certs/gitlab-ca.crt:ro" <<< "$(printf '%s\n' "${ARGS[@]}")" \
   || fail "custom CA is absent from manager mounts"
 grep -qF "$slot_ca:/etc/gitlab-runner/certs/ca.crt:ro" "$cfg" \
   || fail "custom CA is absent from Docker-executor helper/job mounts"
@@ -609,7 +609,7 @@ if grep -qF 'https://registry.gitlab.example.test:5443' "$slot_auth"; then
   fail "GitLab registry auth retained a URL scheme that cannot match image authorities"
 fi
 gitlab_build_manager_args 1 ci-runner-1 || fail "built-in-default GitLab manager auth mount generation failed"
-printf '%s\n' "${ARGS[@]}" | grep -qx "$CRF_CFGDIR/gitlab-runners/ci-runner-1/docker:/root/.docker:ro" \
+grep -qx "$CRF_CFGDIR/gitlab-runners/ci-runner-1/docker:/root/.docker:ro" <<< "$(printf '%s\n' "${ARGS[@]}")" \
   || fail "built-in-default GitLab manager did not receive registry auth"
 SIDECAR_ARGS="$tmp/gitlab-sidecar.args"
 docker() {
