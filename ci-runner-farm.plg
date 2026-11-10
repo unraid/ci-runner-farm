@@ -2,13 +2,13 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name          "ci-runner-farm">
 <!ENTITY author        "Lime Technology">
-<!ENTITY version       "2026.11.10.2102.173-3.4.3">
-<!ENTITY pluginVersion "3.4.3">
-<!ENTITY releaseTag    "v3.4.3">
+<!ENTITY version       "2026.11.10.2159.175-3.4.4">
+<!ENTITY pluginVersion "3.4.4">
+<!ENTITY releaseTag    "v3.4.4">
 <!ENTITY pluginURL     "https://github.com/unraid/ci-runner-farm/releases/latest/download/ci-runner-farm.plg">
-<!ENTITY packageName   "ci-runner-farm-2026.11.10.2102.173-3.4.3.tgz">
-<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/v3.4.3/ci-runner-farm-2026.11.10.2102.173-3.4.3.tgz">
-<!ENTITY packageMD5    "4fc859b0c712cfb1ebcbf9600ed70387">
+<!ENTITY packageName   "ci-runner-farm-2026.11.10.2159.175-3.4.4.tgz">
+<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/v3.4.4/ci-runner-farm-2026.11.10.2159.175-3.4.4.tgz">
+<!ENTITY packageMD5    "b653d33d92a4616693522f74d317aef9">
 <!ENTITY plgdir        "/usr/local/emhttp/plugins/&name;">
 <!ENTITY cfgdir        "/boot/config/plugins/&name;">
 ]>
@@ -23,7 +23,7 @@
 <CHANGES>
 ### &version;
 ### Bug Fixes
-* **growth:** read process names with spaces when counting busy runners ([#224](https://github.com/unraid/ci-runner-farm/issues/224)) ([b04a794](https://github.com/unraid/ci-runner-farm/commit/b04a79465abbdffaf718fe6b9ba046a0e2468d8b))
+* **dind:** evict a flagged Docker store before its slot restarts ([#226](https://github.com/unraid/ci-runner-farm/issues/226)) ([8fe67a7](https://github.com/unraid/ci-runner-farm/commit/8fe67a7a7b2e4f1ff073aa004fa673bc71a018f0))
 </CHANGES>
 
 <!-- plugin package: Unraid downloads it to flash and verifies the MD5 -->
@@ -40,11 +40,11 @@ PLGDIR="/usr/local/emhttp/plugins/ci-runner-farm"
 CFGDIR="/boot/config/plugins/ci-runner-farm"
 mkdir -p "$CFGDIR" "$PLGDIR"
 # Sweep any older package versions off flash, keeping this build's package.
-find "$CFGDIR" -maxdepth 1 -name 'ci-runner-farm-*.tgz' ! -name 'ci-runner-farm-2026.11.10.2102.173-3.4.3.tgz' -delete 2>/dev/null || true
+find "$CFGDIR" -maxdepth 1 -name 'ci-runner-farm-*.tgz' ! -name 'ci-runner-farm-2026.11.10.2159.175-3.4.4.tgz' -delete 2>/dev/null || true
 # Extract ONLY into the plugin dir; --no-same-owner forces root ownership;
 # --no-overwrite-dir leaves existing dir metadata alone. System dirs untouched.
 # The .tgz is kept on flash so the on-boot reinstall works without a download.
-tar -xzf "$CFGDIR/ci-runner-farm-2026.11.10.2102.173-3.4.3.tgz" --no-same-owner --no-overwrite-dir -C "$PLGDIR"
+tar -xzf "$CFGDIR/ci-runner-farm-2026.11.10.2159.175-3.4.4.tgz" --no-same-owner --no-overwrite-dir -C "$PLGDIR"
 # Remove obsolete allocation runtime only; keep saved configuration and ledgers.
 rm -f -- "$PLGDIR/bin/ci-runner-capacity" "$PLGDIR/include/shared-capacity.sh" "$PLGDIR/include/build-demand.php"
 chown -R root:root "$PLGDIR"
@@ -110,7 +110,7 @@ fi
 ( nohup "$PLGDIR/include/runner-farm.sh" boot-autostart >>"$CFGDIR/boot.log" 2>&1 & ) || true
 echo ""
 echo "+=============================================================+"
-echo "| ci-runner-farm 2026.11.10.2102.173-3.4.3 installed.                         "
+echo "| ci-runner-farm 2026.11.10.2159.175-3.4.4 installed.                         "
 echo "| Settings > Utilities > CI Runner Farm                        "
 echo "| Select GitHub or GitLab, save its token, then Start.         "
 echo "+=============================================================+"
