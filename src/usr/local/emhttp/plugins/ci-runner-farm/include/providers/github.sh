@@ -995,6 +995,7 @@ github_start_one() {
   fi
   github_build_args "$idx" "$name" || { err "runner $name not started (see the error above)"; return 1; }
   log "starting $name (pool=${CRF_POOL_ID:-default} cpus=$RUNNER_CPUS mem=$RUNNER_MEMORY scope=$GH_SCOPE image=$(effective_image))"
+  layer_integrity_precreate "$name"
   run_owned_github_container "$idx" >/dev/null
   rc=$?
   clear_args_tmpdir

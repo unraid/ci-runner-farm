@@ -133,6 +133,14 @@ GROWTH_MEMORY_RESERVE="8g"           # withhold growth unless MemAvailable >= ru
 POISON_SCAN_INTERVAL="${CRF_POISON_SCAN_INTERVAL:-300}"           # min seconds between failed-job log scans
 POISON_SCAN_LOOKBACK="${CRF_POISON_SCAN_LOOKBACK:-1800}"          # only consider workflow runs created this recently
 POISON_HEAL_MIN_INTERVAL="${CRF_POISON_HEAL_MIN_INTERVAL:-3600}"  # at most one buildkit reset per slot per hour
+# ---- layer-integrity self-heal (see heal_corrupt_layers) --------------------
+# Internal bounds, deliberately not web-settable; CRF_* overrides are for tests.
+LAYER_SCAN_INTERVAL="${CRF_LAYER_SCAN_INTERVAL:-600}"          # min seconds between idle-slot scans of one store
+LAYER_SCAN_BUDGET="${CRF_LAYER_SCAN_BUDGET:-10}"               # max seconds one store scan may spend reading
+LAYER_SCAN_TICK_BUDGET="${CRF_LAYER_SCAN_TICK_BUDGET:-15}"     # max seconds of idle-slot scans per lifecycle tick
+LAYER_SCAN_MIN_AGE="${CRF_LAYER_SCAN_MIN_AGE:-120}"            # leave layers younger than this for a later scan
+LAYER_SCAN_MAX_FILE="${CRF_LAYER_SCAN_MAX_FILE:-67108864}"     # skip checked entries larger than this (bytes)
+LAYER_HEAL_MIN_INTERVAL="${CRF_LAYER_HEAL_MIN_INTERVAL:-3600}" # at most one cache eviction per slot per hour
 # ---- job lifecycle enforcement --------------------------------------------
 # Internal cadence/bounds, deliberately not web-settable. The watchdog runs
 # independently of autoscaling so a fixed-size fleet receives the same cleanup.
@@ -833,6 +841,197 @@ heal_poisoned_runners() {
   return "$failed"
 }
 
+# ── Layer-integrity self-heal ────────────────────────────────────────────────
+# A persistent DinD store can hold a cached layer whose diff no longer matches
+# the per-file checksums recorded when the layer was registered. The image still
+# runs, but `docker push` and `docker save` fail with "file integrity checksum
+# failed", and every later build on that slot reuses the layer from cache and
+# fails the same way. The files that reach this state are the ones written
+# through shared memory maps (SQLite -shm/-wal, Berkeley DB __db.*), so
+# layer-integrity.pl checks only those entries: a few KB per affected layer.
+#
+# Two read-only scan points find bad layers: slot creation, before the new
+# container exists, so the store is idle; and idle slots on the lifecycle tick.
+# Scans are incremental (layers already checked are cached per slot), bounded
+# in time and bytes, run at idle CPU/IO priority, and leave very young layers
+# for a later pass. The eviction runs only in an idle, running slot: it removes
+# the images that reference the bad layers and prunes that slot's build cache,
+# which also holds the layers. It rechecks for a job before every step. Every
+# failure is logged and never blocks a runner start or the tick.
+
+layer_log() { log "layer-integrity: $*" >&2; }
+
+layer_integrity_enabled() {
+  [ "$CI_PROVIDER" = github ] && [ "$DIND" = true ] && [ "$SHARE_DOCKER_SOCK" != true ] || return 1
+  command -v perl >/dev/null 2>&1 && command -v gzip >/dev/null 2>&1 \
+    && command -v sha256sum >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1
+}
+
+# The slot's own Docker data root, only when it is a real directory at its
+# canonical path under the validated cache root.
+layer_integrity_store() {
+  local root store
+  root="$(crf_safe_cache_root 2>/dev/null)" || return 1
+  store="$root/docker/$1"
+  [ -d "$store" ] && [ ! -L "$store" ] && [ "$(realpath -m -- "$store")" = "$store" ] || return 1
+  printf '%s' "$store"
+}
+
+# Image IDs whose layer chain contains one of the newline-separated chain IDs
+# in $2. Chain IDs follow the OCI definition:
+# chain(1) = diff(1); chain(n) = sha256(chain(n-1) + " " + diff(n)).
+layer_integrity_images() {
+  local store="$1" bad="$2" f image d chain
+  for f in "$store"/image/overlay2/imagedb/content/sha256/*; do
+    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    image="${f##*/}"
+    printf '%s' "$image" | grep -qE '^[0-9a-f]{64}$' || continue
+    chain=""
+    for d in $(grep -oE '"diff_ids"[[:space:]]*:[[:space:]]*\[[^]]*\]' "$f" 2>/dev/null | grep -oE 'sha256:[0-9a-f]{64}'); do
+      if [ -z "$chain" ]; then
+        chain="$d"
+      else
+        chain="sha256:$(printf '%s %s' "$chain" "$d" | sha256sum | cut -c1-64)"
+      fi
+      if printf '%s\n' "$bad" | grep -qxF -- "${chain#sha256:}"; then
+        printf 'sha256:%s\n' "$image"
+        break
+      fi
+    done
+  done
+}
+
+# Scan one slot's store and keep $RUNDIR/layer-corrupt.<slot> current. Always
+# returns 0: a scan problem is logged and retried on a later pass.
+layer_integrity_scan() {
+  local c="$1" budget="${2:-$LAYER_SCAN_BUDGET}" store out bad images flag
+  flag="$RUNDIR/layer-corrupt.$c"
+  layer_integrity_enabled || return 0
+  store="$(layer_integrity_store "$c")" || return 0
+  [ -d "$store/image/overlay2/layerdb" ] || return 0
+  date +%s > "$RUNDIR/layer-scan.$c" 2>/dev/null || true
+  local low=(nice -n 19)
+  command -v ionice >/dev/null 2>&1 && low=(ionice -c 3 nice -n 19)
+  out="$(timeout -k 2 $((budget + 30)) "${low[@]}" perl "$SCRIPT_DIR/layer-integrity.pl" \
+    "$store" "$RUNDIR/layer-verified.$c" "$budget" "$LAYER_SCAN_MIN_AGE" "$LAYER_SCAN_MAX_FILE" 2>/dev/null)" \
+    || { layer_log "scan of $c did not complete; will retry on a later pass"; return 0; }
+  bad="$(printf '%s\n' "$out" | awk '$1 == "BAD" && $2 ~ /^[0-9a-f]+$/ && length($2) == 64 { print $2 }' | sort -u)"
+  if [ -z "$bad" ]; then
+    # A partial scan may not have reached a previously flagged layer.
+    if [ -f "$flag" ] && ! printf '%s\n' "$out" | grep -q '^SUMMARY .* partial'; then
+      rm -f "$flag"
+      layer_log "$c no longer holds corrupt layers; cleared its pending eviction"
+    fi
+    return 0
+  fi
+  images="$(layer_integrity_images "$store" "$bad")"
+  { printf 'chain %s\n' $bad
+    [ -z "$images" ] || printf 'image %s\n' $images
+  } > "$flag.tmp" 2>/dev/null && mv -f "$flag.tmp" "$flag" \
+    || { rm -f "$flag.tmp"; layer_log "could not record corrupt layers for $c"; return 0; }
+  layer_log "$c holds $(printf '%s\n' "$bad" | grep -c .) cached layer(s) that cannot be exported, used by $(printf '%s\n' "$images" | grep -c .) image(s); eviction pending until the slot is idle"
+  printf '%s\n' "$out" | awk '$1 == "BAD" { print substr($2, 1, 12), $3, $4 }' | head -n 10 \
+    | while read -r chain reason path; do layer_log "$c   layer $chain: $reason mismatch for $path"; done
+  return 0
+}
+
+# Slot creation: the old container is gone and the new one does not exist yet,
+# so nothing writes to the store while it is read.
+layer_integrity_precreate() {
+  local store
+  layer_integrity_enabled || return 0
+  store="$(layer_integrity_store "$1")" || return 0
+  [ -d "$store/image/overlay2/layerdb" ] || return 0
+  docker inspect "$1" >/dev/null 2>&1 && return 0
+  layer_integrity_scan "$1" || true
+}
+
+# Evict one slot's corrupt layers inside its idle runner. Exit 20 means a job
+# arrived; the eviction stops before touching anything else.
+layer_integrity_heal() {
+  local c="$1" f="$RUNDIR/layer-corrupt.$1" healf="$RUNDIR/layer-healed.$1" now last images rc=0
+  last=0
+  [ -f "$healf" ] && read -r last < "$healf"
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  now="$(date +%s)"
+  if [ $((now - last)) -lt "$LAYER_HEAL_MIN_INTERVAL" ]; then
+    layer_log "$c still holds corrupt layers after a recent eviction; waiting out the per-slot bound"
+    return 0
+  fi
+  images="$(awk '$1 == "image" && $2 ~ /^sha256:[0-9a-f]+$/ && length($2) == 71 { print $2 }' "$f" 2>/dev/null)"
+  # Stamp the attempt first: whatever fails below, one slot is evicted at most
+  # once per bound interval.
+  echo "$now" > "$healf"
+  # shellcheck disable=SC2086 # image IDs are validated hex digests
+  timeout -k 5 300 docker exec "$c" sh -c '
+    command -v pgrep >/dev/null 2>&1 || exit 23
+    busy() { pgrep -x Runner.Worker >/dev/null 2>&1; }
+    busy && exit 20
+    for image in "$@"; do
+      docker image inspect "$image" >/dev/null 2>&1 || continue
+      busy && exit 20
+      docker image rm --force "$image" >/dev/null 2>&1 || exit 21
+    done
+    busy && exit 20
+    docker builder prune --all --force >/dev/null 2>&1 || exit 22
+  ' sh $images >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0)
+      rm -f "$f" "$RUNDIR/layer-scan.$c"
+      layer_log "healed $c: removed $(printf '%s\n' "$images" | grep -c .) image(s) that referenced corrupt layers and pruned its build cache; a rescan confirms on the next idle pass"
+      ;;
+    20)
+      rm -f "$healf"
+      layer_log "$c took a job during its eviction; stopped early and will retry when idle"
+      ;;
+    *)
+      err "layer-integrity: could not evict corrupt layers from $c (exit $rc); the runner keeps running"
+      return 1
+      ;;
+  esac
+}
+
+# Lifecycle pass: scan idle slots whose last scan is older than
+# LAYER_SCAN_INTERVAL (within LAYER_SCAN_TICK_BUDGET), then evict at most one
+# flagged idle slot. A slot is idle only when its container is running and the
+# provider's busy test reports idle; busy, starting, and unknown slots are left
+# alone.
+heal_corrupt_layers() {
+  layer_integrity_enabled || return 0
+  local names c snapshot id provider role index gen f last now started due budget healed=false failed=0
+  names="$(managed_names)" || return 1
+  started="$(date +%s)"
+  for c in $names; do
+    [ -n "$c" ] || continue
+    snapshot="$(managed_runner_snapshot "$c" 2>/dev/null)" || continue
+    IFS='|' read -r id provider role index gen <<< "$snapshot"
+    [ "$provider" = github ] && [ "$role" = runner ] || continue
+    f="$RUNDIR/layer-corrupt.$c"
+    last=0
+    [ -f "$RUNDIR/layer-scan.$c" ] && read -r last < "$RUNDIR/layer-scan.$c"
+    case "$last" in ''|*[!0-9]*) last=0 ;; esac
+    now="$(date +%s)"
+    due=false
+    if [ $((now - last)) -ge "$LAYER_SCAN_INTERVAL" ] \
+      && [ $((now - started)) -lt "$LAYER_SCAN_TICK_BUDGET" ]; then
+      due=true
+    fi
+    [ "$due" = true ] || { [ -f "$f" ] && [ "$healed" = false ]; } || continue
+    [ "$(docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null)" = true ] || continue
+    [ "$(runner_state "$c" 2>/dev/null)" = idle ] || continue
+    if [ "$due" = true ]; then
+      budget=$((LAYER_SCAN_TICK_BUDGET - (now - started)))
+      [ "$budget" -le "$LAYER_SCAN_BUDGET" ] || budget="$LAYER_SCAN_BUDGET"
+      layer_integrity_scan "$c" "$budget"
+    fi
+    [ -f "$f" ] && [ "$healed" = false ] || continue
+    # One eviction per tick: it runs under the fleet lock.
+    healed=true
+    layer_integrity_heal "$c" || failed=1
+  done
+  return "$failed"
+}
+
 # Read a provider-matching queue cache only while it is inside the same 60-second
 # freshness window used by cmd_queued_json. Unknown data must not suppress the
 # normal idle-headroom growth decision.
@@ -1058,6 +1257,9 @@ lifecycle_tick() {
     yield=true
     lifecycle_replace "$candidate" || failed=1
   done
+  # Non-fatal: a failed eviction is logged and retried on a later tick.
+  heal_corrupt_layers \
+    || err "lifecycle: corrupt cached layers could not be evicted from one or more idle runners this tick"
   return "$failed"
 }
 
@@ -3758,6 +3960,7 @@ cmd_recycle() {
     # replacement from being attempted at all. Docker diagnostics are untrusted,
     # so the detail is redacted on the way to the log.
     local rout
+    layer_integrity_precreate "$name"
     if rout="$(run_owned_github_container "$idx" 2>&1 >/dev/null)"; then :; else
       err "recycle: docker run failed:"
       printf '%s\n' "$rout" | redact_log_stream >&2

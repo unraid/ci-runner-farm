@@ -599,6 +599,22 @@ The watchdog runs independently of autoscaling, so fixed-size fleets receive
 the same protection. GitLab keeps its manager-owned lifecycle path and exposes
 no candidate to this watchdog.
 
+The watchdog also evicts cached layers that can no longer be exported. A layer
+whose diff no longer matches the per-file checksums Docker recorded at
+registration still runs, but `docker push` and `docker save` fail with
+`file integrity checksum failed`, and every later build on that slot reuses it
+from cache. Files written through shared memory maps (SQLite `-shm`/`-wal`,
+Berkeley DB `__db.*`) are the ones known to reach this state, so the farm checks
+only those entries against the layer's recorded checksums. The check is
+read-only and incremental, with a time bound. It runs when a slot is created,
+before the new container starts, and every 10 minutes on idle slots. When it
+finds a bad layer, the farm waits until the slot is idle, then removes the
+images that reference that layer and prunes that slot's build cache. This
+happens at most once per slot per hour, and the farm checks for a new job
+before each step. Idle-slot findings and evictions appear in the lifecycle
+log. Findings from slot creation appear in the log of the process that created
+the slot.
+
 ### CPU pinning
 
 A CPU limit (`--cpus`) caps a runner's CPU time, but tools that size their
