@@ -124,6 +124,9 @@ AUTOSCALE_MIN_IDLE="2"                # keep at least this many idle (warm) runn
 AUTOSCALE_STEP="2"                    # add/remove this many per adjustment
 AUTOSCALE_INTERVAL="30"              # seconds between checks
 AUTOSCALE_IDLE_GRACE="5"             # consecutive over-idle checks before scaling down (anti-flap)
+GROWTH_BACKPRESSURE="false"          # true => autoscale starts above the minimum wait for host CPU/memory headroom
+GROWTH_CPU_CEILING="80"              # withhold growth while host CPU busy percent is above this (1-100)
+GROWTH_MEMORY_RESERVE="8g"           # withhold growth unless MemAvailable >= runner memory limit + this reserve
 # ---- build-poison self-heal (see heal_poisoned_runners) ----------------------
 # Internal cadence/bounds, deliberately not web-settable. The CRF_* environment
 # overrides exist for the test harness, not for operators.
@@ -157,6 +160,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/runner-history.sh"
 # shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/cpu-pinning.sh
 . "$SCRIPT_DIR/cpu-pinning.sh"
+# shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/growth-backpressure.sh
+. "$SCRIPT_DIR/growth-backpressure.sh"
 # shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/github-app.sh
 . "$SCRIPT_DIR/github-app.sh"
 
@@ -172,7 +177,8 @@ RUNNER_CPUS CPU_PINNING RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE USER_SHARE_MOUN
 RUN_AS_ROOT REGISTRY_SERVER REGISTRY_USERNAME CACHE_MOUNTS SHARE_DOCKER_SOCK DIND \
 SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK RUNNER_DNS ARTIFACT_ENDPOINT MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
 AUTOSCALE_MAX AUTOSCALE_MIN_IDLE AUTOSCALE_STEP AUTOSCALE_INTERVAL \
-AUTOSCALE_IDLE_GRACE IMAGE_AUTOUPDATE IMAGE_AUTOUPDATE_INTERVAL IMAGE_DRAIN_TIMEOUT \
+AUTOSCALE_IDLE_GRACE GROWTH_BACKPRESSURE GROWTH_CPU_CEILING GROWTH_MEMORY_RESERVE \
+IMAGE_AUTOUPDATE IMAGE_AUTOUPDATE_INTERVAL IMAGE_DRAIN_TIMEOUT \
 DASHBOARD_WIDGET_ENABLE"
 
 # The subset of the allowlist whose values reach arithmetic contexts ($(( )), seq,
@@ -183,7 +189,7 @@ DASHBOARD_WIDGET_ENABLE"
 # RUNNER_MEMORY and WORK_TMPFS_SIZE (unit-suffixed).
 CFG_NUMERIC_KEYS="RUNNER_COUNT MIRROR_PORT AUTOSCALE_MIN AUTOSCALE_MAX AUTOSCALE_MIN_IDLE \
 AUTOSCALE_STEP AUTOSCALE_INTERVAL AUTOSCALE_IDLE_GRACE IMAGE_AUTOUPDATE_INTERVAL \
-IMAGE_DRAIN_TIMEOUT GITLAB_SHUTDOWN_TIMEOUT GITLAB_SHM_SIZE DOCKER_CACHE_MIN_FREE_PERCENT"
+IMAGE_DRAIN_TIMEOUT GITLAB_SHUTDOWN_TIMEOUT GITLAB_SHM_SIZE DOCKER_CACHE_MIN_FREE_PERCENT GROWTH_CPU_CEILING"
 
 # Read ci-runner-farm.cfg WITHOUT sourcing it (the file is written by the web form, so
 # sourcing would execute anything a crafted value smuggled in). Parse KEY="value"
@@ -194,6 +200,7 @@ load_cfg() {
   DOCKER_CACHE_BUILDERS=""
   DOCKER_JOB_PRUNE="false"
   RUNNER_DNS=""
+  GROWTH_BACKPRESSURE="false"
   [ -f "$CFG" ] || return 0
   local line key val
   while IFS= read -r line || [ -n "$line" ]; do
@@ -443,6 +450,17 @@ runner_pool() {
   value="$(docker inspect -f '{{ index .Config.Labels "net.unraid.ci-runner-farm.pool" }}' "$1" 2>/dev/null)" || return 1
   [ "$value" = '<no value>' ] && value=""
   printf '%s\n' "${value:-default}"
+}
+
+# Ask the growth gate before starting existing slot $1 (index $2) again. Every
+# path that restarts or recreates a slot that is not running calls this, so a
+# slot withheld above the autoscale floor stays exited until the host has
+# headroom. Passes when the gate is off or the slot is a refill.
+growth_gate_admit_slot() {
+  local pool
+  growth_gate_enabled || return 0
+  pool="$(runner_pool "$1")" || { err "growth backpressure: could not read the pool of $1"; return 1; }
+  growth_gate_admit "$pool" "$2" "$1"
 }
 
 BASE_NAME_PREFIX="$NAME_PREFIX"
@@ -839,6 +857,7 @@ autoscale_queue_depth() {
 autoscale_tick() {
   runner_starts_allowed || return 0
   [ "$AUTOSCALE" = "true" ] || return 0
+  growth_gate_reset
   crf_storage_pressure_cleanup
   if pool_mode_enabled; then
     validate_runner_mode || return 1
@@ -887,8 +906,18 @@ autoscale_tick() {
       [ "$queue_target" -gt "$target" ] && target="$queue_target"
       [ "$target" -gt "$AUTOSCALE_MAX" ] && target=$AUTOSCALE_MAX
     fi
-    log "autoscale: idle=$idle/$cur queued=$qdepth < buffer $AUTOSCALE_MIN_IDLE -> grow to $target"
-    cmd_scale "$target" >/dev/null; echo 0 > "$statef"
+    # Growth above the floor waits for host headroom when backpressure is on.
+    local granted="$cur"
+    while [ "$granted" -lt "$target" ] \
+      && growth_gate_admit default "$((granted + 1))" "runner $((granted + 1))"; do
+      granted=$((granted + 1))
+    done
+    if [ "$granted" -gt "$cur" ]; then
+      target="$granted"
+      log "autoscale: idle=$idle/$cur queued=$qdepth < buffer $AUTOSCALE_MIN_IDLE -> grow to $target"
+      cmd_scale "$target" >/dev/null
+    fi
+    echo 0 > "$statef"
   elif [ "$idle" -gt $(( AUTOSCALE_MIN_IDLE + AUTOSCALE_STEP )) ] && [ "$cur" -gt "$floor" ]; then
     over=$(( over + 1 )); echo "$over" > "$statef"
     if [ "$over" -ge "$AUTOSCALE_IDLE_GRACE" ]; then
@@ -1011,6 +1040,7 @@ autoscale_status() {
 # farm must receive the same cleanup and recycle protection as an autoscaled one.
 lifecycle_tick() {
   runner_starts_allowed || return 0
+  growth_gate_reset
   crf_storage_pressure_cleanup
   replenish_fixed_github_capacity || return 1
   local candidates candidate failed=0 yield=false
@@ -1054,6 +1084,9 @@ lifecycle_replace() {
   else
     [ "$(runner_state "$candidate")" = idle ] || return 0
   fi
+  # A slot above the autoscale floor is growth: keep it exited, never removed,
+  # until the host has headroom. Refills up to the floor are never gated.
+  growth_gate_admit_slot "$candidate" "$index" || return 0
   log "lifecycle: replacing positively exited $candidate"
   cmd_recycle "$candidate" >/dev/null \
     || { err "lifecycle: could not recycle $candidate; will retry"; return 1; }
@@ -1200,6 +1233,11 @@ drain_and_recreate() {
     || { err "image-update: could not enumerate Docker containers after reacquiring the fleet lock"; return 1; }
   printf '%s\n' "$all_names" | grep -qx "$c" \
     || { log "image-update: $c no longer present — skipping recreate"; return 0; }
+  if growth_gate_enabled && [ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" != true ]; then
+    local index="${c##*-}"
+    growth_gate_admit_slot "$c" "$index" \
+      || { log "image-update: $c is stopped and growth backpressure withholds its restart — deferring"; return 1; }
+  fi
   log "image-update: $c idle -> validating and recycling onto the current provider image"
   if ! cmd_recycle "$c" >/dev/null; then
     log "image-update: validated recycle of $c failed; existing capacity was preserved when possible"
@@ -2179,6 +2217,12 @@ start_configured_capacity() {
           || { err "could not prepare image $(effective_image) for pool $pool"; failed=1; continue; }
       fi
       for i in $(seq 1 "$startn"); do
+        # Starting a missing slot above the pool minimum is growth: it waits
+        # for host headroom when backpressure is on.
+        if growth_gate_enabled && ! docker inspect "${NAME_PREFIX}-$i" >/dev/null 2>&1 \
+          && ! growth_gate_admit "$pool" "$i" "${NAME_PREFIX}-$i"; then
+          break
+        fi
         start_one "$i" || failed=1
       done
     done < <(pool_records)
@@ -2220,6 +2264,9 @@ start_stopped_managed() {
     st="$(docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null)" \
       || { err "could not inspect stopped/running state for owned runner $c"; return 1; }
     [ "$st" = "true" ] && continue
+    # A stopped slot above the autoscale floor stays stopped, not removed,
+    # until the host has headroom. Refills up to the floor are never gated.
+    growth_gate_admit_slot "$c" "$idx" || continue
     if [ "$provider" = gitlab ] && [ "$CI_PROVIDER" = gitlab ] \
       && [ "$gen" = "$(crf_confgen)" ]; then
       log "restarting stopped GitLab manager $c with its persisted system ID"
@@ -2331,6 +2378,11 @@ reconcile_stale_runners() {
     # reach idle on its own, so leaving it would strand it on the old config forever).
     # Busy/starting runners are left for a later pass.
     case "$(runner_state "$c")" in idle|error) ;; *) continue ;; esac
+    # A stale slot that is not running would be started again; above the
+    # autoscale floor that is growth and waits for host headroom.
+    if growth_gate_enabled && [ "$(docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null)" != true ]; then
+      growth_gate_admit_slot "$c" "$index" || continue
+    fi
     log "reconcile: $c predates a config change — recycling it onto the current config"
     if ! cmd_recycle "$c" >/dev/null 2>&1; then
       if docker ps -a --format '{{.Names}}' | grep -qx "$c"; then
@@ -3062,6 +3114,9 @@ cmd_scale() {
 
 cmd_status() {
   local names; names="$(managed_names)"
+  if [ "$AUTOSCALE" = true ] && growth_gate_enabled; then
+    printf 'growth backpressure: %s\n' "$(growth_gate_status)"
+  fi
   printf "%-22s %-10s %-8s %-10s %s\n" "NAME" "STATE" "PHASE" "CPU/MEM" "IMAGE"
   [ -z "$names" ] && { echo "(no managed runners)"; return 0; }
   echo "$names" | while read -r c; do
@@ -3899,6 +3954,10 @@ cmd_status_json() {
   done
   out+="]"
   local as="off"; [ "$AUTOSCALE" = "true" ] && as="$(autoscale_status)"
+  local growth=""
+  if [ "$AUTOSCALE" = true ] && growth_gate_enabled; then
+    growth="; growth backpressure: $(growth_gate_status | json_escape)"
+  fi
   local iu="off"; [ "$IMAGE_AUTOUPDATE" = "true" ] && iu="$(imageupdate_status) (every $((IMAGE_AUTOUPDATE_INTERVAL/60))m)"
   local warn; warn="$(cat "$RUNDIR/warn.cache" 2>/dev/null | json_escape)"
   # Read the security verdict from cache (written by cmd_usage_refresh) — never call
@@ -3920,7 +3979,7 @@ cmd_status_json() {
   fi
   local recommendations; recommendations="$(cmd_recommendations_json 2>/dev/null)"
   [ -n "$recommendations" ] || recommendations='{"version":1,"source":"live-heuristic","confidence":"low","queue":{"count":-1,"age":999999},"usage_age":999999,"history":{"keys":0,"samples":0,"last_completed":0,"retention_days":90},"summary":"Recommendation data is temporarily unavailable.","recommendations":[],"jobs":[]}'
-  echo "{\"provider\":\"$CI_PROVIDER\",\"mode\":\"$RUNNER_MODE\",\"count\":$(echo "$names" | grep -c . ),\"configured\":${configured},\"token\":$(pool_tokens_ready 2>/dev/null && echo true || echo false),\"autoscale\":\"${as} [${AUTOSCALE_MIN}-${AUTOSCALE_MAX}, buffer ${AUTOSCALE_MIN_IDLE}]\",\"image_autoupdate\":\"$(echo "$iu" | json_escape)\",\"warning\":\"${warn}\",\"security\":\"${sec}\",\"stale\":${stalec},\"pools\":${pools},\"recommendations\":${recommendations},\"runners\":${out}}"
+  echo "{\"provider\":\"$CI_PROVIDER\",\"mode\":\"$RUNNER_MODE\",\"count\":$(echo "$names" | grep -c . ),\"configured\":${configured},\"token\":$(pool_tokens_ready 2>/dev/null && echo true || echo false),\"autoscale\":\"${as} [${AUTOSCALE_MIN}-${AUTOSCALE_MAX}, buffer ${AUTOSCALE_MIN_IDLE}]${growth}\",\"image_autoupdate\":\"$(echo "$iu" | json_escape)\",\"warning\":\"${warn}\",\"security\":\"${sec}\",\"stale\":${stalec},\"pools\":${pools},\"recommendations\":${recommendations},\"runners\":${out}}"
 }
 
 # Aggregate-only status for the Main -> Dashboard nchan widget: {count,up,busy,idle}.

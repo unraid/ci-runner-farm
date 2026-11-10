@@ -141,6 +141,21 @@ expect_place 4 ci-runner-build-8 28-31
 expect_place 4 ci-runner-build-9 0-3
 expect_place 4 ci-runner-build-10 8-11
 expect_place 4 ci-runner-build-11 4-7
+# A pool that grows to twice the block count fills every block exactly twice,
+# and the next runner starts a third round on the first preferred block.
+expect_place 4 ci-runner-build-12 12-15
+expect_place 4 ci-runner-build-13 16-19
+expect_place 4 ci-runner-build-14 24-27
+expect_place 4 ci-runner-build-15 20-23
+expect_place 4 ci-runner-build-16 28-31
+[ "$(awk '{ print $3 }' "$CONTAINERS" | sort | uniq -c | awk '{ print $1 }' | sort -u)" = 2 ] \
+  || fail "a grown pool did not share every cpuset block evenly"
+expect_place 4 ci-runner-build-17 0-3
+# An exited growth runner frees its block for the next runner placed.
+awk '$1 == "ci-runner-build-14" { $2 = "exited" } { print }' "$CONTAINERS" > "$CONTAINERS.new"
+mv "$CONTAINERS.new" "$CONTAINERS"
+[ "$(crf_cpu_pinning_cpuset 4 ci-runner-build-18 2>/dev/null)" = 24-27 ] \
+  || fail "an exited growth runner still held its cpuset block"
 [ ! -s "$tmp/warnings" ] || fail "successful placement emitted warnings: $(cat "$tmp/warnings")"
 
 # Stopped containers and unpinned containers hold no CPUs.

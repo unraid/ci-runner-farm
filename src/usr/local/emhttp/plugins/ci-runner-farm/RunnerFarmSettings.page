@@ -47,6 +47,7 @@ $defaults = [
   'DASHBOARD_WIDGET_ENABLE'=>'true',
   'AUTOSCALE'=>'false', 'AUTOSCALE_MIN'=>'2', 'AUTOSCALE_MAX'=>'16', 'AUTOSCALE_MIN_IDLE'=>'2',
   'AUTOSCALE_STEP'=>'2', 'AUTOSCALE_INTERVAL'=>'30', 'AUTOSCALE_IDLE_GRACE'=>'5',
+  'GROWTH_BACKPRESSURE'=>'false', 'GROWTH_CPU_CEILING'=>'80', 'GROWTH_MEMORY_RESERVE'=>'8g',
 ];
 $saved_provider = ($cfg['CI_PROVIDER'] ?? $defaults['CI_PROVIDER']) === 'gitlab' ? 'gitlab' : 'github';
 /* GitHub Packages currently requires a classic PAT. Preselect the least-privilege
@@ -296,7 +297,7 @@ _(Named pool records)_:
 : <input type="text" name="RUNNER_POOLS" id="crf-runner-pools" value="<?=crf_g($cfg,'RUNNER_POOLS','')?>" placeholder="v3|build|ci-build|linux,x64|3|0|3|0|inherit|inherit|builtin;v3|qa-vm|qa-vm-client|linux,x64|2|0|2|0|2|8g|ghcr.io/unraid/qa-vm-client:latest">
 
 :crf_runner_pools_plug:
-> Named-pool mode only. Enter semicolon-separated V3 records: <code>v3|id|routing-label|additional-labels|fixed|min|max|idle|cpus|memory|image</code>. The current classic-pool implementation uses <code>fixed</code>; min/max/idle are retained in the bounded contract for future per-pool autoscaling. Use <code>inherit</code> for global CPU or memory, <code>builtin</code> for the locally built image, or a full registry image reference. Pool mode requires GitHub organization scope and disables global autoscaling and global image auto-update. Add <code>kvm</code> to a GitHub pool's labels to pass through a group-writable host <code>/dev/kvm</code>; other pools do not receive it.
+> Named-pool mode only. Enter semicolon-separated V3 records: <code>v3|id|routing-label|additional-labels|fixed|min|max|idle|cpus|memory|image</code>. With autoscaling off, each pool runs exactly <code>fixed</code> runners. With autoscaling on, <code>fixed</code> is ignored: each pool keeps at least <code>min</code> runners and grows toward <code>max</code> to keep <code>idle</code> runners free (0 counts as 1), from that host's own runners only. Pools never remove idle runners above <code>min</code>. Use <code>inherit</code> for global CPU or memory, <code>builtin</code> for the locally built image, or a full registry image reference. Pool mode requires GitHub organization scope and disables global image auto-update; the global autoscale min/max/buffer/step fields do not apply to pools. Add <code>kvm</code> to a GitHub pool's labels to pass through a group-writable host <code>/dev/kvm</code>; other pools do not receive it.
 :end
 
 _(GitLab pool token)_:
@@ -530,7 +531,7 @@ _(Autoscaling)_:
   </select>
 
 :crf_autoscale_plug:
-> When on, a daemon grows/shrinks the fleet by demand instead of using a fixed count. It keeps a warm idle buffer: when idle runners drop below the buffer (jobs are consuming them) it adds runners; when too many sit idle it removes them. Bounded by Min/Max, with grace to avoid flapping. Only ever removes idle runners, never a runner mid-job.
+> When on, a daemon grows/shrinks the fleet by demand instead of using a fixed count. It keeps a warm idle buffer: when idle runners drop below the buffer (jobs are consuming them) it adds runners; when too many sit idle it removes them. Bounded by Min/Max, with grace to avoid flapping. Only ever removes idle runners, never a runner mid-job. Named pools use each pool's own min/max/idle instead and never remove idle runners.
 >
 > Autoscaling is off by default and is an explicit opt-in for GitLab. GitLab demand comes from live manager metrics and observed job containers; the incomplete Monitored-project queue count is dashboard-only and never drives scale decisions.
 :end
@@ -575,6 +576,30 @@ _(Autoscale: scale-down grace)_:
 
 :crf_asgrace_plug:
 > How many consecutive over-idle checks before removing runners. Scale-up is immediate; scale-down waits this long to avoid flapping during brief lulls.
+:end
+
+_(Autoscale: resource backpressure)_:
+: <select name="GROWTH_BACKPRESSURE">
+  <option value="false" <?=crf_sel($cfg,'GROWTH_BACKPRESSURE','false','false')?>>off (grow on demand up to the maximum)</option>
+  <option value="true" <?=crf_sel($cfg,'GROWTH_BACKPRESSURE','true','false')?>>on (grow only while the host has headroom)</option>
+  </select>
+
+:crf_growth_backpressure_plug:
+> When on, each runner start above the minimum first checks the host. It is withheld while host CPU use is above the ceiling, or when available memory is less than the runner's memory limit plus the reserve. It only withholds new starts: running and busy runners are never stopped, and refills up to the minimum are never checked. If host metrics cannot be read, the fleet does not grow past the minimum. The Fleet tab shows the latest decision next to the autoscale state.
+:end
+
+_(Autoscale: CPU ceiling (%))_:
+: <input type="number" name="GROWTH_CPU_CEILING" min="1" max="100" value="<?=crf_g($cfg,'GROWTH_CPU_CEILING','80')?>">
+
+:crf_growth_cpu_plug:
+> Host CPU busy percent, measured between autoscale checks, above which growth is withheld.
+:end
+
+_(Autoscale: memory reserve)_:
+: <input type="text" name="GROWTH_MEMORY_RESERVE" value="<?=crf_g($cfg,'GROWTH_MEMORY_RESERVE','8g')?>">
+
+:crf_growth_mem_plug:
+> Memory kept free for the host. A new runner starts only when available memory is at least its memory limit plus this reserve.
 :end
 
 ### Dashboard
