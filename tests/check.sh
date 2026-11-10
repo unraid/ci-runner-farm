@@ -73,6 +73,7 @@ bash tests/job-docker-prune.sh
 bash tests/job-workspace-pressure.sh
 bash tests/pnpm-cache.sh
 bash tests/blob-cache.sh
+bash tests/playwright-cache.sh
 bash tests/lease-selfheal.sh
 bash tests/ownership-safety.sh
 bash tests/temp-safety.sh

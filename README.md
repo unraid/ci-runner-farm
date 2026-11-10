@@ -445,6 +445,16 @@ use, and must keep the directory within its own byte budget. The destination mus
 canonical and outside `/_work`. Adding the entry, or upgrading a farm that
 already has it, drains slots onto the variable through the normal lifecycle.
 
+An `ms-playwright:<container-path>` entry sets `PLAYWRIGHT_SKIP_BROWSER_GC=1`
+for GitHub runners and GitLab jobs. Each `playwright install` normally deletes
+every browser build that no installation in its own container uses. Workspaces
+are per container, so without the variable a job pinned to one Playwright
+version deletes the browser that a job on another slot is running. With it,
+each Playwright version keeps its own build directory. The directory grows by
+one build per Playwright upgrade, and `cache-clear-pkg` reclaims it while the
+fleet is idle. Adding the entry, or upgrading a farm that already has it,
+replaces slots through the normal lifecycle.
+
 Packages copy from the pool-backed store into a workspace on another filesystem
 because hard links cannot cross filesystems. This keeps the package store out of
 workspace RAM; project `node_modules` and Actions archive downloads still consume
