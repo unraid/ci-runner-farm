@@ -685,6 +685,89 @@ github_registry_credentials() {
   fi
 }
 
+# Delete workspaces that earlier resets moved aside. Removal never follows
+# symlinks or crosses into another filesystem.
+github_work_trash_sweep() {
+  local root trash pass
+  root="$(crf_safe_cache_root)" || return 1
+  trash="$root/work/.trash"
+  [ -d "$trash" ] && [ ! -L "$trash" ] || return 0
+  for pass in 1 2 3; do
+    [ -n "$(find "$trash" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ] || return 0
+    find "$trash" -mindepth 1 -maxdepth 1 -exec rm -rf --one-file-system -- {} + 2>/dev/null || true
+  done
+}
+
+# A large workspace can take a while to delete, so do it outside fleet.lock.
+# The worker closes every inherited descriptor that may hold a lock or the
+# caller's output pipe, and one worker at a time deletes the trash.
+github_work_trash_sweep_async() {
+  (
+    exec 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- </dev/null >/dev/null 2>&1
+    if command -v flock >/dev/null 2>&1; then
+      exec 9>"$RUNDIR/work-trash.lock" && flock -n 9 || exit 0
+    fi
+    github_work_trash_sweep
+  ) &
+}
+
+# An ephemeral runner is a new runner for each job, so its bind workspace must
+# not carry anything over from the slot's previous runner. Give every new
+# container an empty directory. The old tree is renamed into work/.trash on the
+# same filesystem and deleted in the background; if it cannot be renamed, it is
+# removed in place. Removal never follows symlinks or crosses into another
+# filesystem, and runs only under a validated CACHE_ROOT. Any doubt leaves the
+# runner unstarted instead of reusing the tree.
+github_fresh_work_dir() {
+  local name="$1" root parent dir trash inspect_err
+  case "$name" in
+    ''|.*|*[!A-Za-z0-9._-]*) err "refusing a workspace reset for invalid runner name '$name'"; return 1 ;;
+  esac
+  root="$(crf_safe_cache_root)" \
+    || { err "refusing a workspace reset under unsafe CACHE_ROOT '$CACHE_ROOT'"; return 1; }
+  parent="$root/work"
+  mkdir -p -- "$parent" || { err "could not create the workspace root $parent"; return 1; }
+  # Also rejects a symlinked work root.
+  [ "$(realpath -e -- "$parent" 2>/dev/null)" = "$parent" ] \
+    || { err "refusing a workspace reset: $parent does not resolve to itself"; return 1; }
+  # A same-named container may still be using the directory. Proceed only when
+  # Docker positively reports that no such container exists.
+  if inspect_err="$(docker container inspect "$name" 2>&1 >/dev/null)"; then
+    err "refusing to reset the workspace of existing container $name"; return 1
+  fi
+  case "$inspect_err" in
+    *"No such container"*|*"No such object"*) ;;
+    *) err "refusing a workspace reset: could not confirm that no container named $name exists"; return 1 ;;
+  esac
+  dir="$parent/$name"
+  trash="$parent/.trash"
+  if [ -e "$dir" ] || [ -L "$dir" ]; then
+    # A slot directory that is its own mount (a dataset, subvolume or tmpfs) is
+    # neither emptied nor reused; removing that mount is the operator's call.
+    if [ ! -L "$dir" ] && [ "$(stat -c %d -- "$dir" 2>/dev/null)" != "$(stat -c %d -- "$parent" 2>/dev/null)" ]; then
+      err "refusing a workspace reset: $dir is a separate mount; remove it so $name can start"; return 1
+    fi
+    # Same-device check: a rename must never turn into a copy.
+    if [ ! -L "$trash" ] && mkdir -p -- "$trash" 2>/dev/null \
+      && [ "$(realpath -e -- "$trash" 2>/dev/null)" = "$trash" ] \
+      && [ "$(stat -c %d -- "$dir" 2>/dev/null)" = "$(stat -c %d -- "$trash" 2>/dev/null)" ]; then
+      mv -T -- "$dir" "$trash/$name.$(date +%s).$$.$RANDOM" 2>/dev/null || true
+    fi
+    if [ -e "$dir" ] || [ -L "$dir" ]; then
+      log "could not move the previous workspace of $name aside; deleting it in place" >&2
+      rm -rf --one-file-system -- "$dir" 2>/dev/null || true
+    fi
+  fi
+  if [ -d "$trash" ] && [ ! -L "$trash" ] \
+    && [ -n "$(find "$trash" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+    github_work_trash_sweep_async
+  fi
+  # Fails while anything, even a dangling symlink, is still at the slot path.
+  mkdir -- "$dir" 2>/dev/null \
+    || { err "could not replace the previous workspace of $name (a mount or immutable file inside it?); runner not started"; return 1; }
+  printf '%s\n' "$dir"
+}
+
 github_build_args() {
   local idx="$1"
   local name="${2:-${NAME_PREFIX}-${idx}}" role="${CRF_CONTAINER_ROLE:-runner}" host_service_ip image kvm_gid=''
@@ -831,6 +914,10 @@ github_build_args() {
   fi
   if [ -n "$WORK_TMPFS_SIZE" ]; then
     ARGS+=( --tmpfs "/_work:rw,exec,size=${WORK_TMPFS_SIZE}" )
+  elif [ "$EPHEMERAL" = true ]; then
+    local workdir
+    workdir="$(github_fresh_work_dir "$name")" || return 1
+    ARGS+=( -v "$workdir:/_work" )
   else
     mkdir -p "$CACHE_ROOT/work/$name"
     ARGS+=( -v "$CACHE_ROOT/work/$name:/_work" )
@@ -877,7 +964,7 @@ github_start_one() {
     github_prepare_remote_image "$image" >/dev/null \
       || { err "runner $name not started (remote image preparation failed)"; return 1; }
   fi
-  github_build_args "$idx" "$name" || { err "runner $name not started (registration-token error)"; return 1; }
+  github_build_args "$idx" "$name" || { err "runner $name not started (see the error above)"; return 1; }
   log "starting $name (pool=${CRF_POOL_ID:-default} cpus=$RUNNER_CPUS mem=$RUNNER_MEMORY scope=$GH_SCOPE image=$(effective_image))"
   run_owned_github_container "$idx" >/dev/null
   rc=$?

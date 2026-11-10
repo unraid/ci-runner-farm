@@ -352,7 +352,7 @@ _(Ephemeral)_:
   </select><span id="crfs-gitlab-ephemeral" style="display:<?= $saved_provider === 'gitlab' ? 'inline' : 'none' ?>">always ephemeral (clean Docker job container per job)</span>
 
 :crf_ephemeral_plug:
-> GitHub: false = persistent runner; true = a fresh runner re-registered per job. GitLab is always ephemeral at the job-container layer: manager slots and explicitly mounted caches persist, but the Docker executor creates a clean job container for every job.
+> GitHub: false = persistent runner that keeps its workspace between jobs; true = a fresh runner re-registered per job, starting with an empty workspace (shared caches and Docker-in-Docker data are kept). GitLab is always ephemeral at the job-container layer: manager slots and explicitly mounted caches persist, but the Docker executor creates a clean job container for every job.
 :end
 
 _(Run jobs as root)_:
@@ -415,7 +415,7 @@ _(Workspace tmpfs size)_:
 : <input type="text" name="WORK_TMPFS_SIZE" value="<?=crf_g($cfg,'WORK_TMPFS_SIZE','8g')?>" placeholder="blank = bind to pool">
 
 :crf_tmpfs_plug:
-> GitHub only. Size of the RAM-backed per-job workspace, e.g. 8g — a clean, fast workspace each job while caches stay warm. GitLab's Docker executor creates a clean workspace in each job container.
+> GitHub only. Size of the RAM-backed per-job workspace, e.g. 8g — a clean, fast workspace each job while caches stay warm. Blank binds the workspace to the cache pool instead; ephemeral runners still get an empty one for each job. GitLab's Docker executor creates a clean workspace in each job container.
 :end
 
 _(Cache mounts)_:
