@@ -129,6 +129,16 @@ reset_host() {
 }
 export CRF_CGROUP_ROOT="$tmp/cgroup"
 
+# ---- fake clock ------------------------------------------------------------------
+# Usage samples are stamped and aged by crf_cpu_usage_clock_ms. The clock stands
+# still unless a test advances it, so every sample age and rate is exact however
+# slowly the suite runs. On the wall clock, a slow run lets the sample that one
+# placement leaves behind pass the minimum window before a later placement, and
+# the fake counters, which do not move on their own, then measure every runner
+# as idle.
+NOW_MS=1700000000000
+crf_cpu_usage_clock_ms() { printf '%s\n' "$NOW_MS"; }
+
 # ---- fake cgroup usage -----------------------------------------------------------
 # set_rates WINDOW NAME=MILLICORES...: record a usage sample WINDOW seconds old
 # with every named container at zero, then advance each cgroup's usage_usec so
@@ -146,10 +156,21 @@ set_rates() {
   shift
   rm -rf "$CRF_RUNDIR"/cpu-usage.sample* "$tmp/cgroup"
   {
-    printf '%s\n' "$(( $(date +%s%3N) - window * 1000 ))"
+    printf '%s\n' "$(( NOW_MS - window * 1000 ))"
     for pair in "$@"; do printf '%s 0\n' "$(id_of "${pair%%=*}")"; done
   } > "$CRF_RUNDIR/cpu-usage.sample"
   for pair in "$@"; do cpu_stat "${pair%%=*}" "$(( ${pair#*=} * window * 1000 ))"; done
+}
+# advance_clock MS NAME=MILLICORES...: move the clock forward MS milliseconds and
+# advance each named (cgroupfs) container's usage as if it kept using MILLICORES.
+advance_clock() {
+  local ms="$1" pair usage
+  shift
+  NOW_MS=$((NOW_MS + ms))
+  for pair in "$@"; do
+    usage="$(awk '$1 == "usage_usec" { print $2 }' "$tmp/cgroup/docker/$(id_of "${pair%%=*}")/cpu.stat")"
+    cpu_stat "${pair%%=*}" "$(( usage + ${pair#*=} * ms ))"
+  done
 }
 
 # ---- list helpers ------------------------------------------------------------
@@ -274,6 +295,20 @@ set_rates 100 ci-runner-build-1=3500 ci-runner-build-2=3500 ci-runner-build-3=35
 burst=""
 for i in 9 10 11 12 13 14; do burst+="$(place 4 "ci-runner-build-$i") " || fail "burst placement $i failed"; done
 [ "$burst" = "12-15 28-31 0-3 8-11 4-7 12-15 " ] || fail "a burst of starts was placed as: $burst"
+# On a slow host the same burst outlives the minimum window, so later starts
+# measure from the sample that an earlier start left behind. Runners that keep
+# their usage score the same over that window, and the new runners, which that
+# sample predates, still count as busy: the placement does not change.
+eight_runners
+burst_rates=(ci-runner-build-1=3500 ci-runner-build-2=3500 ci-runner-build-3=3500 ci-runner-build-4=0
+  ci-runner-build-5=3500 ci-runner-build-6=3500 ci-runner-build-7=3500 ci-runner-build-8=0)
+set_rates 100 "${burst_rates[@]}"
+burst=""
+for i in 9 10 11 12 13 14; do
+  burst+="$(place 4 "ci-runner-build-$i") " || fail "slow burst placement $i failed"
+  advance_clock 3000 "${burst_rates[@]}"
+done
+[ "$burst" = "12-15 28-31 0-3 8-11 4-7 12-15 " ] || fail "a slow burst of starts was placed as: $burst"
 # Rates for unpinned containers, or only for the runner being replaced, do not
 # switch to measured scoring: placement stays exactly count-based (4-7). Scoring
 # the unmeasured pinned runners as busy would prefer 12-15, whose sibling
@@ -317,8 +352,8 @@ eight_runners
 set_rates 100 ci-runner-build-1=3500 ci-runner-build-2=3500 ci-runner-build-3=3500 ci-runner-build-4=600 \
   ci-runner-build-5=3500 ci-runner-build-6=3500 ci-runner-build-7=0 ci-runner-build-8=1200
 read -r block raw measured <<< "$(crf_cpu_pinning_choose 4 ci-runner-build-9 2>/dev/null)"
-[ "$block" = 12-15 ] && [ "$measured" = 1 ] && [ "$raw" -ge 1180 ] && [ "$raw" -le 1200 ] \
-  || fail "measured placement reported '$block $raw $measured', expected 12-15 at about 1200 millicores"
+[ "$block" = 12-15 ] && [ "$measured" = 1 ] && [ "$raw" = 1200 ] \
+  || fail "measured placement reported '$block $raw $measured', expected 12-15 at 1200 millicores"
 
 # ---- usage samples -----------------------------------------------------------------
 # A sample younger than the minimum window falls back to the previous one, a
@@ -326,11 +361,11 @@ read -r block raw measured <<< "$(crf_cpu_pinning_choose 4 ci-runner-build-9 2>/
 eight_runners
 set_rates 100 ci-runner-build-1=3500 ci-runner-build-2=3500 ci-runner-build-3=0
 mv "$CRF_RUNDIR/cpu-usage.sample" "$CRF_RUNDIR/cpu-usage.sample.prev"
-{ printf '%s\n' "$(( $(date +%s%3N) - 3000 ))"; } > "$CRF_RUNDIR/cpu-usage.sample"
+{ printf '%s\n' "$(( NOW_MS - 3000 ))"; } > "$CRF_RUNDIR/cpu-usage.sample"
 expect_place 4 ci-runner-build-9 4-7
 eight_runners
 set_rates 100 ci-runner-build-1=3500 ci-runner-build-2=3500 ci-runner-build-3=0
-sed -i.bak "1s/.*/$(( $(date +%s%3N) - 301000 ))/" "$CRF_RUNDIR/cpu-usage.sample"
+sed -i.bak "1s/.*/$(( NOW_MS - 301000 ))/" "$CRF_RUNDIR/cpu-usage.sample"
 if crf_cpu_usage_rates "$(crf_cpu_usage_now)" >/dev/null 2>&1; then fail "a stale usage sample produced rates"; fi
 expect_place 4 ci-runner-build-9 0-3
 # Rates: millicores over the window; a counter that went backwards is skipped.
@@ -341,7 +376,7 @@ printf '%s 10\n' "$(id_of ci-runner-build-3)" >> "$CRF_RUNDIR/cpu-usage.sample"
 rates="$(crf_cpu_usage_rates "$(crf_cpu_usage_now)")" || fail "rates were not computed"
 rate_of_name() { awk -v id="$(id_of "$1")" '$1 == id { print $2 }' <<< "$rates"; }
 r1="$(rate_of_name ci-runner-build-1)"; r2="$(rate_of_name ci-runner-build-2)"
-[ "$r1" -ge 1980 ] && [ "$r1" -le 2000 ] && [ "$r2" -ge 495 ] && [ "$r2" -le 500 ] \
+[ "$r1" = 2000 ] && [ "$r2" = 500 ] \
   || fail "usage rates were not millicores over the window: $rates"
 [ -z "$(rate_of_name ci-runner-build-3)" ] || fail "a counter that went backwards produced a rate"
 # Refresh: a current sample younger than the refresh interval is kept; an
@@ -356,7 +391,7 @@ cp "$CRF_RUNDIR/cpu-usage.sample" "$tmp/first.sample"
 crf_cpu_usage_refresh || fail "second usage refresh failed"
 cmp -s "$CRF_RUNDIR/cpu-usage.sample" "$tmp/first.sample" && [ ! -f "$CRF_RUNDIR/cpu-usage.sample.prev" ] \
   || fail "a fresh sample was replaced before the refresh interval"
-sed -i.bak "1s/.*/$(( $(date +%s%3N) - 20000 ))/" "$CRF_RUNDIR/cpu-usage.sample"
+sed -i.bak "1s/.*/$(( NOW_MS - 20000 ))/" "$CRF_RUNDIR/cpu-usage.sample"
 cpu_stat ci-runner-build-1 9
 crf_cpu_usage_refresh || fail "third usage refresh failed"
 grep -qx "$(id_of ci-runner-build-1) 7" "$CRF_RUNDIR/cpu-usage.sample.prev" || fail "refresh did not keep the previous sample"
