@@ -72,7 +72,11 @@ gitlab_confgen() {
   # hash, incorrectly stamping a replacement as current.
   # Keep a runtime-schema salt in the fingerprint so security-sensitive argv
   # changes also retire sidecars created by an older plugin build.
-  printf '%s\0' gitlab-dind-cgroupns-v1 "$GITLAB_URL" "$GITLAB_RUNNER_IMAGE" "$GITLAB_DIND_IMAGE" \
+  local runtime_salt=gitlab-dind-cgroupns-v1
+  # Disabling Playwright's browser GC on the shared cache recreates managers;
+  # farms without an ms-playwright mount keep their fingerprint.
+  crf_cache_mounts_share_playwright && runtime_salt="${runtime_salt}-ms-playwright-nogc-v1"
+  printf '%s\0' "$runtime_salt" "$GITLAB_URL" "$GITLAB_RUNNER_IMAGE" "$GITLAB_DIND_IMAGE" \
     "$GITLAB_RUNNER_TOKEN" "$GITLAB_CA_FINGERPRINT" "$REGISTRY_TOKEN" \
     "$RUNNER_CPUS" "$RUNNER_MEMORY" "$CACHE_MOUNTS" "$USER_SHARE_MOUNTS" "$GITLAB_SHUTDOWN_TIMEOUT" \
     "$GITLAB_ALLOWED_IMAGES" "$GITLAB_ALLOWED_SERVICES" "$GITLAB_PULL_POLICY" "$GITLAB_SHM_SIZE" \
@@ -773,7 +777,12 @@ gitlab_write_config() {
       echo '  executor = "docker"'
       echo '  limit = 1'
       echo '  request_concurrency = 1'
-      echo '  environment = ["FF_NETWORK_PER_BUILD=1"]'
+      # See crf_cache_mounts_share_playwright.
+      if crf_cache_mounts_share_playwright; then
+        echo '  environment = ["FF_NETWORK_PER_BUILD=1", "PLAYWRIGHT_SKIP_BROWSER_GC=1"]'
+      else
+        echo '  environment = ["FF_NETWORK_PER_BUILD=1"]'
+      fi
       [ -f "$slot_ca" ] && echo '  tls-ca-file = "/etc/gitlab-runner/certs/gitlab-ca.crt"'
       echo '  [runners.docker]'
       printf '    host = %s\n' "$(gitlab_toml_string "$executor_host")"

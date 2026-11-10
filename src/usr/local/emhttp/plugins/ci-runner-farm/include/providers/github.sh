@@ -112,6 +112,9 @@ github_confgen() {
       blob-cache:*) runtime_salt="${runtime_salt}-blob-cache-v1"; break ;;
     esac
   done
+  # Disabling Playwright's browser GC on the shared cache drains existing slots;
+  # farms without an ms-playwright mount keep their fingerprint.
+  crf_cache_mounts_share_playwright && runtime_salt="${runtime_salt}-ms-playwright-nogc-v1"
   # Enabling CPU pinning recreates slots that can be pinned through the normal
   # drain. The chosen cpuset is placement, not configuration, so it stays out;
   # farms without pinning keep their fingerprint.
@@ -856,6 +859,10 @@ github_build_args() {
       # Jobs find the shared content-addressed cache here. Readers verify every
       # object on their own copy, so the directory's content is untrusted.
       ARGS+=( -e "CI_BLOB_CACHE_DIR=$blob_cache_dest" )
+    elif [ "${m%%:*}" = ms-playwright ]; then
+      # See crf_cache_mounts_share_playwright: another slot's install must not
+      # delete a browser build this slot is running.
+      ARGS+=( -e PLAYWRIGHT_SKIP_BROWSER_GC=1 )
     fi
   done
   local share_spec share_source share_rest share_dest share_mode share_mount

@@ -3290,6 +3290,20 @@ crf_safe_cache_root() {
   esac
 }
 
+# Every slot on a host shares the ms-playwright cache, but each `playwright
+# install` deletes any browser build whose recorded installation path is absent
+# from its own container. Workspaces are per container, so a job pinned to a
+# different Playwright version deletes the browser that another slot is running.
+# Runners with this mount therefore get PLAYWRIGHT_SKIP_BROWSER_GC=1. Versioned
+# build directories then coexist; cache-clear-pkg reclaims them while idle.
+crf_cache_mounts_share_playwright() {
+  local m
+  for m in $CACHE_MOUNTS; do
+    case "$m" in ms-playwright:*) return 0 ;; esac
+  done
+  return 1
+}
+
 # Resolve a CACHE_MOUNTS host subdir against the (canonical) cache root and confirm
 # it stays UNDER that root — rejecting `../` traversal or absolute paths in the
 # space-separated, web-settable CACHE_MOUNTS list before they reach mkdir/chown -R
