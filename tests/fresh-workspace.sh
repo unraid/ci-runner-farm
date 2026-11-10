@@ -73,7 +73,7 @@ seed_workspace() { # <slot> — leave a previous job's checkout behind
   # A job can leave read-only directories; only root (as on Unraid) removes them.
   [ "$(id -u)" != 0 ] || chmod 500 "$d/repo/src/deep"
 }
-bind_of() { printf '%s\n' "${ARGS[@]}" | grep -E ':/_work$' || true; }
+bind_of() { grep -E ':/_work$' <<< "$(printf '%s\n' "${ARGS[@]}")" || true; }
 entries() { find "$1" -mindepth 1 | wc -l | tr -d ' '; }
 
 # 1. A new ephemeral container gets an empty workspace at the slot's bind path.
@@ -229,7 +229,7 @@ github_build_args 3 ci-runner-3 || fail "persistent build args failed"
 EPHEMERAL=true WORK_TMPFS_SIZE=64m
 github_build_args 3 ci-runner-3 || fail "tmpfs build args failed"
 [ -z "$(bind_of)" ] || fail "tmpfs workspace also bound the pool directory"
-printf '%s\n' "${ARGS[@]}" | grep -qx '/_work:rw,exec,size=64m' || fail "tmpfs workspace changed"
+grep -qx '/_work:rw,exec,size=64m' <<< "$(printf '%s\n' "${ARGS[@]}")" || fail "tmpfs workspace changed"
 [ -f "$work/ci-runner-3/repo/.git/config" ] || fail "tmpfs workspace reset the unused bind directory"
 WORK_TMPFS_SIZE=''
 
