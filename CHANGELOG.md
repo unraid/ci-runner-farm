@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.4.1](https://github.com/unraid/ci-runner-farm/compare/v3.4.0...v3.4.1) (2026-11-10)
+
+
+### Bug Fixes
+
+* **cache:** keep Playwright browser builds on the shared cache ([#219](https://github.com/unraid/ci-runner-farm/issues/219)) ([9404d4b](https://github.com/unraid/ci-runner-farm/commit/9404d4b3614a9a041c52f1b8a0500c7a316bcbe7))
+* **growth:** withhold pinned growth only when the CPU block is 3 cores busy ([#220](https://github.com/unraid/ci-runner-farm/issues/220)) ([a3d4096](https://github.com/unraid/ci-runner-farm/commit/a3d4096c2feb3d02f349d9d94d672c9e0e22765a))
+
 ## [3.4.0](https://github.com/unraid/ci-runner-farm/compare/v3.3.0...v3.4.0) (2026-11-10)
 
 
