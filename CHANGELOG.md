@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.4.0](https://github.com/unraid/ci-runner-farm/compare/v3.3.0...v3.4.0) (2026-11-10)
+
+
+### Features
+
+* **autoscale:** withhold growth onto a busy CPU block ([#215](https://github.com/unraid/ci-runner-farm/issues/215)) ([952d696](https://github.com/unraid/ci-runner-farm/commit/952d696b5de79606d1baa44b3bff3341911dc0c2))
+* **github:** export a shared blob cache location to runners ([#216](https://github.com/unraid/ci-runner-farm/issues/216)) ([df8fa0f](https://github.com/unraid/ci-runner-farm/commit/df8fa0f88d9f528410e2926a09aff71ad552e1ec))
+
 ## [3.3.0](https://github.com/unraid/ci-runner-farm/compare/v3.2.1...v3.3.0) (2026-11-10)
 
 
