@@ -3727,7 +3727,7 @@ cmd_recycle() {
     fi
   else
     if ! build_args "$idx"; then
-      echo '{"ok":false,"error":"removed but a fresh GitHub registration token could not be minted"}'; return 1
+      echo '{"ok":false,"error":"removed but the GitHub replacement could not be prepared (registration token or workspace; see log)"}'; return 1
     fi
     # Capture the real docker error (don't swallow it): an image-pull failure,
     # a port collision, or a rejected resource limit was otherwise lost behind

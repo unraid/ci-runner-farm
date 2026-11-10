@@ -501,6 +501,19 @@ privileged or socket-mounted runners only for trusted private projects.
   logs registry credentials into root's global Docker config. Managers mount the
   containing per-slot directory and observe removal. An image pull that already
   authenticated may still finish.
+- **Ephemeral runners start with a clean workspace.** With `EPHEMERAL=true`
+  and no workspace tmpfs, each new runner container gets an empty `/_work`
+  bind directory. Checkouts with their Git metadata, build output, and actions
+  downloaded by earlier jobs on that slot do not carry over. The old directory
+  is renamed aside on the same filesystem and deleted in the background, which
+  also reclaims the workspace disk of each slot as it is recreated. The cost is
+  a fresh fetch on every checkout: about 10 seconds more for a full-history
+  (`fetch-depth: 0`) checkout of a large repository, and a few seconds for a
+  shallow one. This covers the workspace only. Shared `CACHE_MOUNTS` and each
+  slot's Docker-in-Docker data are kept and still carry state between jobs, so
+  route only mutually trusted repositories to one farm. A slot directory that
+  is a separate mount is refused rather than emptied. Persistent runners
+  (`EPHEMERAL=false`) keep their workspace across jobs by design.
 - **Network isolation matters.** `isolate` separates runner containers from
   other Unraid containers. `strict` also blocks the Unraid host and LAN, apart
   from narrowly configured service endpoints.
