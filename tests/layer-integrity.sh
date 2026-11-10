@@ -264,11 +264,22 @@ wait_reaped() {
 crf_safe_cache_root() { printf '%s' "$EV"; }
 reset; fresh_store
 exec 8>"$tmp/fleet.lock"; flock 8
-ionice() { sleep 1; shift 2; "$@"; }   # slow the reaper so lock inheritance would show
+# Hold the reaper alive until released so lock inheritance would show. The stub
+# runs after the reaper has set up its descriptors, so its signal means "ready".
+reaper_up="$tmp/reaper.up"; reaper_go="$tmp/reaper.go"; rm -f "$reaper_up" "$reaper_go"
+ionice() {
+  local i
+  : > "$reaper_up"
+  for i in $(seq 1 100); do [ -e "$reaper_go" ] && break; sleep 0.1; done
+  shift 2; "$@"
+}
 log_out="$(layer_integrity_precreate "$slot" 2>&1)"
 # Close (not unlock) our descriptor: an inherited copy would keep the lock held.
 exec 8>&-
+for i in $(seq 1 50); do [ -e "$reaper_up" ] && break; sleep 0.1; done
+[ -e "$reaper_up" ] || fail "store reaper did not start"
 flock -n "$tmp/fleet.lock" true || fail "background store deletion holds the fleet lock"
+: > "$reaper_go"
 unset -f ionice
 [ -d "$EVS" ] && [ -z "$(ls -A "$EVS")" ] || fail "flagged store not replaced by an empty one"
 [ ! -e "$flag" ] && [ ! -e "$CRF_RUNDIR/layer-verified.$slot" ] && [ ! -e "$CRF_RUNDIR/layer-scan.$slot" ] \
