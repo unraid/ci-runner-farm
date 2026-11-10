@@ -1,0 +1,20 @@
+{
+  "disposition": "PATCH",
+  "expected_structural_delta": "One new case branch and one env export in the GitHub provider, one salt, README paragraph, test additions. No new config key, owner or state.",
+  "minimum_design": "Mirror the existing pnpm-store entry: validate one canonical blob-cache destination outside the workspace, export CI_BLOB_CACHE_DIR beside the existing bind mount, add a runtime fingerprint salt only when the entry exists, document it, and extend the existing adapter test.",
+  "outcome": "Every job on a GitHub runner slot whose farm mounts a blob-cache CACHE_MOUNTS entry can find that shared directory through CI_BLOB_CACHE_DIR, and existing slots move onto the new environment through the normal drain.",
+  "reuse_decisions": [
+    {
+      "decision": "reuse",
+      "name": "CACHE_MOUNTS bind and ensure_dirs/prune-cache lifecycle",
+      "rationale": "The directory already exists, is runner-owned and is pruned by the existing commands."
+    },
+    {
+      "decision": "extend",
+      "name": "pnpm-store env export and drain salt",
+      "rationale": "Same pattern for a second named cache entry."
+    }
+  ],
+  "schema": "limetech.ai-review-marker.v2",
+  "stage": "forecast"
+}
