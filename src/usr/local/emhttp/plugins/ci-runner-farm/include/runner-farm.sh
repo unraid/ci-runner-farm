@@ -858,6 +858,8 @@ autoscale_tick() {
   runner_starts_allowed || return 0
   [ "$AUTOSCALE" = "true" ] || return 0
   growth_gate_reset
+  # Keep a recent CPU usage sample for load-aware placement.
+  [ "${CPU_PINNING:-false}" != true ] || crf_cpu_usage_refresh >/dev/null 2>&1 || true
   crf_storage_pressure_cleanup
   if pool_mode_enabled; then
     validate_runner_mode || return 1
@@ -1041,6 +1043,8 @@ autoscale_status() {
 lifecycle_tick() {
   runner_starts_allowed || return 0
   growth_gate_reset
+  # Keep a recent CPU usage sample for load-aware placement.
+  [ "${CPU_PINNING:-false}" != true ] || crf_cpu_usage_refresh >/dev/null 2>&1 || true
   crf_storage_pressure_cleanup
   replenish_fixed_github_capacity || return 1
   local candidates candidate failed=0 yield=false
