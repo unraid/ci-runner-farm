@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.1](https://github.com/unraid/ci-runner-farm/compare/v3.2.0...v3.2.1) (2026-11-10)
+
+
+### Bug Fixes
+
+* **github:** start ephemeral runners with a clean workspace ([#210](https://github.com/unraid/ci-runner-farm/issues/210)) ([e00d5d2](https://github.com/unraid/ci-runner-farm/commit/e00d5d2b5c956afb75beda2b11ef3cf72878c347))
+
 ## [3.2.0](https://github.com/unraid/ci-runner-farm/compare/v3.1.0...v3.2.0) (2026-11-10)
 
 
