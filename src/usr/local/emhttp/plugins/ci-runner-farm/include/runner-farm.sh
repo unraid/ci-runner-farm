@@ -2386,11 +2386,20 @@ pool_start_target() {
       *) unknown=true; continue ;;
     esac
     processes="$(docker top "$id" -eo pid,comm)" || { unknown=true; continue; }
+    # A process name can contain spaces (rootless Podman runs "podman pause"),
+    # so the command is everything after the PID, matched exactly. Only a
+    # missing header, a non-numeric PID or a missing command makes the list
+    # unreadable; unrelated processes never do.
     counts="$(printf '%s\n' "$processes" | awk '
       NR==1 { if ($1 != "PID" || $2 != "COMMAND") bad=1; next }
-      NF!=2 || $1 !~ /^[0-9]+$/ { bad=1 }
-      $2=="Runner.Listener" { listeners++ }
-      $2=="Runner.Worker" { workers++ }
+      NF < 2 || $1 !~ /^[0-9]+$/ { bad=1; next }
+      {
+        name = $0
+        sub(/^[ \t]*[0-9]+[ \t]+/, "", name)
+        sub(/[ \t]+$/, "", name)
+      }
+      name == "Runner.Listener" { listeners++ }
+      name == "Runner.Worker" { workers++ }
       END { if (bad) exit 1; print listeners+0 "|" workers+0 }')" || { unknown=true; continue; }
     IFS='|' read -r listeners workers <<< "$counts"
     if [ "$listeners" -ne 1 ] || [ "$workers" -gt 1 ]; then

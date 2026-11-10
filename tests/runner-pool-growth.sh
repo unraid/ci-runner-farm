@@ -26,6 +26,14 @@ docker() {
    malformed) printf 'COMMAND\nRunner.Listener\nRunner.Worker\n' ;;
    busy) printf 'PID COMMAND\n1 Runner.Listener\n2 Runner.Worker\n' ;;
    idle) printf 'PID COMMAND\n1 Runner.Listener\n' ;;
+   # Real process lists include names with spaces and odd characters.
+   podman) printf 'PID                 COMMAND\n1                   Runner.Listener\n2                   Runner.Worker\n2417297             podman pause\n' ;;
+   odd) printf 'PID COMMAND\n1 Runner.Listener\n7 (sd-pam)\n8 kworker/0:1H\n9 Web Content\n10 node --max-old-space-size=4096\n11  Runner.Worker  \n' ;;
+   suffix) printf 'PID COMMAND\n1 Runner.Listener\n2 Runner.Worker-helper\n' ;;
+   laterword) printf 'PID COMMAND\n1 Runner.Listener\n3 sh Runner.Worker\n' ;;
+   badpid) printf 'PID COMMAND\n1 Runner.Listener\n2 Runner.Worker\nx3 podman pause\n' ;;
+   nocommand) printf 'PID COMMAND\n1 Runner.Listener\n2 Runner.Worker\n3\n' ;;
+   twolisteners) printf 'PID COMMAND\n1 Runner.Listener\n2 Runner.Listener\n3 Runner.Worker\n' ;;
   esac ;;
  *) fail 'unexpected docker mutation' ;;
  esac
@@ -36,6 +44,18 @@ mode=busy
 [ "$(pool_start_target build-small)" = 4 ] || fail 'busy small jobs did not expand headroom'
 for mode in idle unknown malformed pending paused; do
  [ "$(pool_start_target build-small)" = 2 ] || fail "$mode changed retained slots"
+done
+# Unrelated processes, including names with spaces, never hide a busy runner.
+for mode in podman odd; do
+ [ "$(pool_start_target build-small)" = 4 ] || fail "$mode process list hid busy runners"
+done
+# Only an exact Runner.Worker name counts as a job.
+for mode in suffix laterword; do
+ [ "$(pool_start_target build-small)" = 2 ] || fail "$mode look-alike process name counted as a job"
+done
+# An unreadable list or an unexpected runner shape still keeps the slot count.
+for mode in badpid nocommand twolisteners; do
+ [ "$(pool_start_target build-small)" = 2 ] || fail "$mode process list was trusted"
 done
 mode=busy
 RUNNER_POOLS="${RUNNER_POOLS/|0|24|/|0|3|}"
