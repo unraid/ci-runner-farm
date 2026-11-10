@@ -621,8 +621,18 @@ live host resources. Before the farm starts a runner in a slot above the
 minimum (`AUTOSCALE_MIN`, or a pool's `min`), it checks two thresholds: host CPU
 busy percent, from `/proc/stat` between autoscale checks, must not be above
 `GROWTH_CPU_CEILING` (default `80`), and `MemAvailable` must be at least the
-runner's memory limit plus `GROWTH_MEMORY_RESERVE` (default `8g`). Each start
-admitted in one check deducts its memory limit, and at most two such starts
+runner's memory limit plus `GROWTH_MEMORY_RESERVE` (default `8g`). With `CPU_PINNING="true"`, it also
+checks the CPU block the new runner would be placed on: when that block's
+runners used 1.5 cores or more recently (counting half of the use on its SMT
+sibling CPUs, as placement does), the start waits. Placement already picks the
+least-used block, so this only withholds growth when every block is that busy.
+Runners started since the last usage sample count as fully busy, so growth
+can pause for a check or two right after a burst of starts, and only one start
+per check passes this test. The check is skipped while no pinned runner has a
+usage measurement yet. When the kernel exposes pressure stall
+information (`/proc/pressure`), memory pressure (avg10) above 5% "full" or
+20% "some" also withholds the start, as a safety net beside `MemAvailable`.
+Each start admitted in one check deducts its memory limit, and at most two such starts
 are admitted per check, because new runners use no resources until they get a
 job. The gate only withholds starts: it never stops, drains, or removes a
 running or busy runner, and starts that refill slots up to the minimum are
@@ -630,7 +640,9 @@ never checked. An exited ephemeral slot above the minimum stays exited until
 the host has headroom again. If the metrics cannot be read, the fleet does not
 grow past the minimum. Each change of decision is logged with its numbers in
 the autoscale or lifecycle log, and the latest decision appears next to the
-autoscale state on the Fleet tab and in `status`. The settings are read on
+autoscale state on the Fleet tab and in `status`. While autoscale is on and
+the kernel exposes pressure stall information, the same places also show host
+CPU, memory and IO pressure (avg10), whether or not the gate is on. The settings are read on
 every check and do not change the configuration fingerprint, so turning them
 on or off recreates no runners. Single-layout autoscale also adds the fresh
 provider queue depth to its growth target; each host reads the same queue, so
@@ -648,8 +660,9 @@ blocks, two runners each. Runners that share a block contend
 for those CPUs even while other host CPUs are idle, because the cpuset stops
 them from using any other CPU. Unpinned runners in the same state would spread
 across idle CPUs. The CPU ceiling measures the whole host, so it does not see
-one hot block. Use pinning with growth when tools that size themselves from
-`nproc` are the bigger problem. Leave pinning off when a pool is often far
+one hot block; the block check above does, and withholds growth that would
+land on a busy block. Use pinning with growth when tools that size themselves
+from `nproc` are the bigger problem. Leave pinning off when a pool is often far
 above that block count.
 
 ![Fleet state and controls](docs/images/fleet.png)

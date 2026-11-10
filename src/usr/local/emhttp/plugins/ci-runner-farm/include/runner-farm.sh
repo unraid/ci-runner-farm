@@ -3121,6 +3121,10 @@ cmd_status() {
   if [ "$AUTOSCALE" = true ] && growth_gate_enabled; then
     printf 'growth backpressure: %s\n' "$(growth_gate_status)"
   fi
+  local pressure
+  if [ "$AUTOSCALE" = true ] && pressure="$(growth_psi_summary)"; then
+    printf 'host pressure: %s\n' "$pressure"
+  fi
   printf "%-22s %-10s %-8s %-10s %s\n" "NAME" "STATE" "PHASE" "CPU/MEM" "IMAGE"
   [ -z "$names" ] && { echo "(no managed runners)"; return 0; }
   echo "$names" | while read -r c; do
@@ -3961,6 +3965,10 @@ cmd_status_json() {
   local growth=""
   if [ "$AUTOSCALE" = true ] && growth_gate_enabled; then
     growth="; growth backpressure: $(growth_gate_status | json_escape)"
+  fi
+  local pressure
+  if [ "$AUTOSCALE" = true ] && pressure="$(growth_psi_summary)"; then
+    growth+="; host pressure: $(printf '%s' "$pressure" | json_escape)"
   fi
   local iu="off"; [ "$IMAGE_AUTOUPDATE" = "true" ] && iu="$(imageupdate_status) (every $((IMAGE_AUTOUPDATE_INTERVAL/60))m)"
   local warn; warn="$(cat "$RUNDIR/warn.cache" 2>/dev/null | json_escape)"
