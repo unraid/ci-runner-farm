@@ -2,13 +2,13 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name          "ci-runner-farm">
 <!ENTITY author        "Lime Technology">
-<!ENTITY version       "2026.11.10.1930.168-3.4.1">
-<!ENTITY pluginVersion "3.4.1">
-<!ENTITY releaseTag    "v3.4.1">
+<!ENTITY version       "2026.11.10.2049.171-3.4.2">
+<!ENTITY pluginVersion "3.4.2">
+<!ENTITY releaseTag    "v3.4.2">
 <!ENTITY pluginURL     "https://github.com/unraid/ci-runner-farm/releases/latest/download/ci-runner-farm.plg">
-<!ENTITY packageName   "ci-runner-farm-2026.11.10.1930.168-3.4.1.tgz">
-<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/v3.4.1/ci-runner-farm-2026.11.10.1930.168-3.4.1.tgz">
-<!ENTITY packageMD5    "d9b140d00f1ef10da7c3a52d697af5cb">
+<!ENTITY packageName   "ci-runner-farm-2026.11.10.2049.171-3.4.2.tgz">
+<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/v3.4.2/ci-runner-farm-2026.11.10.2049.171-3.4.2.tgz">
+<!ENTITY packageMD5    "9bbb63fac0e3b57ff15d033198aaea68">
 <!ENTITY plgdir        "/usr/local/emhttp/plugins/&name;">
 <!ENTITY cfgdir        "/boot/config/plugins/&name;">
 ]>
@@ -23,8 +23,7 @@
 <CHANGES>
 ### &version;
 ### Bug Fixes
-* **cache:** keep Playwright browser builds on the shared cache ([#219](https://github.com/unraid/ci-runner-farm/issues/219)) ([9404d4b](https://github.com/unraid/ci-runner-farm/commit/9404d4b3614a9a041c52f1b8a0500c7a316bcbe7))
-* **growth:** withhold pinned growth only when the CPU block is 3 cores busy ([#220](https://github.com/unraid/ci-runner-farm/issues/220)) ([a3d4096](https://github.com/unraid/ci-runner-farm/commit/a3d4096c2feb3d02f349d9d94d672c9e0e22765a))
+* **dind:** evict cached layers that can no longer be exported ([#222](https://github.com/unraid/ci-runner-farm/issues/222)) ([8322360](https://github.com/unraid/ci-runner-farm/commit/8322360d57d86bd5fa4e5eb4e18c6a1e03123125))
 </CHANGES>
 
 <!-- plugin package: Unraid downloads it to flash and verifies the MD5 -->
@@ -41,11 +40,11 @@ PLGDIR="/usr/local/emhttp/plugins/ci-runner-farm"
 CFGDIR="/boot/config/plugins/ci-runner-farm"
 mkdir -p "$CFGDIR" "$PLGDIR"
 # Sweep any older package versions off flash, keeping this build's package.
-find "$CFGDIR" -maxdepth 1 -name 'ci-runner-farm-*.tgz' ! -name 'ci-runner-farm-2026.11.10.1930.168-3.4.1.tgz' -delete 2>/dev/null || true
+find "$CFGDIR" -maxdepth 1 -name 'ci-runner-farm-*.tgz' ! -name 'ci-runner-farm-2026.11.10.2049.171-3.4.2.tgz' -delete 2>/dev/null || true
 # Extract ONLY into the plugin dir; --no-same-owner forces root ownership;
 # --no-overwrite-dir leaves existing dir metadata alone. System dirs untouched.
 # The .tgz is kept on flash so the on-boot reinstall works without a download.
-tar -xzf "$CFGDIR/ci-runner-farm-2026.11.10.1930.168-3.4.1.tgz" --no-same-owner --no-overwrite-dir -C "$PLGDIR"
+tar -xzf "$CFGDIR/ci-runner-farm-2026.11.10.2049.171-3.4.2.tgz" --no-same-owner --no-overwrite-dir -C "$PLGDIR"
 # Remove obsolete allocation runtime only; keep saved configuration and ledgers.
 rm -f -- "$PLGDIR/bin/ci-runner-capacity" "$PLGDIR/include/shared-capacity.sh" "$PLGDIR/include/build-demand.php"
 chown -R root:root "$PLGDIR"
@@ -111,7 +110,7 @@ fi
 ( nohup "$PLGDIR/include/runner-farm.sh" boot-autostart >>"$CFGDIR/boot.log" 2>&1 & ) || true
 echo ""
 echo "+=============================================================+"
-echo "| ci-runner-farm 2026.11.10.1930.168-3.4.1 installed.                         "
+echo "| ci-runner-farm 2026.11.10.2049.171-3.4.2 installed.                         "
 echo "| Settings > Utilities > CI Runner Farm                        "
 echo "| Select GitHub or GitLab, save its token, then Start.         "
 echo "+=============================================================+"
