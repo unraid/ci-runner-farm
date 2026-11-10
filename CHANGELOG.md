@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.4.2](https://github.com/unraid/ci-runner-farm/compare/v3.4.1...v3.4.2) (2026-11-10)
+
+
+### Bug Fixes
+
+* **dind:** evict cached layers that can no longer be exported ([#222](https://github.com/unraid/ci-runner-farm/issues/222)) ([8322360](https://github.com/unraid/ci-runner-farm/commit/8322360d57d86bd5fa4e5eb4e18c6a1e03123125))
+
 ## [3.4.1](https://github.com/unraid/ci-runner-farm/compare/v3.4.0...v3.4.1) (2026-11-10)
 
 
