@@ -270,7 +270,7 @@ if latest | grep -q 'memory pressure'; then fail "missing pressure data was repo
 
 # ---- pinned hosts: the chosen CPU block must not be busy -------------------------------
 # Placement is stubbed; tests/cpu-pinning.sh covers what it reports.
-CHOOSE_CALLS="$tmp/choose"; : > "$CHOOSE_CALLS"; CHOICE='8-11 1499 1'
+CHOOSE_CALLS="$tmp/choose"; : > "$CHOOSE_CALLS"; CHOICE='8-11 2999 1'
 crf_cpu_pinning_choose() { printf '%s\n' "$*" >> "$CHOOSE_CALLS"; [ "$CHOICE" != fail ] || return 1; printf '%s\n' "$CHOICE"; }
 CPU_PINNING=false; set_host 10 80
 expect_admit build 10 ci-runner-build-10
@@ -278,12 +278,12 @@ expect_admit build 10 ci-runner-build-10
 CPU_PINNING=true; set_host 10 80
 expect_admit build 10 ci-runner-build-10
 grep -qx '4 ci-runner-build-10' "$CHOOSE_CALLS" || fail "placement was not asked for the pool's CPU limit and slot: $(cat "$CHOOSE_CALLS")"
-latest | grep -qF 'CPU block 8-11 in use 1.49 cores (limit 1.50)' || fail "the decision does not show the block load: $(latest)"
-CHOICE='8-11 1500 1'; set_host 10 80
+latest | grep -qF 'CPU block 8-11 in use 2.99 cores (limit 3.00)' || fail "the decision does not show the block load: $(latest)"
+CHOICE='8-11 3000 1'; set_host 10 80
 expect_withhold build 10 ci-runner-build-10
 [ "$(state)" = withheld:cpu-block ] || fail "a busy CPU block withheld as $(state)"
 case "$(growth_gate_status)" in
-  *'CPU block 8-11 in use 1.50 cores (limit 1.50)'*) ;;
+  *'CPU block 8-11 in use 3.00 cores (limit 3.00)'*) ;;
   *) fail "status does not show the busy block: $(growth_gate_status)" ;;
 esac
 # Without a usage sample (count-based placement) the block check is skipped.
@@ -303,7 +303,7 @@ expect_withhold build 10 ci-runner-build-10
 [ ! -s "$CHOOSE_CALLS" ] || fail "placement was previewed although a cheaper check withheld the start"
 # A busy verdict holds for the rest of the tick: later slots are withheld
 # without another preview, even if the load would now read differently.
-CHOICE='8-11 1500 1'; : > "$CHOOSE_CALLS"; set_host 10 80
+CHOICE='8-11 3000 1'; : > "$CHOOSE_CALLS"; set_host 10 80
 expect_withhold build 10 ci-runner-build-10
 CHOICE='8-11 0 1'
 expect_withhold build 11 ci-runner-build-11
@@ -322,7 +322,7 @@ CHOICE='8-11 0 0'; set_host 10 80
 expect_admit build 10 ci-runner-build-10
 expect_admit build 11 ci-runner-build-11
 # Pinning applies to GitHub runners only; GitLab never previews placement.
-CHOICE='8-11 1500 1'; : > "$CHOOSE_CALLS"; set_host 10 80
+CHOICE='8-11 3000 1'; : > "$CHOOSE_CALLS"; set_host 10 80
 CI_PROVIDER=gitlab expect_admit build 10 ci-runner-build-10
 [ ! -s "$CHOOSE_CALLS" ] || fail "a GitLab start previewed CPU placement"
 # Refills up to the floor never consult placement.
@@ -331,7 +331,7 @@ expect_admit build 5 ci-runner-build-5
 [ ! -s "$CHOOSE_CALLS" ] || fail "a refill consulted placement"
 # Each pool's own CPU limit is used; an inherited limit uses the base one, and
 # a fractional limit (never pinned) skips the check.
-CHOICE='0 2000 1'; set_host 10 80
+CHOICE='0 3000 1'; set_host 10 80
 expect_withhold small 4 ci-runner-small-4
 grep -qx '1 ci-runner-small-4' "$CHOOSE_CALLS" || fail "the small pool's CPU limit was not used"
 saved_pools="$RUNNER_POOLS" saved_cpus="$BASE_RUNNER_CPUS"

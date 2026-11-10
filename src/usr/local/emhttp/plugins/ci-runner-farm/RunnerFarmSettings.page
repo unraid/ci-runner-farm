@@ -585,7 +585,7 @@ _(Autoscale: resource backpressure)_:
   </select>
 
 :crf_growth_backpressure_plug:
-> When on, each runner start above the minimum first checks the host. It is withheld while host CPU use is above the ceiling, or when available memory is less than the runner's memory limit plus the reserve. With CPU pinning on, it is also withheld while the CPU block the runner would get is busy (1.5 cores or more in recent use), and on kernels with pressure stall information, while memory pressure is high. It only withholds new starts: running and busy runners are never stopped, and refills up to the minimum are never checked. If host metrics cannot be read, the fleet does not grow past the minimum. The Fleet tab shows the latest decision next to the autoscale state.
+> When on, each runner start above the minimum first checks the host. It is withheld while host CPU use is above the ceiling, or when available memory is less than the runner's memory limit plus the reserve. With CPU pinning on, it is also withheld while the CPU block the runner would get is busy (3 cores or more in recent use), and on kernels with pressure stall information, while memory pressure is high. It only withholds new starts: running and busy runners are never stopped, and refills up to the minimum are never checked. If host metrics cannot be read, the fleet does not grow past the minimum. The Fleet tab shows the latest decision next to the autoscale state.
 :end
 
 _(Autoscale: CPU ceiling (%))_:

@@ -13,10 +13,13 @@
 #   * With CPU_PINNING on (GitHub runners), the CPU block the new runner would
 #     get must not already be busy: its occupants' measured CPU use, plus half
 #     the use on its SMT sibling CPUs, must stay below GROWTH_BLOCK_CORES_LIMIT
-#     (1.5 cores). Runners started since the last usage sample count as fully
-#     busy. Without a measured pinned runner this check is skipped. At most one
-#     start per tick passes this check, because the next preview cannot see a
-#     runner that is not created yet.
+#     (3 cores, about 75% of a 4-CPU block, so a new runner still gets about a
+#     core). Busy runners average about 1.8 cores, so a lower limit withholds
+#     growth on most blocks while the host is far from its CPU ceiling.
+#     Runners started since the last usage sample count as fully busy. Without
+#     a measured pinned runner this check is skipped. At most one start per
+#     tick passes this check, because the next preview cannot see a runner
+#     that is not created yet.
 #   * When the kernel exposes pressure stall information, memory pressure
 #     (avg10) must stay at or below 5% "full" and 20% "some". This is a safety
 #     net beside MemAvailable; without /proc/pressure it is skipped.
@@ -41,7 +44,7 @@
 GROWTH_STARTS_PER_TICK="${CRF_GROWTH_STARTS_PER_TICK:-2}"  # internal pacing, not web-settable
 GROWTH_CPU_WINDOW="${CRF_GROWTH_CPU_WINDOW:-2}"            # seconds for a fresh CPU sample
 GROWTH_CPU_SAMPLE_MAX_AGE=300                              # older stored samples are not reused
-GROWTH_BLOCK_CORES_LIMIT=1500                              # thousandths of a core, pinned hosts
+GROWTH_BLOCK_CORES_LIMIT=3000                              # thousandths of a core, pinned hosts
 GROWTH_MEMORY_PRESSURE_FULL_LIMIT=500                      # hundredths of a percent (5%)
 GROWTH_MEMORY_PRESSURE_SOME_LIMIT=2000                     # hundredths of a percent (20%)
 
