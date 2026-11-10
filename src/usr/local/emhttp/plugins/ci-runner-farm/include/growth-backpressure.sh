@@ -10,6 +10,16 @@
 #   * MemAvailable must stay at or above the runner's memory limit plus
 #     GROWTH_MEMORY_RESERVE. Each start admitted in a tick deducts its memory
 #     limit, because a new runner does not reduce MemAvailable until it works.
+#   * With CPU_PINNING on (GitHub runners), the CPU block the new runner would
+#     get must not already be busy: its occupants' measured CPU use, plus half
+#     the use on its SMT sibling CPUs, must stay below GROWTH_BLOCK_CORES_LIMIT
+#     (1.5 cores). Runners started since the last usage sample count as fully
+#     busy. Without a measured pinned runner this check is skipped. At most one
+#     start per tick passes this check, because the next preview cannot see a
+#     runner that is not created yet.
+#   * When the kernel exposes pressure stall information, memory pressure
+#     (avg10) must stay at or below 5% "full" and 20% "some". This is a safety
+#     net beside MemAvailable; without /proc/pressure it is skipped.
 #   * At most GROWTH_STARTS_PER_TICK gated starts are admitted per tick, because
 #     a new runner's CPU use is not visible until its next job runs.
 #
@@ -24,12 +34,16 @@
 # growth_gate_reset explicitly.
 #
 # Safe to source from tests. Callers provide log(), RUNDIR, pool_mode_enabled,
-# pool_min, pool_memory, autoscale_floor and BASE_RUNNER_MEMORY. CRF_PROC_ROOT
-# (default /proc) lets tests supply fake proc files.
+# pool_min, pool_memory, pool_cpus, autoscale_floor, BASE_RUNNER_MEMORY,
+# BASE_RUNNER_CPUS, CPU_PINNING, CI_PROVIDER and crf_cpu_pinning_choose.
+# CRF_PROC_ROOT (default /proc) lets tests supply fake proc files.
 
 GROWTH_STARTS_PER_TICK="${CRF_GROWTH_STARTS_PER_TICK:-2}"  # internal pacing, not web-settable
 GROWTH_CPU_WINDOW="${CRF_GROWTH_CPU_WINDOW:-2}"            # seconds for a fresh CPU sample
 GROWTH_CPU_SAMPLE_MAX_AGE=300                              # older stored samples are not reused
+GROWTH_BLOCK_CORES_LIMIT=1500                              # thousandths of a core, pinned hosts
+GROWTH_MEMORY_PRESSURE_FULL_LIMIT=500                      # hundredths of a percent (5%)
+GROWTH_MEMORY_PRESSURE_SOME_LIMIT=2000                     # hundredths of a percent (20%)
 
 growth_gate_reset() {
   GROWTH_SAMPLED=false
@@ -37,6 +51,10 @@ growth_gate_reset() {
   GROWTH_MEM_AVAIL=""
   GROWTH_ADMITTED=0
   GROWTH_DEDUCTED=0
+  GROWTH_MEM_PSI_SOME=""
+  GROWTH_MEM_PSI_FULL=""
+  GROWTH_BLOCK_BUSY=""
+  GROWTH_BLOCK_ADMITTED=false
 }
 growth_gate_reset
 
@@ -117,9 +135,34 @@ growth_mem_available_bytes() {
   printf '%s\n' "$(( 10#$kib * 1024 ))"
 }
 
-# The single host-metrics source for the gate: prints "cpu_busy_percent
-# mem_available_bytes", or fails when either cannot be read. A later change can
-# read /proc/pressure here instead, without touching the gate.
+# Print the avg10 value of pressure line <some|full> in /proc/pressure/<resource>
+# as hundredths of a percent. Fails when the kernel exposes no pressure data.
+growth_psi_avg10() {
+  local file="${CRF_PROC_ROOT:-/proc}/pressure/$1" value
+  [ -r "$file" ] || return 1
+  value="$(awk -v kind="$2" '$1 == kind {
+      for (i = 2; i <= NF; i++) if ($i ~ /^avg10=[0-9]+(\.[0-9]+)?$/) { split($i, a, "="); printf "%d", a[2] * 100 + 0.5; exit }
+    }' "$file" 2>/dev/null)"
+  growth_uint "$value" || return 1
+  printf '%s\n' "$value"
+}
+
+growth_pct() { printf '%d.%02d%%' "$(( $1 / 100 ))" "$(( $1 % 100 ))"; }
+growth_pct_or_dash() { if growth_uint "$1"; then growth_pct "$1"; else printf -- '-'; fi; }
+
+# One line of host pressure (avg10) for status output; fails without PSI.
+growth_psi_summary() {
+  local cpu mem_some mem_full io
+  cpu="$(growth_psi_avg10 cpu some)" || return 1
+  mem_some="$(growth_psi_avg10 memory some)" || return 1
+  mem_full="$(growth_psi_avg10 memory full)" || return 1
+  io="$(growth_psi_avg10 io some)" || return 1
+  printf 'cpu some %s, memory some %s full %s, io some %s (avg10)\n' \
+    "$(growth_pct "$cpu")" "$(growth_pct "$mem_some")" "$(growth_pct "$mem_full")" "$(growth_pct "$io")"
+}
+
+# The host CPU and memory source for the gate: prints "cpu_busy_percent
+# mem_available_bytes", or fails when either cannot be read.
 growth_host_metrics() {
   local cpu mem
   cpu="$(growth_cpu_busy_percent)" || return 1
@@ -146,6 +189,18 @@ growth_runner_memory_bytes() {
 
 growth_mib() { printf '%s' "$(( $1 / 1048576 ))"; }
 
+# The CPU limit a new runner in <pool> gets, as configured (may be empty).
+growth_runner_cpus() {
+  local cpus="$BASE_RUNNER_CPUS"
+  if pool_mode_enabled && [ "$1" != default ]; then
+    cpus="$(pool_cpus "$1")" || return 1
+    [ "$cpus" != inherit ] || cpus="$BASE_RUNNER_CPUS"
+  fi
+  printf '%s\n' "$cpus"
+}
+
+growth_cores() { printf '%d.%02d' "$(( $1 / 1000 ))" "$(( $1 % 1000 / 10 ))"; }
+
 # Record a decision and log it when its state differs from the previous one.
 growth_gate_record() {
   local key="$1" target="$2" detail="$3" file="$RUNDIR/growth-gate.state" previous=""
@@ -160,6 +215,7 @@ growth_gate_record() {
 # pass. <label> names the slot in the log.
 growth_gate_admit() {
   local pool="$1" idx="$2" label="${3:-slot $2}" floor ceiling reserve runner need avail cpu metrics numbers
+  local cpus choice block block_use measured
   growth_gate_enabled || return 0
   floor="$(growth_floor "$pool")" || return 0
   growth_uint "$floor" || floor=0
@@ -178,6 +234,8 @@ growth_gate_admit() {
     if metrics="$(growth_host_metrics)"; then
       read -r GROWTH_CPU_PCT GROWTH_MEM_AVAIL <<< "$metrics"
     fi
+    GROWTH_MEM_PSI_SOME="$(growth_psi_avg10 memory some 2>/dev/null)" || GROWTH_MEM_PSI_SOME=""
+    GROWTH_MEM_PSI_FULL="$(growth_psi_avg10 memory full 2>/dev/null)" || GROWTH_MEM_PSI_FULL=""
   fi
   if ! growth_uint "$GROWTH_CPU_PCT" || ! growth_uint "$GROWTH_MEM_AVAIL"; then
     growth_gate_record withheld:metrics "$label" "host CPU or memory metrics are unreadable"
@@ -194,6 +252,42 @@ growth_gate_admit() {
   if [ "$avail" -lt "$need" ]; then
     growth_gate_record withheld:memory "$label" "$numbers"
     return 1
+  fi
+  if growth_uint "$GROWTH_MEM_PSI_SOME" || growth_uint "$GROWTH_MEM_PSI_FULL"; then
+    numbers+=", memory pressure some $(growth_pct_or_dash "$GROWTH_MEM_PSI_SOME") full $(growth_pct_or_dash "$GROWTH_MEM_PSI_FULL") (limits $(growth_pct "$GROWTH_MEMORY_PRESSURE_SOME_LIMIT") / $(growth_pct "$GROWTH_MEMORY_PRESSURE_FULL_LIMIT"))"
+    if { growth_uint "$GROWTH_MEM_PSI_FULL" && [ "$GROWTH_MEM_PSI_FULL" -gt "$GROWTH_MEMORY_PRESSURE_FULL_LIMIT" ]; } \
+      || { growth_uint "$GROWTH_MEM_PSI_SOME" && [ "$GROWTH_MEM_PSI_SOME" -gt "$GROWTH_MEMORY_PRESSURE_SOME_LIMIT" ]; }; then
+      growth_gate_record withheld:memory-pressure "$label" "$numbers"
+      return 1
+    fi
+  fi
+  # Under pinning, host CPU busy understates contention: a new runner shares
+  # the block placement would give it. Check that block's measured load last,
+  # because previewing placement is the most expensive check.
+  if [ "${CPU_PINNING:-false}" = true ] && [ "${CI_PROVIDER:-github}" = github ] \
+    && cpus="$(growth_runner_cpus "$pool")" && [[ "$cpus" =~ ^[1-9][0-9]{0,3}$ ]]; then
+    # A start admitted on a measured block is not visible to the next preview
+    # until its container exists, so admit one such start per tick. Later
+    # starts in the tick wait quietly, like pacing.
+    [ "$GROWTH_BLOCK_ADMITTED" != true ] || return 1
+    # Starts within a tick only add load, so a busy verdict holds for the tick.
+    case " $GROWTH_BLOCK_BUSY " in
+      *" $cpus "*)
+        growth_gate_record withheld:cpu-block "$label" "$numbers, CPU block busy (checked earlier in this tick)"
+        return 1 ;;
+    esac
+    if choice="$(crf_cpu_pinning_choose "$cpus" "$label" 2>/dev/null)"; then
+      read -r block block_use measured <<< "$choice"
+      if [ "$measured" = 1 ] && growth_uint "$block_use"; then
+        numbers+=", CPU block $block in use $(growth_cores "$block_use") cores (limit $(growth_cores "$GROWTH_BLOCK_CORES_LIMIT"))"
+        if [ "$block_use" -ge "$GROWTH_BLOCK_CORES_LIMIT" ]; then
+          GROWTH_BLOCK_BUSY+=" $cpus"
+          growth_gate_record withheld:cpu-block "$label" "$numbers"
+          return 1
+        fi
+        GROWTH_BLOCK_ADMITTED=true
+      fi
+    fi
   fi
   GROWTH_ADMITTED=$(( GROWTH_ADMITTED + 1 ))
   GROWTH_DEDUCTED=$(( GROWTH_DEDUCTED + runner ))

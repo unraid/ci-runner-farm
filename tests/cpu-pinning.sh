@@ -309,6 +309,17 @@ rm -rf "$tmp/cgroup/docker/$(id_of ci-runner-build-3)"
 cpu_stat ci-runner-build-3 0 systemd
 expect_place 4 ci-runner-build-9 4-7
 
+# The growth gate reads the chosen block's raw usage and whether it was measured.
+eight_runners
+[ "$(crf_cpu_pinning_choose 4 ci-runner-build-9 2>/dev/null)" = '0-3 0 0' ] \
+  || fail "count-based placement did not report an unmeasured block"
+eight_runners
+set_rates 100 ci-runner-build-1=3500 ci-runner-build-2=3500 ci-runner-build-3=3500 ci-runner-build-4=600 \
+  ci-runner-build-5=3500 ci-runner-build-6=3500 ci-runner-build-7=0 ci-runner-build-8=1200
+read -r block raw measured <<< "$(crf_cpu_pinning_choose 4 ci-runner-build-9 2>/dev/null)"
+[ "$block" = 12-15 ] && [ "$measured" = 1 ] && [ "$raw" -ge 1180 ] && [ "$raw" -le 1200 ] \
+  || fail "measured placement reported '$block $raw $measured', expected 12-15 at about 1200 millicores"
+
 # ---- usage samples -----------------------------------------------------------------
 # A sample younger than the minimum window falls back to the previous one, a
 # stale one gives no rate, and placement then counts cpusets.

@@ -218,6 +218,135 @@ case "$(growth_gate_status)" in
   *) fail "status does not show the latest decision: $(growth_gate_status)" ;;
 esac
 
+# ---- pressure stall information -------------------------------------------------------
+# psi RESOURCE SOME_AVG10 [FULL_AVG10]: one fake /proc/pressure file.
+psi() {
+  mkdir -p "$PROC/pressure"
+  { printf 'some avg10=%s avg60=0.00 avg300=0.00 total=1\n' "$2"
+    [ -z "${3:-}" ] || printf 'full avg10=%s avg60=0.00 avg300=0.00 total=1\n' "$3"; } > "$PROC/pressure/$1"
+}
+psi cpu 35.20 0.00; psi memory 0.00 0.00; psi io 1.40 0.05
+[ "$(growth_psi_summary)" = 'cpu some 35.20%, memory some 0.00% full 0.00%, io some 1.40% (avg10)' ] \
+  || fail "pressure summary changed: $(growth_psi_summary)"
+set_host 10 80
+expect_admit build 10 ci-runner-build-10
+# The gate logs only state changes; the state file always holds the latest decision.
+latest() { cut -d'|' -f3- "$RUNDIR/growth-gate.state"; }
+latest | grep -qF 'memory pressure some 0.00% full 0.00% (limits 20.00% / 5.00%)' \
+  || fail "the decision does not show memory pressure: $(latest)"
+# Memory pressure is a safety net: "full" above 5% or "some" above 20% withholds.
+for case in '0.00 5.00 admit' '0.00 5.01 withhold' '20.00 0.00 admit' '20.01 0.00 withhold'; do
+  read -r some full want <<< "$case"
+  psi memory "$some" "$full"; set_host 10 80
+  if [ "$want" = admit ]; then
+    expect_admit build 10 ci-runner-build-10
+  else
+    expect_withhold build 10 ci-runner-build-10
+    [ "$(state)" = withheld:memory-pressure ] || fail "memory pressure some $some full $full withheld as $(state)"
+  fi
+done
+# Pressure is sampled once per tick, with the other host metrics.
+psi memory 0.00 0.00; set_host 10 80
+expect_admit build 10 ci-runner-build-10
+psi memory 50.00 50.00
+expect_admit build 11 ci-runner-build-11
+# CPU and IO pressure never withhold: host CPU busy stays the CPU signal.
+psi cpu 95.00 0.00; psi memory 0.00 0.00; psi io 60.00 40.00; set_host 10 80
+expect_admit build 10 ci-runner-build-10
+# Each memory pressure line is checked on its own: "some" alone still counts.
+printf 'some avg10=20.01 avg60=0.00 avg300=0.00 total=1\n' > "$PROC/pressure/memory"; set_host 10 80
+expect_withhold build 10 ci-runner-build-10
+[ "$(state)" = withheld:memory-pressure ] || fail "memory pressure without a full line was ignored"
+printf 'some avg10=1.00 avg60=0.00 avg300=0.00 total=1\n' > "$PROC/pressure/memory"; set_host 10 80
+expect_admit build 10 ci-runner-build-10
+latest | grep -qF 'memory pressure some 1.00% full - ' || fail "a missing full line was not shown as '-': $(latest)"
+# Unreadable or malformed pressure data skips the check.
+printf 'garbage\n' > "$PROC/pressure/memory"; set_host 10 80
+expect_admit build 10 ci-runner-build-10
+if growth_psi_summary >/dev/null 2>&1; then fail "malformed pressure data produced a summary"; fi
+rm -rf "$PROC/pressure"; set_host 10 80
+expect_admit build 10 ci-runner-build-10
+if latest | grep -q 'memory pressure'; then fail "missing pressure data was reported"; fi
+
+# ---- pinned hosts: the chosen CPU block must not be busy -------------------------------
+# Placement is stubbed; tests/cpu-pinning.sh covers what it reports.
+CHOOSE_CALLS="$tmp/choose"; : > "$CHOOSE_CALLS"; CHOICE='8-11 1499 1'
+crf_cpu_pinning_choose() { printf '%s\n' "$*" >> "$CHOOSE_CALLS"; [ "$CHOICE" != fail ] || return 1; printf '%s\n' "$CHOICE"; }
+CPU_PINNING=false; set_host 10 80
+expect_admit build 10 ci-runner-build-10
+[ ! -s "$CHOOSE_CALLS" ] || fail "the gate consulted placement with pinning off"
+CPU_PINNING=true; set_host 10 80
+expect_admit build 10 ci-runner-build-10
+grep -qx '4 ci-runner-build-10' "$CHOOSE_CALLS" || fail "placement was not asked for the pool's CPU limit and slot: $(cat "$CHOOSE_CALLS")"
+latest | grep -qF 'CPU block 8-11 in use 1.49 cores (limit 1.50)' || fail "the decision does not show the block load: $(latest)"
+CHOICE='8-11 1500 1'; set_host 10 80
+expect_withhold build 10 ci-runner-build-10
+[ "$(state)" = withheld:cpu-block ] || fail "a busy CPU block withheld as $(state)"
+case "$(growth_gate_status)" in
+  *'CPU block 8-11 in use 1.50 cores (limit 1.50)'*) ;;
+  *) fail "status does not show the busy block: $(growth_gate_status)" ;;
+esac
+# Without a usage sample (count-based placement) the block check is skipped.
+CHOICE='8-11 9000 0'; set_host 10 80
+expect_admit build 10 ci-runner-build-10
+if latest | grep -q 'CPU block'; then fail "an unmeasured block was reported"; fi
+CHOICE=fail; set_host 10 80
+expect_admit build 10 ci-runner-build-10
+# The host CPU ceiling and the memory checks apply first, without previewing
+# placement.
+CHOICE='8-11 0 1'; : > "$CHOOSE_CALLS"; set_host 95 80
+expect_withhold build 10 ci-runner-build-10
+[ "$(state)" = withheld:cpu ] || fail "the CPU ceiling no longer applies under pinning"
+set_host 10 1
+expect_withhold build 10 ci-runner-build-10
+[ "$(state)" = withheld:memory ] || fail "the memory floor no longer applies under pinning"
+[ ! -s "$CHOOSE_CALLS" ] || fail "placement was previewed although a cheaper check withheld the start"
+# A busy verdict holds for the rest of the tick: later slots are withheld
+# without another preview, even if the load would now read differently.
+CHOICE='8-11 1500 1'; : > "$CHOOSE_CALLS"; set_host 10 80
+expect_withhold build 10 ci-runner-build-10
+CHOICE='8-11 0 1'
+expect_withhold build 11 ci-runner-build-11
+[ "$(state)" = withheld:cpu-block ] && [ "$(wc -l < "$CHOOSE_CALLS")" -eq 1 ] \
+  || fail "a busy block was previewed again in the same tick: $(cat "$CHOOSE_CALLS")"
+# One start per tick passes a measured block check; the next waits quietly.
+: > "$CHOOSE_CALLS"; set_host 10 80
+expect_admit build 10 ci-runner-build-10
+expect_withhold build 11 ci-runner-build-11
+[ "$(state)" = admitted ] && [ "$(wc -l < "$CHOOSE_CALLS")" -eq 1 ] \
+  || fail "a second start in the tick was previewed or logged: $(state)"
+set_host 10 80
+expect_admit build 11 ci-runner-build-11
+# Unmeasured placement keeps the normal pacing of two starts per tick.
+CHOICE='8-11 0 0'; set_host 10 80
+expect_admit build 10 ci-runner-build-10
+expect_admit build 11 ci-runner-build-11
+# Pinning applies to GitHub runners only; GitLab never previews placement.
+CHOICE='8-11 1500 1'; : > "$CHOOSE_CALLS"; set_host 10 80
+CI_PROVIDER=gitlab expect_admit build 10 ci-runner-build-10
+[ ! -s "$CHOOSE_CALLS" ] || fail "a GitLab start previewed CPU placement"
+# Refills up to the floor never consult placement.
+: > "$CHOOSE_CALLS"; set_host 10 80
+expect_admit build 5 ci-runner-build-5
+[ ! -s "$CHOOSE_CALLS" ] || fail "a refill consulted placement"
+# Each pool's own CPU limit is used; an inherited limit uses the base one, and
+# a fractional limit (never pinned) skips the check.
+CHOICE='0 2000 1'; set_host 10 80
+expect_withhold small 4 ci-runner-small-4
+grep -qx '1 ci-runner-small-4' "$CHOOSE_CALLS" || fail "the small pool's CPU limit was not used"
+saved_pools="$RUNNER_POOLS" saved_cpus="$BASE_RUNNER_CPUS"
+RUNNER_POOLS='v3|build|general-build|unraid,build|9|9|16|1|inherit|16g|builtin'
+BASE_RUNNER_CPUS=6; CHOICE='0-5 0 1'; : > "$CHOOSE_CALLS"; set_host 10 80
+expect_admit build 10 ci-runner-build-10
+grep -qx '6 ci-runner-build-10' "$CHOOSE_CALLS" || fail "an inherited CPU limit was not resolved"
+BASE_RUNNER_CPUS=2.5; : > "$CHOOSE_CALLS"; set_host 10 80
+expect_admit build 10 ci-runner-build-10
+[ ! -s "$CHOOSE_CALLS" ] || fail "a fractional CPU limit consulted placement"
+RUNNER_POOLS="$saved_pools" BASE_RUNNER_CPUS="$saved_cpus" CPU_PINNING=false
+unset -f crf_cpu_pinning_choose
+# shellcheck source=/dev/null
+source src/usr/local/emhttp/plugins/ci-runner-farm/include/cpu-pinning.sh
+
 # ---- start paths ----------------------------------------------------------------------
 # A stub fleet: EXISTING lists slot names, STOPPED lists stopped ones; every
 # runner that exists is busy. Docker reads are answered; any other Docker
@@ -379,6 +508,22 @@ GROWTH_BACKPRESSURE=false fleet_cur=4
 [ "$(starts)" = 'scale 8' ] || fail "disabled gate changed single-layout growth: $(starts)"
 GROWTH_BACKPRESSURE=true
 RUNNER_MODE=pools
+
+# Status shows host pressure whenever the kernel exposes it and autoscale is on.
+psi cpu 35.20 0.00; psi memory 0.00 0.00; psi io 1.40 0.05
+saved_existing="$EXISTING"; EXISTING=''
+pressure_line='host pressure: cpu some 35.20%, memory some 0.00% full 0.00%, io some 1.40% (avg10)'
+status_out="$(cmd_status 2>/dev/null)"
+grep -qxF "$pressure_line" <<< "$status_out" || fail "status does not show host pressure"
+grep -qF "; $pressure_line" <<< "$(cmd_status_json 2>/dev/null)" || fail "status JSON does not show host pressure"
+status_out="$(AUTOSCALE=false cmd_status 2>/dev/null)"
+grep -q '^NAME ' <<< "$status_out" || fail "status without autoscale did not render"
+if grep -q 'host pressure' <<< "$status_out"; then fail "status showed host pressure without autoscale"; fi
+rm -rf "$PROC/pressure"
+status_out="$(cmd_status 2>/dev/null)"
+grep -q '^NAME ' <<< "$status_out" || fail "status without pressure data did not render"
+if grep -q 'host pressure' <<< "$status_out"; then fail "status showed host pressure without pressure data"; fi
+EXISTING="$saved_existing"
 
 [ ! -s "$MUTATIONS" ] || fail "the gate stopped, removed, or mutated runners: $(cat "$MUTATIONS")"
 

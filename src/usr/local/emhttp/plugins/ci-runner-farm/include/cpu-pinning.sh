@@ -263,8 +263,18 @@ crf_cpu_pinning_warn() {
 # unpinned. The container's own previous cpuset never counts as load, so a
 # recreated runner is placed as if its slot were free.
 crf_cpu_pinning_cpuset() {
+  local choice
+  choice="$(crf_cpu_pinning_choose "$@")" || return 1
+  printf '%s\n' "${choice%% *}"
+}
+
+# Print "cpuset millicores measured" for the block crf_cpu_pinning_cpuset would
+# choose: the sibling-weighted recent CPU use of its occupants in thousandths
+# of a core, and measured=1 when that use comes from a usage sample (0 when
+# placement fell back to counting cpusets).
+crf_cpu_pinning_choose() {
   local n="$1" name="$2" topology online candidates cpusets cpuset cpus cpu block score best="" best_score=0
-  local rates="" snapshot id rate usage best_usage=0 core size inside sibling measured=false
+  local rates="" snapshot id rate usage raw best_usage=0 best_raw=0 core size inside sibling measured=false
   local -A load=() rate_of=() cpus_of=() core_of=() core_cpus=() in_block=()
   if ! [[ "$n" =~ ^[1-9][0-9]{0,3}$ ]]; then
     crf_cpu_pinning_warn "$name" "pinning needs a whole-number CPU limit"
@@ -314,7 +324,7 @@ crf_cpu_pinning_cpuset() {
   while IFS= read -r block; do
     score=0
     for cpu in $block; do score=$((score + ${load[$cpu]:-0})); done
-    usage=0
+    usage=0; raw=0
     if [ "$measured" = true ]; then
       in_block=()
       for cpu in $block; do in_block[$cpu]=1; done
@@ -337,12 +347,13 @@ crf_cpu_pinning_cpuset() {
         rate="${rate_of[$id]-$((size * 1000))}"
         usage=$((usage + (rate * inside * 2 + rate * sibling) / (size * 2)))
       done
+      raw="$usage"
       usage=$(((usage + 125) / 250))
     fi
     if [ -z "$best" ] || [ "$usage" -lt "$best_usage" ] \
       || { [ "$usage" -eq "$best_usage" ] && [ "$score" -lt "$best_score" ]; }; then
-      best="$block"; best_score="$score"; best_usage="$usage"
+      best="$block"; best_score="$score"; best_usage="$usage"; best_raw="$raw"
     fi
   done <<< "$candidates"
-  crf_cpu_list_compress "$best"
+  printf '%s %s %s\n' "$(crf_cpu_list_compress "$best")" "$best_raw" "$([ "$measured" = true ] && echo 1 || echo 0)"
 }
