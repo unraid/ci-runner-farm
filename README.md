@@ -631,8 +631,9 @@ busy percent, from `/proc/stat` between autoscale checks, must not be above
 `GROWTH_CPU_CEILING` (default `80`), and `MemAvailable` must be at least the
 runner's memory limit plus `GROWTH_MEMORY_RESERVE` (default `8g`). With `CPU_PINNING="true"`, it also
 checks the CPU block the new runner would be placed on: when that block's
-runners used 1.5 cores or more recently (counting half of the use on its SMT
-sibling CPUs, as placement does), the start waits. Placement already picks the
+runners used 3 cores or more recently (counting half of the use on its SMT
+sibling CPUs, as placement does), the start waits. On a 4-CPU block this is
+about 75% use, so a new runner still gets about a core. Placement already picks the
 least-used block, so this only withholds growth when every block is that busy.
 Runners started since the last usage sample count as fully busy, so growth
 can pause for a check or two right after a burst of starts, and only one start
