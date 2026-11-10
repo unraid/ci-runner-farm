@@ -607,11 +607,14 @@ from cache. Files written through shared memory maps (SQLite `-shm`/`-wal`,
 Berkeley DB `__db.*`) are the ones known to reach this state, so the farm checks
 only those entries against the layer's recorded checksums. The check is
 read-only and incremental, with a time bound. It runs when a slot is created,
-before the new container starts, and every 10 minutes on idle slots. When it
-finds a bad layer, the farm waits until the slot is idle, then removes the
-images that reference that layer and prunes that slot's build cache. This
-happens at most once per slot per hour, and the farm checks for a new job
-before each step. Idle-slot findings and evictions appear in the lifecycle
+before the new container starts, and every 10 minutes on idle slots. If it
+finds a bad layer while the slot is being recreated, the farm moves that slot's
+Docker store aside before the new container starts and deletes it in the
+background, so the slot starts with an empty Docker cache and its next build is
+cold. If it finds a bad layer on an idle slot, the farm removes the images that
+reference the layer and prunes that slot's build cache, at most once per slot
+per hour, checking for a new job before each step. A busy farm's ephemeral
+slots are rarely idle, so most evictions happen at recreation. Idle-slot findings and evictions appear in the lifecycle
 log. Findings from slot creation appear in the log of the process that created
 the slot.
 
