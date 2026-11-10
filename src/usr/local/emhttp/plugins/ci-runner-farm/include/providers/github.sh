@@ -105,6 +105,13 @@ github_confgen() {
       pnpm-store:*) runtime_salt="${runtime_salt}-pnpm-store-v1"; break ;;
     esac
   done
+  # Exporting the shared blob cache location also drains existing slots;
+  # farms without a blob-cache mount keep their fingerprint.
+  for cache_spec in $CACHE_MOUNTS; do
+    case "$cache_spec" in
+      blob-cache:*) runtime_salt="${runtime_salt}-blob-cache-v1"; break ;;
+    esac
+  done
   # Enabling CPU pinning recreates slots that can be pinned through the normal
   # drain. The chosen cpuset is placement, not configuration, so it stays out;
   # farms without pinning keep their fingerprint.
@@ -773,7 +780,7 @@ github_build_args() {
   local name="${2:-${NAME_PREFIX}-${idx}}" role="${CRF_CONTAINER_ROLE:-runner}" host_service_ip image kvm_gid=''
   crf_user_share_mount_config_problem || return 1
   github_validate_runner_dns || return 1
-  local pnpm_store_dest='' cache_spec cache_dest
+  local pnpm_store_dest='' blob_cache_dest='' cache_spec cache_dest
   for cache_spec in $CACHE_MOUNTS; do
     case "$cache_spec" in
       pnpm-store|pnpm-store:*)
@@ -786,6 +793,17 @@ github_build_args() {
           err "pnpm-store destination must be canonical and distinct from the workspace mount"; return 1 ;;
         esac
         pnpm_store_dest="$cache_dest"
+        ;;
+      blob-cache|blob-cache:*)
+        cache_dest="${cache_spec#*:}"
+        [ -z "$blob_cache_dest" ] \
+          || { err "blob-cache must have exactly one cache destination"; return 1; }
+        printf '%s' "$cache_dest" | grep -qE '^/[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*$' \
+          || { err "blob-cache requires an absolute writable cache destination"; return 1; }
+        case "$cache_dest" in *//*|*/../*|*/./*|*/..|*/.|/_work|/_work/*)
+          err "blob-cache destination must be canonical and outside the workspace mount"; return 1 ;;
+        esac
+        blob_cache_dest="$cache_dest"
         ;;
     esac
   done
@@ -834,6 +852,10 @@ github_build_args() {
       # workspace RAM when WORK_TMPFS_SIZE is set. Configure the admitted bind
       # before any job or setup-node cache restore; support pnpm 11 and 10.
       ARGS+=( -e "PNPM_CONFIG_STORE_DIR=$pnpm_store_dest" -e "npm_config_store_dir=$pnpm_store_dest" )
+    elif [ "${m%%:*}" = blob-cache ]; then
+      # Jobs find the shared content-addressed cache here. Readers verify every
+      # object on their own copy, so the directory's content is untrusted.
+      ARGS+=( -e "CI_BLOB_CACHE_DIR=$blob_cache_dest" )
     fi
   done
   local share_spec share_source share_rest share_dest share_mode share_mount

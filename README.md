@@ -437,6 +437,14 @@ Without a `pnpm-store` entry, pnpm keeps its normal configuration. The existing
 configuration-drift lifecycle drains and replaces runners that need the new
 store environment after an upgrade.
 
+A `blob-cache:<container-path>` entry similarly sets `CI_BLOB_CACHE_DIR` to its
+bind destination for GitHub runners. Jobs use it to share content-addressed
+downloads with later jobs on the same host. Every job on the host can write it,
+so a client must verify each object's size and digest on its own copy before
+use, and must keep the directory within its own byte budget. The destination must be
+canonical and outside `/_work`. Adding the entry, or upgrading a farm that
+already has it, drains slots onto the variable through the normal lifecycle.
+
 Packages copy from the pool-backed store into a workspace on another filesystem
 because hard links cannot cross filesystems. This keeps the package store out of
 workspace RAM; project `node_modules` and Actions archive downloads still consume
