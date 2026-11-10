@@ -149,13 +149,15 @@ sub read_line {
 
 # Resolve a tar member under the diff directory without following any symlink:
 # every parent must be a real directory and the file itself a regular file.
+# Some image builders store members as "./usr/...". Like tar extraction, "."
+# and empty components (including a leading "/") are dropped; ".." is refused.
 sub safe_path {
   my ($base, $name) = @_;
-  return if $name =~ m{^/} || $name =~ m{(?:^|/)\.\.?(?:/|$)} || $name =~ /\0/;
-  my @parts = split m{/}, $name;
+  return if $name =~ /\0/;
+  my @parts = grep { $_ ne '' && $_ ne '.' } split m{/}, $name;
+  return if !@parts || grep { $_ eq '..' } @parts;
   my $path = $base;
   for my $i (0 .. $#parts) {
-    next if $parts[$i] eq '';
     $path .= "/$parts[$i]";
     my @st = lstat $path;
     return unless @st;

@@ -185,6 +185,18 @@ for name in '../escape-shm' '/abs-shm' 'a/../../b-shm'; do
   printf 'x' > "$S4/overlay2/jjj1/escape-shm"; printf 'x' > "$S4/overlay2/jjj1/b-shm"
   check "$S4" | grep -q '^BAD .* missing ' || fail "unsafe member name $name was resolved"
 done
+# "./"-prefixed member names (written by some image builders) resolve normally.
+S5="$tmp/e/docker/ci-runner-build-6"
+cat > "$tmp/e.json" <<'JSON'
+{"layers": [{"id": "dot", "cache": "lll1", "files": [
+  {"name": "./var/lib/rpm/rpmdb.sqlite-shm", "recorded": "same bytes"},
+  {"name": "./var/lib/rpm/./other.sqlite-wal", "recorded": "recorded", "disk": "changed!"}]}]}
+JSON
+build "$S5" "$tmp/e.json"
+out="$(check "$S5")"
+printf '%s\n' "$out" | grep -q 'rpmdb.sqlite-shm' && fail "./-prefixed consistent member reported: $out"
+printf '%s\n' "$out" | grep -qx "BAD $(chain_of "$S5" dot) checksum ./var/lib/rpm/./other.sqlite-wal" \
+  || fail "./-prefixed corrupt member not checked: $out"
 # No store yet: nothing to do, and success.
 check "$tmp/none" | grep -q . && fail "missing store produced output"
 perl "$CHECKER" >/dev/null 2>&1 && fail "usage error accepted"
