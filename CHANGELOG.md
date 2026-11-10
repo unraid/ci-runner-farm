@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.0](https://github.com/unraid/ci-runner-farm/compare/v3.1.0...v3.2.0) (2026-11-10)
+
+
+### Features
+
+* **autoscale:** withhold growth above the minimum without host headroom ([#208](https://github.com/unraid/ci-runner-farm/issues/208)) ([f46b72f](https://github.com/unraid/ci-runner-farm/commit/f46b72f199573a32f897d08f38b17b123c971e9e))
+
 ## [3.1.0](https://github.com/unraid/ci-runner-farm/compare/v3.0.0...v3.1.0) (2026-11-07)
 
 
