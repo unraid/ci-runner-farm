@@ -75,6 +75,7 @@ bash tests/pnpm-cache.sh
 bash tests/blob-cache.sh
 bash tests/playwright-cache.sh
 bash tests/lease-selfheal.sh
+bash tests/layer-integrity.sh
 bash tests/ownership-safety.sh
 bash tests/temp-safety.sh
 bash tests/resource-ownership.sh
