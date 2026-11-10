@@ -931,12 +931,18 @@ layer_integrity_scan() {
     || { rm -f "$flag.tmp"; layer_log "could not record corrupt layers for $c"; return 0; }
   layer_log "$c holds $(printf '%s\n' "$bad" | grep -c .) cached layer(s) that cannot be exported, used by $(printf '%s\n' "$images" | grep -c .) image(s); eviction pending until the slot is idle"
   printf '%s\n' "$out" | awk '$1 == "BAD" { print substr($2, 1, 12), $3, $4 }' | head -n 10 \
-    | while read -r chain reason path; do layer_log "$c   layer $chain: $reason mismatch for $path"; done
+    | while read -r chain reason path; do
+        case "$reason" in missing) reason="missing or unreadable file" ;; *) reason="$reason mismatch" ;; esac
+        layer_log "$c   layer $chain: $reason: $path"
+      done
   return 0
 }
 
 # Slot creation: the old container is gone and the new one does not exist yet,
-# so nothing writes to the store while it is read.
+# so nothing writes to the store while it is read. A busy farm's ephemeral
+# slots rarely sit idle long enough for the in-container eviction, so a store
+# that is flagged at this point is evicted on disk before the new container
+# starts.
 layer_integrity_precreate() {
   local store
   layer_integrity_enabled || return 0
@@ -944,6 +950,63 @@ layer_integrity_precreate() {
   [ -d "$store/image/overlay2/layerdb" ] || return 0
   docker inspect "$1" >/dev/null 2>&1 && return 0
   layer_integrity_scan "$1" || true
+  [ -f "$RUNDIR/layer-corrupt.$1" ] || return 0
+  layer_integrity_evict_store "$1" "$store" || true
+}
+
+# With no daemon running on it, the only consistent partial cleanup of a Docker
+# root is the whole root: removing image/layer metadata alone would leave
+# BuildKit records that point at missing snapshots. Move the store aside with
+# a same-filesystem rename (instant, so the fleet lock is not held for a large
+# delete), recreate it empty, and delete the old tree in the background at idle
+# priority. The slot's next build is cold. Any doubt keeps the store.
+layer_integrity_evict_store() {
+  local c="$1" store="$2" root trash dest refs kind ref
+  root="${store%/docker/"$c"}"
+  [ "$root/docker/$c" = "$store" ] || return 0
+  refs="$(crf_docker_storage_references)" \
+    || { layer_log "could not confirm that no container uses $c's Docker store; keeping it"; return 0; }
+  while IFS='|' read -r kind ref; do
+    [ -n "$ref" ] || continue
+    case "$kind" in
+      consumer)
+        crf_mount_destinations_overlap "$store" "$ref" \
+          && { layer_log "$c's Docker store has another consumer; keeping it"; return 0; } ;;
+      mount)
+        case "$ref" in "$store"|"$store"/*) layer_log "$c's Docker store contains a mount; keeping it"; return 0 ;; esac ;;
+      *) return 0 ;;
+    esac
+  done <<< "$refs"
+  trash="$root/docker-evicted"
+  mkdir -p "$trash" 2>/dev/null && [ ! -L "$trash" ] && [ "$(realpath -m -- "$trash")" = "$trash" ] \
+    || { layer_log "no safe place to move $c's Docker store aside; keeping it"; return 0; }
+  dest="$trash/$c.$(date +%s).$$"
+  mv -T -- "$store" "$dest" 2>/dev/null \
+    || { layer_log "could not move $c's Docker store aside; keeping it"; return 0; }
+  mkdir -p "$store" 2>/dev/null || true
+  rm -f "$RUNDIR/layer-corrupt.$c" "$RUNDIR/layer-verified.$c" \
+    "$RUNDIR/layer-scan.$c" "$RUNDIR/layer-healed.$c"
+  layer_log "evicted $c's Docker store before start because it held corrupt layers; its next build is cold"
+  layer_integrity_reap_evicted "$trash"
+}
+
+# Delete moved-aside stores in the background, one reaper at a time. The child
+# closes the inherited fleet-lock descriptors so it never holds the lock.
+layer_integrity_reap_evicted() {
+  local trash="$1"
+  (
+    exec 7>&- 8>&- 9>&-
+    exec 9>"$RUNDIR/layer-evicted.lock" || exit 0
+    flock -n 9 || exit 0
+    for d in "$trash"/*; do
+      [ -d "$d" ] && [ ! -L "$d" ] || continue
+      if command -v ionice >/dev/null 2>&1; then
+        ionice -c 3 nice -n 19 rm -rf --one-file-system -- "$d"
+      else
+        nice -n 19 rm -rf --one-file-system -- "$d"
+      fi
+    done
+  ) </dev/null >/dev/null 2>&1 &
 }
 
 # Evict one slot's corrupt layers inside its idle runner. Exit 20 means a job
@@ -998,9 +1061,15 @@ layer_integrity_heal() {
 # alone.
 heal_corrupt_layers() {
   layer_integrity_enabled || return 0
-  local names c snapshot id provider role index gen f last now started due budget healed=false failed=0
+  local names c snapshot id provider role index gen f last now started due budget root healed=false failed=0
   names="$(managed_names)" || return 1
   started="$(date +%s)"
+  # Finish deleting stores a previous reaper left behind (for example after a
+  # restart mid-delete).
+  root="$(crf_safe_cache_root 2>/dev/null)" \
+    && [ -d "$root/docker-evicted" ] && [ ! -L "$root/docker-evicted" ] \
+    && [ -n "$(ls -A "$root/docker-evicted" 2>/dev/null)" ] \
+    && layer_integrity_reap_evicted "$root/docker-evicted"
   for c in $names; do
     [ -n "$c" ] || continue
     snapshot="$(managed_runner_snapshot "$c" 2>/dev/null)" || continue
@@ -4293,7 +4362,7 @@ cmd_prune_cache() {
   local root d m dirs removed=0
   crf_cache_mutation_idle || return 1
   root="$(crf_safe_cache_root)" || { err "refusing to prune-cache: CACHE_ROOT='$CACHE_ROOT' is unsafe (system dir, share/pool root, or unresolvable — point it at /mnt/<pool>/<subdir>)"; return 1; }
-  dirs="docker work dind-logs gitlab-cache gitlab-sockets registry-mirror $CACHE_PKG_DIRS"
+  dirs="docker docker-evicted work dind-logs gitlab-cache gitlab-sockets registry-mirror $CACHE_PKG_DIRS"
   for m in $CACHE_MOUNTS; do dirs="$dirs ${m%%:*}"; done
   for d in $dirs; do
     case "$d" in ''|.|..|*/*) continue ;; esac   # simple child names only — never a path/traversal

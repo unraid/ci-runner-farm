@@ -235,10 +235,10 @@ timeout() {
 flag="$CRF_RUNDIR/layer-corrupt.$slot"
 reset() { rm -f "$CRF_RUNDIR"/layer-* ; : > "$DOCKER_LOG"; state=idle running=true exists=false exec_rc=0; }
 
-# Slot creation scans the idle store and records chains and referencing images.
+# A scan records the bad chains and the images that reference them.
 reset
-log_out="$(layer_integrity_precreate "$slot" 2>&1)"
-[ -f "$flag" ] || fail "precreate scan did not flag corrupt layers"
+log_out="$(layer_integrity_scan "$slot" 2>&1)"
+[ -f "$flag" ] || fail "scan did not flag corrupt layers"
 for l in dnf sized gone; do grep -qx "chain $(chain_of "$S" "$l")" "$flag" || fail "flag misses chain $l"; done
 grep -qx "image sha256:$(image_of "$S" uses-dnf)" "$flag" || fail "flag misses image using the bad layer"
 grep -qx "image sha256:$(image_of "$S" uses-all)" "$flag" || fail "flag misses image with a deep bad layer"
@@ -248,7 +248,71 @@ printf '%s\n' "$log_out" | grep -q 'layer-integrity: ci-runner-build-2 holds 3 c
 # A store whose container still exists is left to the idle-slot pass.
 reset; exists=true
 layer_integrity_precreate "$slot" 2>/dev/null
-[ ! -f "$flag" ] || fail "precreate scanned a store that is still in use"
+[ ! -f "$flag" ] && [ -d "$S/image" ] || fail "precreate touched a store that is still in use"
+
+# Slot creation with a flagged store: the store is moved aside before start,
+# recreated empty, and deleted in the background without holding the fleet lock.
+EV="$tmp/ev"; EVS="$EV/docker/$slot"
+fixture_refs='mount|/'; fixture_refs_rc=0
+crf_docker_storage_references() { printf '%s\n' "$fixture_refs"; return "$fixture_refs_rc"; }
+fresh_store() { rm -rf "$EV"; build "$EVS" "$tmp/a.json"; touch "$EVS/volumes-marker"; }
+wait_reaped() {
+  local i
+  for i in $(seq 1 50); do [ -z "$(ls -A "$EV/docker-evicted" 2>/dev/null)" ] && return 0; sleep 0.1; done
+  return 1
+}
+crf_safe_cache_root() { printf '%s' "$EV"; }
+reset; fresh_store
+exec 8>"$tmp/fleet.lock"; flock 8
+# Hold the reaper alive until released so lock inheritance would show. The stub
+# runs after the reaper has set up its descriptors, so its signal means "ready".
+reaper_up="$tmp/reaper.up"; reaper_go="$tmp/reaper.go"; rm -f "$reaper_up" "$reaper_go"
+ionice() {
+  local i
+  : > "$reaper_up"
+  for i in $(seq 1 100); do [ -e "$reaper_go" ] && break; sleep 0.1; done
+  shift 2; "$@"
+}
+log_out="$(layer_integrity_precreate "$slot" 2>&1)"
+# Close (not unlock) our descriptor: an inherited copy would keep the lock held.
+exec 8>&-
+for i in $(seq 1 50); do [ -e "$reaper_up" ] && break; sleep 0.1; done
+[ -e "$reaper_up" ] || fail "store reaper did not start"
+flock -n "$tmp/fleet.lock" true || fail "background store deletion holds the fleet lock"
+: > "$reaper_go"
+unset -f ionice
+[ -d "$EVS" ] && [ -z "$(ls -A "$EVS")" ] || fail "flagged store not replaced by an empty one"
+[ ! -e "$flag" ] && [ ! -e "$CRF_RUNDIR/layer-verified.$slot" ] && [ ! -e "$CRF_RUNDIR/layer-scan.$slot" ] \
+  || fail "eviction left stale per-slot state"
+printf '%s\n' "$log_out" | grep -q "evicted $slot's Docker store before start" || fail "store eviction not logged: $log_out"
+wait_reaped || fail "moved-aside store was not deleted"
+# Anything uncertain keeps the store and its pending eviction.
+for case in consumer parent mount refs-failure trash-link; do
+  reset; fresh_store; fixture_refs='mount|/'; fixture_refs_rc=0
+  case "$case" in
+    consumer) fixture_refs="consumer|$EVS" ;;
+    parent) fixture_refs="consumer|$EV" ;;
+    mount) fixture_refs="mount|$EVS/overlay2/merged" ;;
+    refs-failure) fixture_refs_rc=1 ;;
+    trash-link) mkdir -p "$tmp/elsewhere"; ln -s "$tmp/elsewhere" "$EV/docker-evicted" ;;
+  esac
+  layer_integrity_precreate "$slot" 2>/dev/null || fail "$case: precreate failed"
+  [ -f "$EVS/volumes-marker" ] && [ -f "$flag" ] || fail "$case: store evicted despite doubt"
+done
+[ -z "$(ls -A "$tmp/elsewhere")" ] || fail "store moved through a symlinked trash directory"
+# A clean store is never evicted.
+printf '{"layers":[{"id":"ok","cache":"kkk1","files":[{"name":"a/z.sqlite-shm","recorded":"same"}]}]}' > "$tmp/clean.json"
+build "$tmp/clean/docker/$slot" "$tmp/clean.json"
+reset
+crf_safe_cache_root() { printf '%s' "$tmp/clean"; }
+layer_integrity_precreate "$slot" 2>/dev/null
+[ -d "$tmp/clean/docker/$slot/image" ] || fail "clean store evicted"
+# The lifecycle pass finishes deleting leftovers from an interrupted reaper.
+crf_safe_cache_root() { printf '%s' "$EV"; }
+reset; rm -rf "$EV"; mkdir -p "$EV/docker-evicted/leftover/sub"; date +%s > "$CRF_RUNDIR/layer-scan.$slot"
+heal_corrupt_layers 2>/dev/null
+wait_reaped || fail "leftover moved-aside store not deleted by the lifecycle pass"
+crf_safe_cache_root() { printf '%s' "$tmp/a"; }
 
 # Idle, running slot: one eviction with the referenced image IDs, then bounded.
 reset
@@ -268,7 +332,7 @@ grep -q '^exec' "$DOCKER_LOG" && fail "second eviction inside the bound interval
 
 # Busy, starting, or stopped slots are never touched; the flag waits.
 for case in busy starting stopped; do
-  reset; layer_integrity_precreate "$slot" 2>/dev/null
+  reset; layer_integrity_scan "$slot" 2>/dev/null
   case "$case" in stopped) running=false ;; *) state="$case" ;; esac
   heal_corrupt_layers 2>/dev/null
   grep -q '^exec' "$DOCKER_LOG" && fail "$case slot was touched"
@@ -276,11 +340,11 @@ for case in busy starting stopped; do
 done
 
 # A job arriving mid-eviction stops it and keeps the slot eligible.
-reset; layer_integrity_precreate "$slot" 2>/dev/null; exec_rc=20
+reset; layer_integrity_scan "$slot" 2>/dev/null; exec_rc=20
 heal_corrupt_layers 2>/dev/null || fail "job arrival treated as failure"
 [ -f "$flag" ] && [ ! -f "$CRF_RUNDIR/layer-healed.$slot" ] || fail "interrupted eviction not retried"
 # A failed eviction is reported, keeps the flag, and consumes the bound.
-reset; layer_integrity_precreate "$slot" 2>/dev/null; exec_rc=21
+reset; layer_integrity_scan "$slot" 2>/dev/null; exec_rc=21
 if heal_corrupt_layers 2>/dev/null; then fail "failed eviction reported success"; fi
 [ -f "$flag" ] && [ -f "$CRF_RUNDIR/layer-healed.$slot" ] || fail "failed eviction state wrong"
 
@@ -291,8 +355,6 @@ heal_corrupt_layers 2>/dev/null
 [ ! -f "$flag" ] && [ ! -s "$DOCKER_LOG" ] && [ ! -f "$CRF_RUNDIR/layer-verified.$slot" ] \
   || fail "idle scan ran inside its interval"
 printf 'chain %s\n' "$(printf 'e%.0s' $(seq 64))" > "$flag"
-printf '{"layers":[{"id":"ok","cache":"kkk1","files":[{"name":"a/z.sqlite-shm","recorded":"same"}]}]}' > "$tmp/clean.json"
-build "$tmp/clean/docker/$slot" "$tmp/clean.json"
 crf_safe_cache_root() { printf '%s' "$tmp/clean"; }   # same slot, no corrupt layers
 rm -f "$CRF_RUNDIR/layer-scan.$slot"
 log_out="$(heal_corrupt_layers 2>&1)"
@@ -305,7 +367,9 @@ reset
 SCRIPT_DIR="$tmp/missing" layer_integrity_scan "$slot" 2>/dev/null || fail "checker failure blocked the caller"
 [ ! -f "$flag" ] || fail "checker failure invented a flag"
 reset; mv "$tmp/a/docker" "$tmp/a/real-docker"; ln -s "$tmp/a/real-docker" "$tmp/a/docker"
-layer_integrity_precreate "$slot" 2>/dev/null; [ ! -f "$flag" ] || fail "scanned through a symlinked store"
+log_out="$(layer_integrity_precreate "$slot" 2>&1)"
+[ ! -f "$flag" ] && [ -d "$tmp/a/real-docker/$slot/image" ] && [ ! -e "$tmp/a/docker-evicted" ] \
+  && ! printf '%s\n' "$log_out" | grep -q layer-integrity || fail "scanned or evicted through a symlinked store"
 rm "$tmp/a/docker"; mv "$tmp/a/real-docker" "$tmp/a/docker"
 reset; DIND=false
 layer_integrity_precreate "$slot" 2>/dev/null; heal_corrupt_layers 2>/dev/null
@@ -314,6 +378,7 @@ DIND=true
 
 # The lifecycle tick runs the pass and survives its failure.
 grep -q 'heal_corrupt_layers' <(declare -f lifecycle_tick) || fail "lifecycle tick does not run the heal pass"
+declare -f cmd_prune_cache | grep -q 'docker-evicted' || fail "prune-cache leaves moved-aside stores behind"
 grep -q 'layer_integrity_precreate "\$name"' <(declare -f github_start_one) || fail "slot creation does not scan"
 grep -q 'layer_integrity_precreate "\$name"' <(declare -f cmd_recycle) || fail "recycle does not scan"
 
