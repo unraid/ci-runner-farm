@@ -595,10 +595,22 @@ unchanged.
 Placement reads the host topology from sysfs. It prefers whole physical cores
 spread across L3 cache domains, then their SMT sibling threads, and picks the
 CPUs least used by the farm's other live containers; overcommitted runners
-share the least-loaded CPUs. The chosen cpuset is recorded in the
-`net.unraid.ci-runner-farm.cpuset` label. A fractional or missing CPU limit, a
-limit larger than the host, or unreadable topology logs a warning and starts
-that runner unpinned. Turning the setting on or off changes the configuration
+share the least-loaded CPUs. "Least used" is measured: every 30 seconds the
+farm samples each managed container's cgroup v2 CPU usage (under
+`/sys/fs/cgroup/docker/<id>` or `system.slice/docker-<id>.scope`). A candidate
+block scores the cores its occupants used recently, plus half the usage on its
+SMT sibling CPUs, which share the same physical cores. The score is rounded to
+quarter cores, so a block whose total is below about an eighth of a core counts
+as idle. A runner started since the last sample counts as fully busy, so a
+burst of starts does not pile onto the same idle block. Ties, and placements
+without any recent sample (for example on cgroup v1), fall back to counting
+the cpusets that overlap each block. Ephemeral runners are placed again after
+every job, so busy runners spread out over time without moving running
+containers. Runners with a 1-CPU limit land on the least-used single CPU, and
+their usage counts against any larger block that contains it. The chosen
+cpuset is recorded in the `net.unraid.ci-runner-farm.cpuset` label. A
+fractional or missing CPU limit, a limit larger than the host, or unreadable
+topology logs a warning and starts that runner unpinned. Turning the setting on or off changes the configuration
 fingerprint of pinnable slots, so they are recreated like any other baked
 setting; with it off, existing fingerprints are unchanged.
 

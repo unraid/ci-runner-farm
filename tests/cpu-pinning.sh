@@ -70,24 +70,37 @@ CONTAINERS="$tmp/containers"
 DOCKER_LOG="$tmp/docker.log"
 DOCKER_PS_FAIL=0
 : > "$CONTAINERS"; : > "$DOCKER_LOG"
+# A container's ID is the SHA-256 of its name, so tests can address its cgroup.
+id_of() { printf '%s' "$1" | sha256sum | cut -c1-64; }
 docker() {
   printf '%s\n' "$*" >> "$DOCKER_LOG"
   case "$1" in
     ps)
       [ "$DOCKER_PS_FAIL" = 0 ] || return 1
-      local arg previous="" label="" statuses=" "
+      local arg previous="" label="" statuses=" " ids=false full=false name
       for arg in "$@"; do
         if [ "$previous" = --filter ]; then
           case "$arg" in label=*) label="${arg#label=}" ;; status=*) statuses+="${arg#status=} " ;; esac
         fi
+        [ "$arg" != -q ] || ids=true
+        [ "$arg" != --no-trunc ] || full=true
         previous="$arg"
       done
       [ "$label" = "$MANAGED_LABEL" ] || return 0
-      awk -v statuses="$statuses" 'statuses == " " || index(statuses, " " $2 " ") { print $1 }' "$CONTAINERS"
+      awk -v statuses="$statuses" 'statuses == " " || index(statuses, " " $2 " ") { print $1 }' "$CONTAINERS" \
+        | while IFS= read -r name; do
+            if [ "$ids" = false ]; then printf '%s\n' "$name"
+            elif [ "$full" = true ]; then id_of "$name"
+            else id_of "$name" | cut -c1-12
+            fi
+          done
       ;;
     inspect)
-      [ "$2" = --format ] && [ "$3" = '{{.HostConfig.CpusetCpus}}' ] || return 1
-      awk -v name="$4" '$1 == name { print ($3 == "-" ? "" : $3); found = 1 } END { exit !found }' "$CONTAINERS"
+      [ "$2" = --format ] && [ "$3" = '{{.Id}} {{.HostConfig.CpusetCpus}}' ] || return 1
+      local cpuset
+      cpuset="$(awk -v name="$4" '$1 == name { print ($3 == "-" ? "" : $3); found = 1 } END { exit !found }' "$CONTAINERS")" \
+        || return 1
+      printf '%s %s\n' "$(id_of "$4")" "$cpuset"
       ;;
     run) printf '%s\n' "${@:2}" > "$tmp/run.argv" ;;
     create)
@@ -110,7 +123,34 @@ expect_place() {
   got="$(place "$1" "$2")" || fail "$2 (N=$1) was not placed"
   [ "$got" = "$3" ] || fail "$2 (N=$1) placed on '$got', expected '$3'"
 }
-reset_host() { export CRF_SYSFS_ROOT="$1"; : > "$CONTAINERS"; : > "$tmp/warnings"; }
+reset_host() {
+  export CRF_SYSFS_ROOT="$1"; : > "$CONTAINERS"; : > "$tmp/warnings"
+  rm -rf "$CRF_RUNDIR"/cpu-usage.sample* "$tmp/cgroup"
+}
+export CRF_CGROUP_ROOT="$tmp/cgroup"
+
+# ---- fake cgroup usage -----------------------------------------------------------
+# set_rates WINDOW NAME=MILLICORES...: record a usage sample WINDOW seconds old
+# with every named container at zero, then advance each cgroup's usage_usec so
+# the container used MILLICORES over the window. Containers not named have no
+# cgroup and therefore no rate.
+cpu_stat() { # NAME USEC [driver]
+  local id dir
+  id="$(id_of "$1")"; dir="$tmp/cgroup/docker/$id"
+  [ "${3:-cgroupfs}" = cgroupfs ] || dir="$tmp/cgroup/system.slice/docker-$id.scope"
+  mkdir -p "$dir"
+  printf 'usage_usec %s\nuser_usec 0\nsystem_usec 0\n' "$2" > "$dir/cpu.stat"
+}
+set_rates() {
+  local window="$1" pair name
+  shift
+  rm -rf "$CRF_RUNDIR"/cpu-usage.sample* "$tmp/cgroup"
+  {
+    printf '%s\n' "$(( $(date +%s%3N) - window * 1000 ))"
+    for pair in "$@"; do printf '%s 0\n' "$(id_of "${pair%%=*}")"; done
+  } > "$CRF_RUNDIR/cpu-usage.sample"
+  for pair in "$@"; do cpu_stat "${pair%%=*}" "$(( ${pair#*=} * window * 1000 ))"; done
+}
 
 # ---- list helpers ------------------------------------------------------------
 [ "$(crf_cpu_list_expand '0-3,8,10-11')" = '0 1 2 3 8 10 11' ] || fail "CPU list expansion changed"
@@ -172,6 +212,164 @@ expect_place 4 ci-runner-build-2 4-7
 expect_place 2 ci-runner-build-small-2 10-11
 expect_place 4 ci-runner-build-3 12-15
 expect_place 2 ci-runner-build-small-3 16-17
+
+# ---- load-aware placement --------------------------------------------------------
+# Eight runners, one per block, in preference order:
+#   b1 0-3, b2 8-11, b3 4-7, b4 12-15, b5 16-19, b6 24-27, b7 20-23, b8 28-31.
+# Blocks X and X+16 share physical cores (SMT siblings).
+eight_runners() {
+  reset_host "$smt_host"
+  local i
+  for i in 1 2 3 4 5 6 7 8; do place 4 "ci-runner-build-$i" >/dev/null || fail "setup placement $i failed"; done
+}
+eight_runners
+# Without a usage sample every block holds one runner, so the count-based
+# order repeats: the earliest preferred block.
+expect_place 4 ci-runner-build-9 0-3
+eight_runners
+# Busy runners on 0-3 and 8-11 (and a sibling-weighted 24-27): the idle block
+# that comes first in preference order wins instead of 0-3.
+set_rates 100 ci-runner-build-1=3500 ci-runner-build-2=3000 ci-runner-build-6=2000 \
+  ci-runner-build-3=0 ci-runner-build-4=0 ci-runner-build-5=0 ci-runner-build-7=0 ci-runner-build-8=0
+expect_place 4 ci-runner-build-9 4-7
+# Idle listeners (below an eighth of a core) count as idle, not as load.
+eight_runners
+set_rates 100 ci-runner-build-1=3500 ci-runner-build-2=3000 ci-runner-build-3=100 ci-runner-build-4=0 \
+  ci-runner-build-5=0 ci-runner-build-6=0 ci-runner-build-7=0 ci-runner-build-8=0
+expect_place 4 ci-runner-build-9 4-7
+# Sibling CPUs count: 12-15 scores 0.6 + 0.5 x 1.2 = 1.2, its sibling block
+# 28-31 scores 1.2 + 0.3 = 1.5, and the idle 20-23 scores 0.5 x 3.5 = 1.75.
+# Ignoring siblings would pick the idle 20-23.
+eight_runners
+set_rates 100 ci-runner-build-1=3500 ci-runner-build-2=3500 ci-runner-build-3=3500 ci-runner-build-4=600 \
+  ci-runner-build-5=3500 ci-runner-build-6=3500 ci-runner-build-7=0 ci-runner-build-8=1200
+expect_place 4 ci-runner-build-9 12-15
+# ...but only half: 20-23 scores 0.5 x 2.0 = 1.0, ahead of 28-31 at
+# 0.75 + 0.5 = 1.25 and 12-15 at 1.0 + 0.375. Full weight would pick 12-15.
+eight_runners
+set_rates 100 ci-runner-build-1=3500 ci-runner-build-2=3500 ci-runner-build-3=2000 ci-runner-build-4=1000 \
+  ci-runner-build-5=3500 ci-runner-build-6=3500 ci-runner-build-7=0 ci-runner-build-8=750
+expect_place 4 ci-runner-build-9 20-23
+# Equal usage falls back to the fewest overlapping cpusets: 16-19 holds two
+# idle runners, 28-31 holds one; every other block is busy.
+eight_runners
+printf '%s\n' 'ci-runner-build-extra running 16-19' >> "$CONTAINERS"
+set_rates 100 ci-runner-build-1=3500 ci-runner-build-2=3500 ci-runner-build-3=3500 ci-runner-build-4=3500 \
+  ci-runner-build-5=0 ci-runner-build-extra=0 ci-runner-build-6=3500 ci-runner-build-7=3500 ci-runner-build-8=0
+expect_place 4 ci-runner-build-9 28-31
+# A pinned container without a rate yet (created since the sample) counts as
+# fully busy: 4-7 holds only a new runner, while 0-3 holds two measured idle
+# runners. Treating the new runner as idle would pick 4-7; counting cpusets
+# would pick 8-11.
+eight_runners
+printf '%s\n' 'ci-runner-build-extra running 0-3' >> "$CONTAINERS"
+set_rates 100 ci-runner-build-1=0 ci-runner-build-extra=0 ci-runner-build-2=3500 ci-runner-build-4=3500 \
+  ci-runner-build-5=3500 ci-runner-build-6=3500 ci-runner-build-7=3500 ci-runner-build-8=3500
+expect_place 4 ci-runner-build-9 0-3
+# A burst of starts does not pile onto the idle blocks: each new runner counts
+# as busy until it is sampled.
+eight_runners
+set_rates 100 ci-runner-build-1=3500 ci-runner-build-2=3500 ci-runner-build-3=3500 ci-runner-build-4=0 \
+  ci-runner-build-5=3500 ci-runner-build-6=3500 ci-runner-build-7=3500 ci-runner-build-8=0
+burst=""
+for i in 9 10 11 12 13 14; do burst+="$(place 4 "ci-runner-build-$i") " || fail "burst placement $i failed"; done
+[ "$burst" = "12-15 28-31 0-3 8-11 4-7 12-15 " ] || fail "a burst of starts was placed as: $burst"
+# Rates for unpinned containers, or only for the runner being replaced, do not
+# switch to measured scoring: placement stays exactly count-based (4-7). Scoring
+# the unmeasured pinned runners as busy would prefer 12-15, whose sibling
+# block is free.
+reset_host "$smt_host"
+printf '%s\n' 'pinned-a running 0-3' 'pinned-b running 8-11' 'pinned-c running 20-23' \
+  'unpinned running -' 'ci-runner-build-9 running 12-15' >> "$CONTAINERS"
+set_rates 100 unpinned=2000 ci-runner-build-9=3000
+expect_place 4 ci-runner-build-9 4-7
+# Usage on a 1-CPU runner counts fully against the block that holds its CPU,
+# and a 1-CPU runner itself lands on the least-used CPU, outside busy blocks.
+eight_runners
+printf '%s\n' 'ci-runner-tiny-1 running 4' >> "$CONTAINERS"
+set_rates 100 ci-runner-build-1=3500 ci-runner-build-2=3500 ci-runner-tiny-1=1000 \
+  ci-runner-build-3=0 ci-runner-build-4=0 ci-runner-build-5=0 ci-runner-build-6=0 ci-runner-build-7=0 ci-runner-build-8=0
+expect_place 4 ci-runner-build-9 12-15
+eight_runners
+set_rates 100 ci-runner-build-1=4000 ci-runner-build-2=4000 ci-runner-build-3=4000 \
+  ci-runner-build-4=0 ci-runner-build-5=0 ci-runner-build-6=0 ci-runner-build-7=0 ci-runner-build-8=0
+expect_place 1 ci-runner-tiny-2 12
+# A container's usage is spread over its own cpuset: a 4-CPU runner using 0.8
+# cores puts 0.2 on each CPU, less than a 1-CPU runner using 0.5.
+reset_host "$flat_host"
+printf '%s\n' 'big running 0-3' 'one-4 running 4' 'one-5 running 5' 'one-6 running 6' 'one-7 running 7' >> "$CONTAINERS"
+set_rates 100 big=800 one-4=500 one-5=500 one-6=500 one-7=500
+expect_place 1 ci-runner-small-1 0
+# The cgroup of a systemd-driver container is read too: its idle runner makes
+# 4-7 the best block; unread, it would count as busy and 0-3 would win.
+eight_runners
+set_rates 100 ci-runner-build-1=3500 ci-runner-build-2=3500 ci-runner-build-3=0 ci-runner-build-4=3500 \
+  ci-runner-build-5=3500 ci-runner-build-6=3500 ci-runner-build-7=3500 ci-runner-build-8=3500
+rm -rf "$tmp/cgroup/docker/$(id_of ci-runner-build-3)"
+cpu_stat ci-runner-build-3 0 systemd
+expect_place 4 ci-runner-build-9 4-7
+
+# ---- usage samples -----------------------------------------------------------------
+# A sample younger than the minimum window falls back to the previous one, a
+# stale one gives no rate, and placement then counts cpusets.
+eight_runners
+set_rates 100 ci-runner-build-1=3500 ci-runner-build-2=3500 ci-runner-build-3=0
+mv "$CRF_RUNDIR/cpu-usage.sample" "$CRF_RUNDIR/cpu-usage.sample.prev"
+{ printf '%s\n' "$(( $(date +%s%3N) - 3000 ))"; } > "$CRF_RUNDIR/cpu-usage.sample"
+expect_place 4 ci-runner-build-9 4-7
+eight_runners
+set_rates 100 ci-runner-build-1=3500 ci-runner-build-2=3500 ci-runner-build-3=0
+sed -i.bak "1s/.*/$(( $(date +%s%3N) - 301000 ))/" "$CRF_RUNDIR/cpu-usage.sample"
+if crf_cpu_usage_rates "$(crf_cpu_usage_now)" >/dev/null 2>&1; then fail "a stale usage sample produced rates"; fi
+expect_place 4 ci-runner-build-9 0-3
+# Rates: millicores over the window; a counter that went backwards is skipped.
+eight_runners
+set_rates 100 ci-runner-build-1=2000 ci-runner-build-2=500
+cpu_stat ci-runner-build-3 5
+printf '%s 10\n' "$(id_of ci-runner-build-3)" >> "$CRF_RUNDIR/cpu-usage.sample"
+rates="$(crf_cpu_usage_rates "$(crf_cpu_usage_now)")" || fail "rates were not computed"
+rate_of_name() { awk -v id="$(id_of "$1")" '$1 == id { print $2 }' <<< "$rates"; }
+r1="$(rate_of_name ci-runner-build-1)"; r2="$(rate_of_name ci-runner-build-2)"
+[ "$r1" -ge 1980 ] && [ "$r1" -le 2000 ] && [ "$r2" -ge 495 ] && [ "$r2" -le 500 ] \
+  || fail "usage rates were not millicores over the window: $rates"
+[ -z "$(rate_of_name ci-runner-build-3)" ] || fail "a counter that went backwards produced a rate"
+# Refresh: a current sample younger than the refresh interval is kept; an
+# older one becomes the previous sample.
+eight_runners
+rm -f "$CRF_RUNDIR"/cpu-usage.sample*  # the setup placements left one behind
+cpu_stat ci-runner-build-1 7
+crf_cpu_usage_refresh || fail "first usage refresh failed"
+[ -f "$CRF_RUNDIR/cpu-usage.sample" ] && [ ! -f "$CRF_RUNDIR/cpu-usage.sample.prev" ] || fail "first refresh did not write one sample"
+grep -qx "$(id_of ci-runner-build-1) 7" "$CRF_RUNDIR/cpu-usage.sample" || fail "refresh did not record cgroup usage"
+cp "$CRF_RUNDIR/cpu-usage.sample" "$tmp/first.sample"
+crf_cpu_usage_refresh || fail "second usage refresh failed"
+cmp -s "$CRF_RUNDIR/cpu-usage.sample" "$tmp/first.sample" && [ ! -f "$CRF_RUNDIR/cpu-usage.sample.prev" ] \
+  || fail "a fresh sample was replaced before the refresh interval"
+sed -i.bak "1s/.*/$(( $(date +%s%3N) - 20000 ))/" "$CRF_RUNDIR/cpu-usage.sample"
+cpu_stat ci-runner-build-1 9
+crf_cpu_usage_refresh || fail "third usage refresh failed"
+grep -qx "$(id_of ci-runner-build-1) 7" "$CRF_RUNDIR/cpu-usage.sample.prev" || fail "refresh did not keep the previous sample"
+grep -qx "$(id_of ci-runner-build-1) 9" "$CRF_RUNDIR/cpu-usage.sample" || fail "refresh did not record a new sample"
+# Placement itself leaves a sample behind for the next one.
+eight_runners
+rm -f "$CRF_RUNDIR"/cpu-usage.sample*
+cpu_stat ci-runner-build-1 1
+place 4 ci-runner-build-9 >/dev/null || fail "placement failed"
+[ -f "$CRF_RUNDIR/cpu-usage.sample" ] || fail "placement did not record a usage sample"
+[ ! -s "$tmp/warnings" ] || fail "load-aware placement emitted warnings: $(cat "$tmp/warnings")"
+# The lifecycle tick keeps a sample fresh while pinning is on, and only then.
+(
+  crf_storage_pressure_cleanup() { :; }
+  replenish_fixed_github_capacity() { :; }
+  provider_call() { :; }
+  eight_runners
+  rm -f "$CRF_RUNDIR"/cpu-usage.sample*
+  cpu_stat ci-runner-build-1 3
+  CPU_PINNING=false lifecycle_tick || fail "lifecycle tick failed with pinning off"
+  [ ! -e "$CRF_RUNDIR/cpu-usage.sample" ] || fail "the lifecycle tick sampled usage with pinning off"
+  CPU_PINNING=true lifecycle_tick || fail "lifecycle tick failed with pinning on"
+  grep -qx "$(id_of ci-runner-build-1) 3" "$CRF_RUNDIR/cpu-usage.sample" || fail "the lifecycle tick did not sample usage"
+) || exit 1
 
 # A limit larger than any L3 domain falls back to one host-wide domain.
 reset_host "$smt_host"
