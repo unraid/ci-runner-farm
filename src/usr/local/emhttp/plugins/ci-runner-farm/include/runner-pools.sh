@@ -199,6 +199,91 @@ pool_effective_labels() {
   printf '%s%s\n' "$routing" "${additional:+,$additional}"
 }
 
+# Optional execution settings stay separate from the eleven V3 capacity fields.
+# Omitting a field inherits the farm setting; an explicit empty value clears it.
+# Values are literal data, never shell assignments or commands.
+pool_context_mounts_valid() {
+  local kind="$1" value="$2" item source destination mode
+  [ -n "$value" ] || return 0
+  case "$value" in ' '*|*' '|*'  '*|*[$'\r\n\t']*) return 1 ;; esac
+  for item in $value; do
+    if [ "$kind" = cache_mounts ]; then
+      [[ "$item" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*:/[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*$ ]] || return 1
+      source="${item%%:*}"; destination="${item#*:}"
+      case "$source" in .|..) return 1 ;; esac
+    else
+      [[ "$item" =~ ^/mnt/user/[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)+:/mnt/[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*:(ro|rw)$ ]] || return 1
+      source="${item%%:*}"; destination="${item#*:}"; mode="${destination##*:}"
+      destination="${destination%:*}"
+      case "$source" in */./*|*/../*|*/.|*/..) return 1 ;; esac
+      [ "$mode" = ro ] || [ "$mode" = rw ] || return 1
+    fi
+    case "$destination" in */./*|*/../*|*/.|*/..) return 1 ;; esac
+  done
+}
+
+pool_context_validate() {
+  local raw="${RUNNER_POOL_CONTEXTS:-}" record id entry key value seen=' ' ids=' '
+  local -a records=() fields=()
+  [ -n "$raw" ] || return 0
+  pool_mode_enabled || { pool_error 'Pool execution contexts require named pools.'; return 1; }
+  [ "${CI_PROVIDER:-github}" = github ] && [ "${GH_SCOPE:-repo}" = org ] \
+    || { pool_error 'Pool execution contexts require GitHub organization scope.'; return 1; }
+  [ "${#raw}" -le "$POOL_CONFIG_MAX_BYTES" ] || { pool_error 'Pool execution contexts are too large.'; return 1; }
+  case "$raw" in *[$'\r\n\t']*|*\'*|*\"*|*\\*|';'*|*';'|*';;'*)
+    pool_error 'Pool execution contexts contain unsupported characters.'; return 1 ;;
+  esac
+  IFS=';' read -r -a records <<< "$raw"
+  [ "${#records[@]}" -le "$POOL_MAX_COUNT" ] || { pool_error 'Too many pool execution contexts.'; return 1; }
+  for record in "${records[@]}"; do
+    case "$record" in *'|'|*'||'*) pool_error 'Pool execution context has an empty field.'; return 1 ;; esac
+    IFS='|' read -r -a fields <<< "$record"
+    [ "${fields[0]:-}" = v1 ] && [ "${#fields[@]}" -ge 3 ] && [ "${#fields[@]}" -le 5 ] \
+      || { pool_error 'Pool execution contexts require v1, a pool id and named settings.'; return 1; }
+    id="${fields[1]}"
+    if ! pool_id_valid "$id" || ! pool_record "$id" >/dev/null; then
+      pool_error 'Pool execution context names an unknown pool.'; return 1
+    fi
+    case "$ids" in *" $id "*) pool_error 'Pool execution context repeats a pool.'; return 1 ;; esac
+    ids="$ids$id "; seen=' '
+    for entry in "${fields[@]:2}"; do
+      [[ "$entry" = *=* ]] || { pool_error 'Pool execution settings require named values.'; return 1; }
+      key="${entry%%=*}"; value="${entry#*=}"
+      case "$seen" in *" $key "*) pool_error 'Pool execution setting is repeated.'; return 1 ;; esac
+      seen="$seen$key "
+      case "$key" in
+        runner_group)
+          [ "${CI_PROVIDER:-github}" = github ] && [ "${GH_SCOPE:-repo}" = org ] \
+            || { pool_error 'Pool runner groups require GitHub organization scope.'; return 1; }
+          if [ -n "$value" ]; then
+            [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._\ -]{0,99}$ && "$value" != *' ' ]] \
+              || { pool_error 'Invalid pool runner group.'; return 1; }
+          fi ;;
+        cache_mounts|user_share_mounts)
+          pool_context_mounts_valid "$key" "$value" \
+            || { pool_error 'Invalid pool mount setting.'; return 1; } ;;
+        *) pool_error 'Unknown pool execution setting.'; return 1 ;;
+      esac
+    done
+  done
+}
+
+pool_context_value() {
+  local wanted="$1" key="$2" record entry
+  local -a records=() fields=()
+  IFS=';' read -r -a records <<< "${RUNNER_POOL_CONTEXTS:-}"
+  for record in "${records[@]}"; do
+    IFS='|' read -r -a fields <<< "$record"
+    [ "${fields[1]:-}" = "$wanted" ] || continue
+    for entry in "${fields[@]:2}"; do
+      [ "${entry%%=*}" = "$key" ] || continue
+      printf '%s' "${entry#*=}"
+      return 0
+    done
+  done
+  return 1
+}
+
 pool_configured_target() {
   if [ "${AUTOSCALE:-false}" = true ]; then pool_min "$1"; else pool_fixed "$1"; fi
 }

@@ -33,6 +33,15 @@ for dest in /home/runner/.cache/unraid-blobs /opt/blob-cache; do
   [ "$(github_confgen)" != "$before" ] || fail 'existing slots would not drain onto the blob cache'
 done
 
+# Cohorts use the same interface and destination with distinct host children.
+for source in blob-cache-os blob-cache-other-builds; do
+  CACHE_MOUNTS="$source:/home/runner/.cache/unraid-blobs"
+  github_build_args 1 test-runner || fail "valid cohort $source rejected"
+  for value in 'CI_BLOB_CACHE_DIR=/home/runner/.cache/unraid-blobs' "$CACHE_ROOT/$source:/home/runner/.cache/unraid-blobs"; do
+    [ "$(argv | grep -Fxc -- "$value")" = 1 ] || fail "missing or duplicate cohort interface $value"
+  done
+done
+
 # A host that gained the mount before this release must still drain onto the
 # new variable, so the fingerprint carries an explicit salt, not only the list.
 fingerprint_input() {
@@ -41,6 +50,8 @@ fingerprint_input() {
 }
 CACHE_MOUNTS='blob-cache:/opt/blobs'
 fingerprint_input | grep -q -- '-blob-cache-v1' || fail 'blob-cache slots carry no drain salt'
+CACHE_MOUNTS='blob-cache-os:/opt/blobs'
+fingerprint_input | grep -q -- '-blob-cache-v1' || fail 'cohort slots carry no drain salt'
 CACHE_MOUNTS='npm:/home/runner/.npm'
 if fingerprint_input | grep -q -- '-blob-cache-v1'; then fail 'unrelated slots received the blob-cache salt'; fi
 
@@ -51,9 +62,30 @@ for value in PNPM_CONFIG_STORE_DIR=/opt/store CI_BLOB_CACHE_DIR=/opt/blobs; do
   [ "$(argv | grep -Fxc -- "$value")" = 1 ] || fail "missing or duplicate $value"
 done
 
+(
+  RUNNER_MODE=pools RUNNER_GROUP=Default USER_SHARE_MOUNTS=''
+  RUNNER_POOLS='v3|general|general-build|linux,x64|1|0|2|1|4|16g|builtin;v3|restricted|private-build|linux,x64|1|0|2|1|4|16g|builtin'
+  CACHE_MOUNTS='blob-cache:/home/runner/.cache/unraid-blobs'
+  RUNNER_POOL_CONTEXTS='v1|restricted|runner_group=private-builds|cache_mounts=blob-cache-os:/home/runner/.cache/unraid-blobs'
+  pool_base_refresh
+  validate_runner_mode || fail 'cohort pool configuration rejected'
+  for pool in general restricted general; do
+    pool_activate "$pool" || fail 'cohort activation failed'
+    github_build_args 1 test-runner || fail 'cohort argv failed'
+    source=blob-cache; other=blob-cache-os
+    [ "$pool" != restricted ] || { source=blob-cache-os; other=blob-cache; }
+    [ "$(argv | grep -Fxc -- 'CI_BLOB_CACHE_DIR=/home/runner/.cache/unraid-blobs')" = 1 ] || fail 'cohort lost the common client interface'
+    argv | grep -Fqx "$CACHE_ROOT/$source:/home/runner/.cache/unraid-blobs" || fail 'cohort source differs'
+    if argv | grep -Fqx "$CACHE_ROOT/$other:/home/runner/.cache/unraid-blobs"; then fail 'another cohort source was mounted'; fi
+    if argv | grep -q '^CI_BLOB_CACHE_MAX_BYTES='; then fail 'Farm introduced a client retention policy'; fi
+  done
+)
+
 for entry in blob-cache blob-cache: blob-cache:relative blob-cache:/ blob-cache:/_work \
   blob-cache:/_work/blobs blob-cache:/opt/blobs:ro blob-cache:/opt//blobs blob-cache:/opt/../blobs \
-  blob-cache:/opt/./blobs 'blob-cache:/opt/one blob-cache:/opt/two'; do
+  blob-cache:/opt/./blobs 'blob-cache:/opt/one blob-cache:/opt/two' \
+  'blob-cache:/opt/one blob-cache-os:/opt/two' 'blob-cache-os:/opt/one blob-cache-other:/opt/two' \
+  blob-cache-:/opt/blobs blob-cache-OS:/opt/blobs blob-cache-os/escape:/opt/blobs; do
   CACHE_MOUNTS="$entry"
   if github_build_args 1 test-runner >"$tmp/rejection" 2>&1; then fail "accepted $entry"; fi
 done

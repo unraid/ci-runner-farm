@@ -57,6 +57,7 @@ RUNNER_COUNT=4
 RUNNER_LABELS="self-hosted,unraid,build"
 RUNNER_MODE="single"                  # single | pools (provider-neutral classic pools)
 RUNNER_POOLS=""                       # semicolon-separated validated V3 pool records
+RUNNER_POOL_CONTEXTS=""               # optional pool-scoped group and mount overrides
 QUEUED_POOLS="false"                  # retired setting; true requires configuration migration
 ELASTIC_POOLS="false"                 # retired setting; true requires configuration migration
 DOCKER_CACHE_MIN_FREE_PERCENT="15"     # reclaim completed DinD stores below this free-space threshold; 0 disables
@@ -180,7 +181,7 @@ HISTORY_FILE="${CRF_HISTORY_FILE:-${CFGDIR}/recommendations.history}"
 # Allowlist of keys the settings page may set. load_cfg only ever assigns these.
 CFG_KEYS="CI_PROVIDER GH_SCOPE GH_OWNER GH_REPOS RUNNER_GROUP GH_APP_ID GH_APP_INSTALLATION_ID GITLAB_URL GITLAB_RUNNER_IMAGE GITLAB_PROJECTS GITLAB_SHUTDOWN_TIMEOUT \
 GITLAB_ALLOWED_IMAGES GITLAB_ALLOWED_SERVICES GITLAB_PULL_POLICY GITLAB_SHM_SIZE \
-RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS QUEUED_POOLS DOCKER_CACHE_MIN_FREE_PERCENT DOCKER_CACHE_BUILDERS DOCKER_JOB_PRUNE \
+RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS RUNNER_POOL_CONTEXTS ELASTIC_POOLS QUEUED_POOLS DOCKER_CACHE_MIN_FREE_PERCENT DOCKER_CACHE_BUILDERS DOCKER_JOB_PRUNE \
 RUNNER_CPUS CPU_PINNING RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE USER_SHARE_MOUNTS IMAGE_SOURCE IMAGE EPHEMERAL \
 RUN_AS_ROOT REGISTRY_SERVER REGISTRY_USERNAME CACHE_MOUNTS SHARE_DOCKER_SOCK DIND \
 SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK RUNNER_DNS ARTIFACT_ENDPOINT MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
@@ -208,6 +209,7 @@ load_cfg() {
   DOCKER_CACHE_BUILDERS=""
   DOCKER_JOB_PRUNE="false"
   RUNNER_DNS=""
+  RUNNER_POOL_CONTEXTS=""
   GROWTH_BACKPRESSURE="false"
   [ -f "$CFG" ] || return 0
   local line key val
@@ -264,6 +266,7 @@ run_owned_github_container() {
 validate_runner_mode() {
   runner_starts_allowed || return 1
   pool_config_validate "$RUNNER_MODE" "$RUNNER_POOLS" "$GH_SCOPE" "$CI_PROVIDER" || return 1
+  pool_context_validate || return 1
   if pool_mode_enabled; then
     [ "$IMAGE_AUTOUPDATE" != true ] || { pool_error "Runner pools require explicit image updates per pool; disable global image auto-update."; return 1; }
   fi
@@ -303,6 +306,7 @@ reload_secret_files
 # provider on every reload too: long-running daemons re-read the web-written cfg
 # repeatedly, not only through the one-time startup normalization above.
 reload_locked_snapshot() {
+  if command -v pool_execution_reset >/dev/null 2>&1; then pool_execution_reset; fi
   load_cfg
   [ "$CI_PROVIDER" = "gitlab" ] || CI_PROVIDER="github"
   reload_secret_files || { err "could not take a consistent credential/CA snapshot"; return 1; }
@@ -419,7 +423,15 @@ managed_runner_snapshot() {
 provider_token_ready() { provider_call token_ready; }
 provider_token_name()  { provider_call token_name; }
 builtin_image()        { provider_call builtin_image; }
-provider_validate_settings() { provider_call validate_settings; }
+provider_validate_settings() {
+  local records version pool rest
+  if [ -z "$RUNNER_POOL_CONTEXTS" ]; then provider_call validate_settings; return; fi
+  pool_context_validate || return 1
+  records="$(pool_records)" || return 1
+  while IFS='|' read -r version pool rest; do
+    ( pool_activate "$pool" && provider_call validate_settings ) || return 1
+  done <<< "$records"
+}
 provider_public_problem() { provider_call public_repo_problem; }
 provider_registry_credentials() { provider_call registry_credentials; }
 provider_strict_endpoint() { provider_call strict_endpoint; }
@@ -478,6 +490,9 @@ BASE_RUNNER_MEMORY="$RUNNER_MEMORY"
 BASE_IMAGE_SOURCE="$IMAGE_SOURCE"
 BASE_IMAGE="$IMAGE"
 BASE_GITLAB_RUNNER_TOKEN="$GITLAB_RUNNER_TOKEN"
+BASE_RUNNER_GROUP="$RUNNER_GROUP"
+BASE_CACHE_MOUNTS="$CACHE_MOUNTS"
+BASE_USER_SHARE_MOUNTS="$USER_SHARE_MOUNTS"
 
 pool_base_refresh() {
   BASE_NAME_PREFIX="ci-runner"
@@ -487,10 +502,21 @@ pool_base_refresh() {
   BASE_IMAGE_SOURCE="$IMAGE_SOURCE"
   BASE_IMAGE="$IMAGE"
   BASE_GITLAB_RUNNER_TOKEN="$GITLAB_RUNNER_TOKEN"
+  BASE_RUNNER_GROUP="$RUNNER_GROUP"
+  BASE_CACHE_MOUNTS="$CACHE_MOUNTS"
+  BASE_USER_SHARE_MOUNTS="$USER_SHARE_MOUNTS"
+}
+
+pool_execution_reset() {
+  RUNNER_GROUP="$BASE_RUNNER_GROUP"
+  CACHE_MOUNTS="$BASE_CACHE_MOUNTS"
+  USER_SHARE_MOUNTS="$BASE_USER_SHARE_MOUNTS"
 }
 
 pool_activate() {
-  local pool="${1:-default}" image cpus memory
+  local pool="${1:-default}" image cpus memory value
+  pool_execution_reset
+  pool_context_validate || return 1
   CRF_POOL_ID="$pool"
   NAME_PREFIX="$BASE_NAME_PREFIX"
   RUNNER_LABELS="$BASE_RUNNER_LABELS"
@@ -515,6 +541,9 @@ pool_activate() {
     IMAGE="$image"
   fi
   NAME_PREFIX="${BASE_NAME_PREFIX}-${pool}"
+  if value="$(pool_context_value "$pool" runner_group)"; then RUNNER_GROUP="$value"; fi
+  if value="$(pool_context_value "$pool" cache_mounts)"; then CACHE_MOUNTS="$value"; fi
+  if value="$(pool_context_value "$pool" user_share_mounts)"; then USER_SHARE_MOUNTS="$value"; fi
   if [ "$CI_PROVIDER" = gitlab ]; then
     local token_file="${CFGDIR}/gitlab-runner-token.${pool}"
     [ -f "$token_file" ] || { err "GitLab pool $pool has no pool-specific runner token"; return 1; }
@@ -522,6 +551,21 @@ pool_activate() {
     gitlab_token_ready \
       || { err "GitLab pool $pool has an invalid runner token"; return 1; }
   fi
+}
+
+# Provision and explicitly prune only cache children used by configured pools.
+# The selected pool's grants are never carried into the next pool's context.
+configured_cache_mounts() {
+  local records version pool rest mounts
+  pool_context_validate || return 1
+  if [ -z "$RUNNER_POOL_CONTEXTS" ]; then printf '%s\n' "$CACHE_MOUNTS"; return; fi
+  records="$(pool_records)" || return 1
+  mounts="$(
+    while IFS='|' read -r version pool rest; do
+      ( pool_activate "$pool" && printf '%s\n' "$CACHE_MOUNTS" ) || exit 1
+    done <<< "$records"
+  )" || return 1
+  printf '%s\n' "$mounts" | tr ' ' '\n' | sed '/^$/d' | sort -u
 }
 
 expected_runner_confgen() {
@@ -1810,9 +1854,11 @@ host_docker_pull() {
 }
 
 ensure_dirs() {
+  local mounts
+  mounts="$(configured_cache_mounts)" || return 1
   mkdir -p "$CACHE_ROOT/work"
   local m dir
-  for m in $CACHE_MOUNTS; do
+  for m in $mounts; do
     [ -n "$m" ] || continue
     dir="$(crf_safe_mount_subdir "${m%%:*}")" || { err "skipping unsafe cache mount '${m%%:*}' — it escapes CACHE_ROOT"; continue; }
     # Only ever chown -R a cache dir WE create here. A pre-existing dir is left
@@ -4363,11 +4409,12 @@ cmd_prune_cache() {
   # NEVER a bare "$root"/* glob: even if CACHE_ROOT is somehow mis-pointed at a
   # shared location, prune then cannot wipe unrelated data (appdata, VMs, other
   # shares) that happens to sit alongside our subdirs on the same pool.
-  local root d m dirs removed=0
+  local root d m dirs mounts removed=0
+  mounts="$(configured_cache_mounts)" || return 1
   crf_cache_mutation_idle || return 1
   root="$(crf_safe_cache_root)" || { err "refusing to prune-cache: CACHE_ROOT='$CACHE_ROOT' is unsafe (system dir, share/pool root, or unresolvable — point it at /mnt/<pool>/<subdir>)"; return 1; }
   dirs="docker docker-evicted work dind-logs gitlab-cache gitlab-sockets registry-mirror $CACHE_PKG_DIRS"
-  for m in $CACHE_MOUNTS; do dirs="$dirs ${m%%:*}"; done
+  for m in $mounts; do dirs="$dirs ${m%%:*}"; done
   for d in $dirs; do
     case "$d" in ''|.|..|*/*) continue ;; esac   # simple child names only — never a path/traversal
     [ -e "$root/$d" ] && { rm -rf "${root:?}/${d:?}" && removed=$((removed+1)); }
