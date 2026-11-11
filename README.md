@@ -599,6 +599,16 @@ The watchdog runs independently of autoscaling, so fixed-size fleets receive
 the same protection. GitLab keeps its manager-owned lifecycle path and exposes
 no candidate to this watchdog.
 
+Each GitHub runner start registers under its own name,
+`<host>-<slot>-r<6 hex digits>`, so a slot recreated quickly after an ephemeral
+job can never collide with the previous runner's still-open session. The
+container carries the name in the `net.unraid.ci-runner-farm.runner-name`
+label, so the farm matches the exact registration. In every fleet layout, the
+watchdog also deletes this host's farm registrations that GitHub reports
+offline and idle and that no current container owns. A registration is deleted
+only after two inventory refreshes at least five minutes apart, and at most 10
+per pass. Busy and online runners are never deleted.
+
 The watchdog also evicts cached layers that can no longer be exported. A layer
 whose diff no longer matches the per-file checksums Docker recorded at
 registration still runs, but `docker push` and `docker save` fail with

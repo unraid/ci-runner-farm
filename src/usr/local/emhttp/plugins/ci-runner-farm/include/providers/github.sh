@@ -229,8 +229,13 @@ GITHUB_LIVENESS_CACHE="${RUNDIR}/github-runners.cache"
 GITHUB_LIVENESS_TTL=300 # seconds between GitHub liveness refreshes
 GITHUB_OFFLINE_CONFIRMATIONS=2
 
+# Each runner object arrives as id, name, os, status, busy, then its labels
+# (which carry their own id/name). Emit "name|status|id|busy|base" at "busy",
+# so the last id and name seen are the runner's own. $1 is the API base path
+# that owns the registration.
 github_parse_runner_statuses() {
-  tr ',' '\n' | awk '
+  tr ',' '\n' | awk -v base="${1:-}" '
+    /"id"[[:space:]]*:/ { if (match($0, /[0-9]+/)) runner_id = substr($0, RSTART, RLENGTH) }
     /"name"[[:space:]]*:/ {
       s=$0
       sub(/^[^:]*:[[:space:]]*"/, "", s)
@@ -241,11 +246,50 @@ github_parse_runner_statuses() {
       s=$0
       sub(/^[^:]*:[[:space:]]*"/, "", s)
       sub(/".*/, "", s)
-      if (runner_name != "") {
-        print runner_name "|" s
-        runner_name=""
-      }
+      runner_status=s
+    }
+    /"busy"[[:space:]]*:/ {
+      b = ($0 ~ /true/) ? "true" : (($0 ~ /false/) ? "false" : "")
+      if (runner_name != "" && runner_status != "") print runner_name "|" runner_status "|" runner_id "|" b "|" base
+      runner_name=""; runner_status=""
     }'
+}
+
+# Each start registers under its own name, <host>-<slot>-r<6 hex>. Reusing one
+# fixed name per slot let a quickly recreated ephemeral runner collide with the
+# previous runner's still-open session; GitHub then deleted the registration
+# under the new container. The name is stamped on the container as a label so
+# liveness and deregistration match the exact registration.
+GITHUB_RUNNER_NAME_LABEL="net.unraid.ci-runner-farm.runner-name"
+
+github_runner_instance_name() {
+  local suffix
+  suffix="$(od -An -N3 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+  printf '%s' "$suffix" | grep -qE '^[0-9a-f]{6}$' \
+    || suffix="$(printf '%06x' $(( ((RANDOM << 15) | RANDOM) & 16777215 )))"
+  printf '%s-%s-r%s' "$(host)" "$1" "$suffix"
+}
+
+# Is $2 a registration name of slot $1 on this host (per-start or legacy fixed)?
+github_registration_of_slot() {
+  local base="$(host)-$1"
+  case "$2" in
+    "$base") return 0 ;;
+    "$base"-r[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) return 0 ;;
+  esac
+  return 1
+}
+
+# The registration name of an existing slot container: its label, or the
+# legacy fixed name for containers created before per-start names.
+github_runner_registration_name() {
+  local c="$1" n
+  n="$(docker inspect -f "{{ index .Config.Labels \"$GITHUB_RUNNER_NAME_LABEL\" }}" "$c" 2>/dev/null)" || n=""
+  if [ "$n" != "$(host)-$c" ] && github_registration_of_slot "$c" "$n"; then
+    printf '%s' "$n"
+  else
+    printf '%s-%s' "$(host)" "$c"
+  fi
 }
 
 github_runner_liveness_refresh() {
@@ -266,14 +310,14 @@ github_runner_liveness_refresh() {
     url="/orgs/${GH_OWNER}/actions/runners?per_page=100"
     body="$(gh_api GET "$url")" || { rm -f "$tmp"; return 1; }
     case "$body" in *'"runners"'*) valid=1 ;; esac
-    printf '%s' "$body" | github_parse_runner_statuses >> "$tmp"
+    printf '%s' "$body" | github_parse_runner_statuses "/orgs/${GH_OWNER}" >> "$tmp"
   else
     for repo in $GH_REPOS; do
       [ -n "$repo" ] || continue
       url="/repos/${repo}/actions/runners?per_page=100"
       body="$(gh_api GET "$url")" || { rm -f "$tmp"; return 1; }
       case "$body" in *'"runners"'*) valid=1 ;; esac
-      printf '%s' "$body" | github_parse_runner_statuses >> "$tmp"
+      printf '%s' "$body" | github_parse_runner_statuses "/repos/${repo}" >> "$tmp"
     done
   fi
   [ "$valid" = 1 ] || { rm -f "$tmp"; return 1; }
@@ -287,8 +331,63 @@ github_runner_liveness_refresh() {
 
 github_runner_liveness_status() {
   local c="$1" wanted
-  wanted="$(host)-${c}"
-  awk -F'|' -v want="$wanted" '$1 == want { print $2; exit }' "$GITHUB_LIVENESS_CACHE" 2>/dev/null
+  wanted="$(github_runner_registration_name "$c")"
+  awk -F'|' -v want="$wanted" 'NR > 1 && $1 == want { print $2; exit }' "$GITHUB_LIVENESS_CACHE" 2>/dev/null
+}
+
+# Delete GitHub registrations of this host's farm slots that are offline, not
+# busy, and owned by no current container: leftovers from runners that exited
+# without deregistering. A registration must be seen offline in two separate
+# inventory refreshes (at least GITHUB_LIVENESS_TTL apart) before it is deleted,
+# and each pass deletes at most GITHUB_STALE_REGISTRATION_BATCH. GitHub itself
+# refuses to delete an online or busy runner. Runs in every fleet layout.
+GITHUB_STALE_REGISTRATION_BATCH=10
+github_reap_stale_registrations() {
+  [ "$CI_PROVIDER" = github ] && [ -n "$ACCESS_TOKEN" ] || return 0
+  gh_rate_allows_background || return 0
+  local names c owned="" cache_at name status id busy base marker count marked_at deleted=0 failed=0 prefix
+  names="$(managed_names)" || return 1
+  for c in $names; do
+    [ -n "$c" ] || continue
+    owned="$owned$(github_runner_registration_name "$c")"$'\n'
+  done
+  GH_API_BACKGROUND=1 github_runner_liveness_refresh || return 1
+  cache_at="$(github_runner_liveness_cache_timestamp)"
+  case "$cache_at" in ''|*[!0-9]*) return 1 ;; esac
+  prefix="$(host)-ci-runner-"
+  local seen=""
+  while IFS='|' read -r name status id busy base; do
+    case "$name" in "$prefix"*) ;; *) continue ;; esac
+    case "$id" in ''|*[!0-9]*) continue ;; esac
+    [ "$status" = offline ] && [ "$busy" = false ] || continue
+    case "$base" in /orgs/*|/repos/*) ;; *) continue ;; esac
+    printf '%s' "$owned" | grep -qxF -- "$name" && continue
+    seen="$seen$id"$'\n'
+    marker="$RUNDIR/github-stale-registration.$id"
+    count=0; marked_at=""
+    [ -f "$marker" ] && read -r count marked_at < "$marker"
+    case "$count" in ''|*[!0-9]*) count=0 ;; esac
+    if [ "$marked_at" != "$cache_at" ]; then
+      count=$((count + 1))
+      printf '%s %s\n' "$count" "$cache_at" > "$marker"
+    fi
+    [ "$count" -ge "$GITHUB_OFFLINE_CONFIRMATIONS" ] || continue
+    [ "$deleted" -lt "$GITHUB_STALE_REGISTRATION_BATCH" ] || continue
+    if gh_api DELETE "${base}/actions/runners/${id}" >/dev/null 2>&1; then
+      log "github: deleted stale offline registration $name (id $id)"
+      rm -f "$marker"
+      deleted=$((deleted + 1))
+    else
+      log "github: could not delete stale offline registration $name (id $id); will retry"
+      failed=1
+    fi
+  done < <(tail -n +2 "$GITHUB_LIVENESS_CACHE" 2>/dev/null)
+  # Forget registrations that came back online, were deleted, or became owned.
+  for marker in "$RUNDIR"/github-stale-registration.*; do
+    [ -e "$marker" ] || break
+    printf '%s' "$seen" | grep -qxF -- "${marker##*.}" || rm -f "$marker"
+  done
+  return "$failed"
 }
 
 github_runner_liveness_cache_timestamp() {
@@ -488,10 +587,12 @@ github_replacement_preflight() {
     || { err "could not verify GitHub runner-registration permission for ${target#*:}"; return 1; }
 }
 
+# Delete the slot's registration $2 (default: the legacy fixed name), plus any
+# other offline, idle registrations of the same slot left by earlier starts.
 github_deregister_runner_api() {
-  local c="$1" rname idx repo base id
+  local c="$1" rname="${2:-}" idx repo base body own listed id name
   [ -n "$ACCESS_TOKEN" ] && [ -n "$c" ] || return 0
-  rname="$(host)-${c}"
+  [ -n "$rname" ] || rname="$(host)-${c}"
   if [ "$GH_SCOPE" = "org" ]; then
     base="/orgs/${GH_OWNER}"
   else
@@ -499,17 +600,28 @@ github_deregister_runner_api() {
     [ -n "$repo" ] || return 0
     base="/repos/${repo}"
   fi
-  id="$(gh_api GET "${base}/actions/runners?per_page=100" | awk -v want="$rname" '
+  body="$(gh_api GET "${base}/actions/runners?per_page=100")" || return 0
+  # The slot's own registration is matched by exact name alone and always
+  # attempted (GitHub refuses an online or busy runner).
+  own="$(printf '%s\n' "$body" | tr ',' '\n' | awk -v want="$rname" '
       /"id"[[:space:]]*:/   { if (match($0, /[0-9]+/)) cur = substr($0, RSTART, RLENGTH) }
       /"name"[[:space:]]*:/ { s=$0; sub(/^[^:]*:[[:space:]]*"/, "", s); sub(/".*/, "", s); nm=s }
       /"os"[[:space:]]*:/   { if (nm == want) { print cur; exit } }
     ')"
-  [ -n "$id" ] || return 0
-  if gh_api DELETE "${base}/actions/runners/${id}" >/dev/null 2>&1; then
-    log "deregistered $rname from GitHub (id $id)"
-  else
-    log "warning: could not deregister $rname (id $id) from GitHub — a stale offline runner may linger"
-  fi
+  # Earlier starts of the same slot are deleted only when offline and idle.
+  listed="$(printf '%s' "$body" | github_parse_runner_statuses "$base" | while IFS='|' read -r name status id busy _; do
+      [ "$name" != "$rname" ] && [ "$status" = offline ] && [ "$busy" = false ] || continue
+      if github_registration_of_slot "$c" "$name"; then printf '%s|%s\n' "$id" "$name"; fi
+    done)"
+  [ -z "$own" ] || listed="$own|$rname"$'\n'"$listed"
+  while IFS='|' read -r id name; do
+    case "$id" in ''|*[!0-9]*) continue ;; esac
+    if gh_api DELETE "${base}/actions/runners/${id}" >/dev/null 2>&1; then
+      log "deregistered $name from GitHub (id $id)"
+    else
+      log "warning: could not deregister $name (id $id) from GitHub — a stale offline runner may linger"
+    fi
+  done <<< "$listed"
 }
 
 # With GH_API_BACKGROUND=1, stop launching batches once the reserve is reached
@@ -603,6 +715,7 @@ github_failed_local_jobs() {
       s = $0; sub(/^[^:]*:[[:space:]]*"/, "", s); sub(/".*/, "", s)
       if (jid != "" && conc == "failure" && index(s, host) == 1) {
         slot = substr(s, length(host) + 1)
+        sub(/-r[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]$/, "", slot)
         if (slot ~ ("^" prefix "[0-9]+$")) print jid "|" slot
       }
       jid = ""; conc = ""
@@ -819,7 +932,8 @@ github_build_args() {
         || { err "runner label kvm requires group-writable /dev/kvm"; return 1; }
       ;;
   esac
-  local registration_labels="$RUNNER_LABELS"
+  local registration_labels="$RUNNER_LABELS" runner_name
+  runner_name="$(github_runner_instance_name "$name")"
   ARGS_TMPDIR=""
   ARGS=(
     -d --restart=no
@@ -831,9 +945,10 @@ github_build_args() {
     --label "net.unraid.ci-runner-farm.index=${idx}"
     --label "net.unraid.ci-runner-farm.pool=${CRF_POOL_ID:-default}"
     --label "net.unraid.ci-runner-farm.confgen=$(crf_confgen)"
+    --label "${GITHUB_RUNNER_NAME_LABEL}=${runner_name}"
     --add-host "host.docker.internal:host-gateway"
     --add-host "runner-farm.host:${host_service_ip}"
-    -e RUNNER_NAME="$(host)-${name}"
+    -e RUNNER_NAME="$runner_name"
     -e LABELS="$registration_labels"
     -e DISABLE_AUTO_UPDATE="true"
     -e DISABLE_AUTOMATIC_DEREGISTRATION="true"
@@ -1008,8 +1123,10 @@ github_remove_runner() {
   # listener is offline, then delete the now-offline registration host-side.
   # A failed stop/remove can leave the listener accepting or executing work.
   # Never deregister it remotely or delete its Docker root underneath it.
+  local rname
+  rname="$(github_runner_registration_name "$c")"
   provider_stop_remove_container "$c" || return 1
-  github_deregister_runner_api "$c" || failed=1
+  github_deregister_runner_api "$c" "$rname" || failed=1
   if [ "$purge" = true ]; then
     root="$(crf_safe_cache_root)" || { err "refusing GitHub runner cleanup under unsafe CACHE_ROOT '$CACHE_ROOT'"; return 1; }
     rm -rf "$root/docker/$c" 2>/dev/null || failed=1
