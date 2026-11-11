@@ -1329,6 +1329,10 @@ lifecycle_tick() {
   # Non-fatal: a failed eviction is logged and retried on a later tick.
   heal_corrupt_layers \
     || err "lifecycle: corrupt cached layers could not be evicted from one or more idle runners this tick"
+  # Pool layouts have no reap pass, so stale GitHub registrations are cleaned
+  # here for every layout. Non-fatal and rate-limited by the inventory cache.
+  github_reap_stale_registrations \
+    || err "lifecycle: stale GitHub runner registrations could not be cleaned this tick"
   return "$failed"
 }
 
