@@ -466,11 +466,19 @@ store environment after an upgrade.
 
 A `blob-cache:<container-path>` entry similarly sets `CI_BLOB_CACHE_DIR` to its
 bind destination for GitHub runners. Jobs use it to share content-addressed
-downloads with later jobs on the same host. Every job on the host can write it,
+downloads with later jobs on the same host. Every job mounting that cache can write it,
 so a client must verify each object's size and digest on its own copy before
 use, and must keep the directory within its own byte budget. The destination must be
 canonical and outside `/_work`. Adding the entry, or upgrading a farm that
 already has it, drains slots onto the variable through the normal lifecycle.
+
+Use `blob-cache-<cohort>:<container-path>` for a separate repository audience.
+The cohort suffix must be a valid routing label. For example, one pool can use
+`blob-cache:/home/runner/.cache/unraid-blobs`, while a restricted pool uses
+`blob-cache-private:/home/runner/.cache/unraid-blobs`. They receive the same
+client variable and container path, backed by different host directories.
+Exactly one blob-cache source may be selected per pool. The client owns its
+storage budget, free-space floor and eviction policy; Farm adds no cache algorithm.
 
 An `ms-playwright:<container-path>` entry sets `PLAYWRIGHT_SKIP_BROWSER_GC=1`
 for GitHub runners and GitLab jobs. Each `playwright install` normally deletes

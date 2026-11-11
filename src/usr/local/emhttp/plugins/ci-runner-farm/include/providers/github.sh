@@ -109,7 +109,7 @@ github_confgen() {
   # farms without a blob-cache mount keep their fingerprint.
   for cache_spec in $CACHE_MOUNTS; do
     case "$cache_spec" in
-      blob-cache:*) runtime_salt="${runtime_salt}-blob-cache-v1"; break ;;
+      blob-cache:*|blob-cache-*) runtime_salt="${runtime_salt}-blob-cache-v1"; break ;;
     esac
   done
   # Disabling Playwright's browser GC on the shared cache drains existing slots;
@@ -908,7 +908,7 @@ github_build_args() {
   local name="${2:-${NAME_PREFIX}-${idx}}" role="${CRF_CONTAINER_ROLE:-runner}" host_service_ip image kvm_gid=''
   crf_user_share_mount_config_problem || return 1
   github_validate_runner_dns || return 1
-  local pnpm_store_dest='' blob_cache_dest='' cache_spec cache_dest
+  local pnpm_store_dest='' blob_cache_dest='' cache_spec cache_source cache_dest
   for cache_spec in $CACHE_MOUNTS; do
     case "$cache_spec" in
       pnpm-store|pnpm-store:*)
@@ -922,7 +922,11 @@ github_build_args() {
         esac
         pnpm_store_dest="$cache_dest"
         ;;
-      blob-cache|blob-cache:*)
+      blob-cache|blob-cache:*|blob-cache-*)
+        cache_source="${cache_spec%%:*}"
+        if [ "$cache_source" != blob-cache ] && ! pool_label_valid "${cache_source#blob-cache-}"; then
+          err "blob-cache cohort name must be a valid label"; return 1
+        fi
         cache_dest="${cache_spec#*:}"
         [ -z "$blob_cache_dest" ] \
           || { err "blob-cache must have exactly one cache destination"; return 1; }
@@ -982,7 +986,7 @@ github_build_args() {
       # workspace RAM when WORK_TMPFS_SIZE is set. Configure the admitted bind
       # before any job or setup-node cache restore; support pnpm 11 and 10.
       ARGS+=( -e "PNPM_CONFIG_STORE_DIR=$pnpm_store_dest" -e "npm_config_store_dir=$pnpm_store_dest" )
-    elif [ "${m%%:*}" = blob-cache ]; then
+    elif [[ "${m%%:*}" = blob-cache || "${m%%:*}" = blob-cache-* ]]; then
       # Jobs find the shared content-addressed cache here. Readers verify every
       # object on their own copy, so the directory's content is untrusted.
       ARGS+=( -e "CI_BLOB_CACHE_DIR=$blob_cache_dest" )
