@@ -345,7 +345,7 @@ GITHUB_STALE_REGISTRATION_BATCH=10
 github_reap_stale_registrations() {
   [ "$CI_PROVIDER" = github ] && [ -n "$ACCESS_TOKEN" ] || return 0
   gh_rate_allows_background || return 0
-  local names c owned="" cache_at name status id busy base marker count marked_at attempts=0 failed=0 prefix
+  local names c owned="" cache_at name status id busy base marker count marked_at last now eligible="" failed=0 prefix
   names="$(managed_names)" || return 1
   for c in $names; do
     [ -n "$c" ] || continue
@@ -363,29 +363,37 @@ github_reap_stale_registrations() {
     case "$base" in /orgs/*|/repos/*) ;; *) continue ;; esac
     printf '%s' "$owned" | grep -qxF -- "$name" && continue
     seen="$seen$id"$'\n'
+    # Marker: offline readings, inventory generation of the last reading, and
+    # the time of the last delete attempt (0 = never).
     marker="$RUNDIR/github-stale-registration.$id"
-    count=0; marked_at=""
-    [ -f "$marker" ] && read -r count marked_at < "$marker"
+    count=0; marked_at=""; last=0
+    [ -f "$marker" ] && read -r count marked_at last < "$marker"
     case "$count" in ''|*[!0-9]*) count=0 ;; esac
+    case "$last" in ''|*[!0-9]*) last=0 ;; esac
     if [ "$marked_at" != "$cache_at" ]; then
       count=$((count + 1))
-      printf '%s %s\n' "$count" "$cache_at" > "$marker"
+      printf '%s %s %s\n' "$count" "$cache_at" "$last" > "$marker"
     fi
     [ "$count" -ge "$GITHUB_OFFLINE_CONFIRMATIONS" ] || continue
-    # The bound counts attempts, so failing requests cannot hold the fleet
-    # lock for the whole inventory. A failed registration starts its
-    # confirmation again, which backs it off and gives the others a turn.
-    [ "$attempts" -lt "$GITHUB_STALE_REGISTRATION_BATCH" ] || continue
-    attempts=$((attempts + 1))
+    eligible="$eligible$last|$id|$name|$base"$'\n'
+  done < <(tail -n +2 "$GITHUB_LIVENESS_CACHE" 2>/dev/null)
+  # Attempt the least recently attempted confirmed registrations first, at
+  # most one batch per pass: failing requests cannot hold the fleet lock for
+  # the whole inventory, and persistent failures cannot starve the rest.
+  now="$(date +%s)"
+  while IFS='|' read -r last id name base; do
+    [ -n "$id" ] || continue
+    marker="$RUNDIR/github-stale-registration.$id"
     if gh_api DELETE "${base}/actions/runners/${id}" >/dev/null 2>&1; then
       log "github: deleted stale offline registration $name (id $id)"
       rm -f "$marker"
     else
-      log "github: could not delete stale offline registration $name (id $id); will retry after two more readings"
-      printf '0 %s\n' "$cache_at" > "$marker"
+      log "github: could not delete stale offline registration $name (id $id); will retry"
+      read -r count marked_at _ 2>/dev/null < "$marker" || { count="$GITHUB_OFFLINE_CONFIRMATIONS"; marked_at="$cache_at"; }
+      printf '%s %s %s\n' "$count" "$marked_at" "$now" > "$marker"
       failed=1
     fi
-  done < <(tail -n +2 "$GITHUB_LIVENESS_CACHE" 2>/dev/null)
+  done < <(printf '%s' "$eligible" | sort -t'|' -k1,1n -s | head -n "$GITHUB_STALE_REGISTRATION_BATCH")
   # Forget registrations that came back online, were deleted, or became owned.
   for marker in "$RUNDIR"/github-stale-registration.*; do
     [ -e "$marker" ] || break
