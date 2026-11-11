@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.4.5](https://github.com/unraid/ci-runner-farm/compare/v3.4.4...v3.4.5) (2026-11-11)
+
+
+### Bug Fixes
+
+* **github:** register each runner start under its own name ([#228](https://github.com/unraid/ci-runner-farm/issues/228)) ([08427af](https://github.com/unraid/ci-runner-farm/commit/08427af6064abbb9492390c9fcaa53b50f4e8a52))
+
 ## [3.4.4](https://github.com/unraid/ci-runner-farm/compare/v3.4.3...v3.4.4) (2026-11-10)
 
 
