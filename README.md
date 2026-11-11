@@ -606,8 +606,9 @@ container carries the name in the `net.unraid.ci-runner-farm.runner-name`
 label, so the farm matches the exact registration. In every fleet layout, the
 watchdog also deletes this host's farm registrations that GitHub reports
 offline and idle and that no current container owns. A registration is deleted
-only after two inventory refreshes at least five minutes apart, and at most 10
-per pass. Busy and online runners are never deleted.
+only after two inventory refreshes at least five minutes apart, with at most 10
+delete attempts per pass; a failed delete waits for two more readings. Busy and
+online runners are never deleted.
 
 The watchdog also evicts cached layers that can no longer be exported. A layer
 whose diff no longer matches the per-file checksums Docker recorded at

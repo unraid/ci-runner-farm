@@ -345,7 +345,7 @@ GITHUB_STALE_REGISTRATION_BATCH=10
 github_reap_stale_registrations() {
   [ "$CI_PROVIDER" = github ] && [ -n "$ACCESS_TOKEN" ] || return 0
   gh_rate_allows_background || return 0
-  local names c owned="" cache_at name status id busy base marker count marked_at deleted=0 failed=0 prefix
+  local names c owned="" cache_at name status id busy base marker count marked_at attempts=0 failed=0 prefix
   names="$(managed_names)" || return 1
   for c in $names; do
     [ -n "$c" ] || continue
@@ -372,13 +372,17 @@ github_reap_stale_registrations() {
       printf '%s %s\n' "$count" "$cache_at" > "$marker"
     fi
     [ "$count" -ge "$GITHUB_OFFLINE_CONFIRMATIONS" ] || continue
-    [ "$deleted" -lt "$GITHUB_STALE_REGISTRATION_BATCH" ] || continue
+    # The bound counts attempts, so failing requests cannot hold the fleet
+    # lock for the whole inventory. A failed registration starts its
+    # confirmation again, which backs it off and gives the others a turn.
+    [ "$attempts" -lt "$GITHUB_STALE_REGISTRATION_BATCH" ] || continue
+    attempts=$((attempts + 1))
     if gh_api DELETE "${base}/actions/runners/${id}" >/dev/null 2>&1; then
       log "github: deleted stale offline registration $name (id $id)"
       rm -f "$marker"
-      deleted=$((deleted + 1))
     else
-      log "github: could not delete stale offline registration $name (id $id); will retry"
+      log "github: could not delete stale offline registration $name (id $id); will retry after two more readings"
+      printf '0 %s\n' "$cache_at" > "$marker"
       failed=1
     fi
   done < <(tail -n +2 "$GITHUB_LIVENESS_CACHE" 2>/dev/null)

@@ -195,6 +195,16 @@ many="${many%,}]}"
 current_inventory="$many"; : > "$api_log"; rm -f "$GITHUB_LIVENESS_CACHE" "$CRF_RUNDIR"/github-stale-registration.*
 github_reap_stale_registrations >/dev/null; refresh_generation; github_reap_stale_registrations >/dev/null
 [ "$(grep -c '^DELETE' "$api_log")" -eq "$GITHUB_STALE_REGISTRATION_BATCH" ] || fail "batch bound not applied: $(grep -c '^DELETE' "$api_log")"
+# Failing deletes count toward the bound, back off, and let the rest get a turn.
+: > "$api_log"; rm -f "$GITHUB_LIVENESS_CACHE" "$CRF_RUNDIR"/github-stale-registration.*
+delete_fails=true
+github_reap_stale_registrations >/dev/null; refresh_generation; github_reap_stale_registrations >/dev/null 2>&1 || true
+[ "$(grep -c '^DELETE' "$api_log")" -eq "$GITHUB_STALE_REGISTRATION_BATCH" ] || fail "failed deletes not bounded: $(grep -c '^DELETE' "$api_log")"
+first_failed="$(sed -n 's|^DELETE /orgs/example/actions/runners/||p' "$api_log" | sort -n | tr '\n' ' ')"
+: > "$api_log"; refresh_generation; github_reap_stale_registrations >/dev/null 2>&1 || true
+retried="$(sed -n 's|^DELETE /orgs/example/actions/runners/||p' "$api_log" | sort -n | tr '\n' ' ')"
+[ "$retried" = "111 112 " ] || fail "failed registrations did not back off for the rest (first: $first_failed, next: $retried)"
+delete_fails=false
 
 # A registration that comes back online is forgotten, not deleted later.
 current_inventory="$stale_inventory"; : > "$api_log"; rm -f "$GITHUB_LIVENESS_CACHE" "$CRF_RUNDIR"/github-stale-registration.*
