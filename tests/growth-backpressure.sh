@@ -118,6 +118,21 @@ set_host 10 50
 expect_admit build 10 ci-runner-build-10          # 50 >= 24
 expect_admit build 11 ci-runner-build-11          # 34 >= 24
 expect_withhold build 12 ci-runner-build-12       # 18 < 24
+# Switching execution audiences must not reset the one host memory budget.
+(
+  RUNNER_POOLS='v3|general|general-build|linux,x64|1|0|2|1|4|16g|builtin;v3|private|private-build|linux,x64|1|0|2|1|4|16g|builtin'
+  RUNNER_POOL_CONTEXTS='v1|private|runner_group=private-builds|cache_mounts=|user_share_mounts='
+  pool_base_refresh
+  validate_runner_mode || fail 'scoped audience pools were rejected'
+  set_host 10 40
+  pool_activate general
+  expect_admit general 1 ci-runner-general-1
+  pool_activate private
+  expect_admit private 1 ci-runner-private-1
+  pool_activate general
+  expect_withhold general 2 ci-runner-general-2
+  [ "$(state)" = withheld:memory ] || fail 'pool switch reset the shared memory debit'
+)
 GROWTH_STARTS_PER_TICK=2
 # At most two gated starts per tick; pacing is not a logged state change.
 set_host 10 200

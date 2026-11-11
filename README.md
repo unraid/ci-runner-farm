@@ -103,6 +103,33 @@ registered and take the next queued job. Global image auto-update is rejected
 in pool mode. Saving pool changes does not interrupt jobs; use Fleet
 **Restart** when ready to apply exact membership, images, and limits.
 
+### Groups and mounts per pool
+
+GitHub organization pools may also set the advanced `RUNNER_POOL_CONTEXTS`
+configuration field, without changing the V3 capacity records:
+
+```text
+v1|private-build|runner_group=private-builds|cache_mounts=private-cache:/home/runner/.cache/private|user_share_mounts=/mnt/user/ci/shared:/mnt/shared:rw
+```
+
+Separate records with semicolons. Each record names one existing pool and may
+set `runner_group`, `cache_mounts`, and `user_share_mounts` once, in any order.
+Omitted fields inherit the farm setting. An explicit empty field, such as
+`user_share_mounts=`, clears it. The cache and share lists use the global field
+formats. Pools without a record keep their existing behavior. GitLab and single
+runner layouts do not accept these optional GitHub pool settings.
+
+Use separate groups and mounts for separate repository audiences. Every job in
+a pool can read that pool's retained files; metadata authentication does not
+protect a directly mounted file. This is routing and mount configuration, not
+isolation from the host for privileged jobs. The same image can serve both
+pools. Cache directories are provisioned from all configured pools, and the
+existing idle-only cache prune covers their known cache children. Changing a
+pool's effective group or mounts changes its configuration fingerprint and uses
+the normal drain and recreate lifecycle. Host growth checks remain shared;
+divide the reviewed capacity between pools rather than adding minimums that
+exceed the host budget.
+
 ### Job-weight recommendations
 
 The Fleet tab includes a read-only recommendation panel. It classifies active

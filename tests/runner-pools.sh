@@ -56,5 +56,38 @@ reject pools 'v3|qa-vm|qa-vm-client|linux|1|0|1|0|0|1g|builtin' org
 reject pools 'v3|qa-vm|qa-vm-client|linux|1|0|1|0|1|zero|builtin' org
 reject pools $'v3|qa-vm|qa-vm-client|linux|1|0|1|0|1|1g|builtin\n' org
 
+RUNNER_MODE=pools RUNNER_POOLS="$valid" GH_SCOPE=org CI_PROVIDER=github
+RUNNER_POOL_CONTEXTS='v1|build|runner_group=private-builds|cache_mounts=private-cache:/home/runner/.cache/private|user_share_mounts=/mnt/user/ci/data:/mnt/data:ro;v1|qa-vm|runner_group=Default|cache_mounts=|user_share_mounts='
+pool_context_validate && ok || bad 'valid execution contexts rejected'
+[ "$(pool_context_value build runner_group)" = private-builds ] && ok || bad 'pool group differs'
+[ "$(pool_context_value qa-vm cache_mounts)" = '' ] && ok || bad 'explicit empty mount was not selected'
+if pool_context_value build unknown >/dev/null; then bad 'missing field did not inherit'; else ok; fi
+RUNNER_POOL_CONTEXTS='v1|build|runner_group=Private Builds'
+pool_context_validate && ok || bad 'group with spaces rejected'
+RUNNER_POOL_CONTEXTS='v1|build|cache_mounts='
+pool_context_validate && ok || bad 'mount-only explicit clear rejected'
+for invalid in \
+  'v2|build|runner_group=Default' 'v1|missing|runner_group=Default' \
+  'v1|build|runner_group=Default;v1|build|cache_mounts=' \
+  'v1|build|runner_group=Default|runner_group=private-builds' \
+  'v1|build|image=unsafe' 'v1|build' 'v1|build|' 'v1|build|runner_group=Default|' \
+  'v1|build|cache_mounts=../escape:/home/runner/.cache' \
+  'v1|build|cache_mounts=cache:/home/runner/../escape' \
+  'v1|build|cache_mounts=cache:/home/runner/a  other:/home/runner/b' \
+  'v1|build|user_share_mounts=/mnt/pool/cache:/mnt/data:rw' \
+  'v1|build|user_share_mounts=/mnt/user/ci/data:/mnt/data:invalid' \
+  'v1|build|runner_group=$(touch /tmp/should-not-exist)' \
+  'v1|build|runner_group=Default|cache_mounts=|user_share_mounts=|extra='; do
+  RUNNER_POOL_CONTEXTS="$invalid"
+  if pool_context_validate; then bad "invalid execution context accepted: $invalid"; else ok; fi
+done
+RUNNER_POOL_CONTEXTS='v1|build|runner_group=Default'
+RUNNER_MODE=single
+if pool_context_validate; then bad 'single mode accepted pool context'; else ok; fi
+RUNNER_MODE=pools CI_PROVIDER=gitlab
+if pool_context_validate; then bad 'GitLab accepted GitHub execution context'; else ok; fi
+RUNNER_POOL_CONTEXTS=''
+pool_context_validate && ok || bad 'empty contexts changed legacy GitLab behavior'
+
 printf 'runner-pools: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

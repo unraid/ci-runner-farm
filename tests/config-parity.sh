@@ -26,7 +26,7 @@ bad() { printf 'PARITY FAIL: %s\n' "$*" >&2; fail=1; }
 
 # Keys that legitimately live in the engine/cfg but are NOT user-editable form
 # fields (fixed infrastructure names), so they are exempt from the UI-coverage check.
-ENGINE_ONLY_IN_CFG=" RUNNER_NETWORK RUNNER_DNS MIRROR_PORT ELASTIC_POOLS QUEUED_POOLS DOCKER_CACHE_MIN_FREE_PERCENT DOCKER_CACHE_BUILDERS DOCKER_JOB_PRUNE "
+ENGINE_ONLY_IN_CFG=" RUNNER_NETWORK RUNNER_DNS RUNNER_POOL_CONTEXTS MIRROR_PORT ELASTIC_POOLS QUEUED_POOLS DOCKER_CACHE_MIN_FREE_PERCENT DOCKER_CACHE_BUILDERS DOCKER_JOB_PRUNE "
 
 # Normalize the RHS of a KEY=VALUE line: take the double-quoted value if quoted,
 # else the token up to the first whitespace (dropping any trailing inline comment).
