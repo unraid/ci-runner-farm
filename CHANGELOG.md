@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.6.0](https://github.com/unraid/ci-runner-farm/compare/v3.5.1...v3.6.0) (2026-11-12)
+
+
+### Features
+
+* **lifecycle:** replace a finished runner as soon as it exits ([#237](https://github.com/unraid/ci-runner-farm/issues/237)) ([93fe3ae](https://github.com/unraid/ci-runner-farm/commit/93fe3aed588fbf3077c9fc56f41956536e9e011b))
+
 ## [3.5.1](https://github.com/unraid/ci-runner-farm/compare/v3.5.0...v3.5.1) (2026-11-12)
 
 
