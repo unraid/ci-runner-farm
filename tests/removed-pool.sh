@@ -35,8 +35,8 @@ GEN_BUILD="$(gen_of build)"; GEN_SMALL="$(gen_of small)"
 [ "$GEN_BUILD" != "$GEN_SMALL" ] || fail "pools share one fingerprint"
 
 # The stub fleet. EXISTING lists slot names, BUSY the ones running a job,
-# and STOPPED the exited ones.
-EXISTING=""; BUSY=""; STOPPED=""
+# STOPPED the exited ones, and STALE the ones on a previous config.
+EXISTING=""; BUSY=""; STOPPED=""; STALE=""
 in_list() { case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 pool_of() { local n="${1#ci-runner-}"; printf '%s\n' "${n%-*}"; }
 # shellcheck disable=SC2086  # EXISTING is a space-separated name list
@@ -46,6 +46,7 @@ managed_runner_snapshot() {
   local gen=unknown
   in_list "$1" "$EXISTING" || return 1
   case "$(pool_of "$1")" in build) gen="$GEN_BUILD" ;; small) gen="$GEN_SMALL" ;; old) gen=old-gen ;; esac
+  in_list "$1" "$STALE" && gen=stale-gen
   printf 'id-%s|github|runner|%s|%s\n' "$1" "${1##*-}" "$gen"
 }
 runner_state() { if in_list "$1" "$BUSY"; then printf 'busy\n'; else printf 'idle\n'; fi; }
@@ -72,12 +73,14 @@ docker() {
   esac
 }
 drop() { local n out=""; for n in $EXISTING; do [ "$n" = "$1" ] || out+="$n "; done; EXISTING="${out% }"; }
+# Records the slot prefix the provider cleanup would see.
 remove_runner() {
-  printf 'remove %s\n' "$1" >> "$MUTATIONS"
-  [ "${3:-}" = "id-$1" ] && [ "${4:-}" = github ] || fail "removal of $1 lost its immutable owner"
+  printf 'remove %s %s\n' "$1" "$NAME_PREFIX" >> "$MUTATIONS"
+  [ "${3:-}" = "id-$1" ] && [ "${4:-}" = "${EXPECT_PROVIDER:-github}" ] || fail "removal of $1 lost its immutable owner"
   drop "$1"
 }
-cmd_recycle() { printf 'recycle %s\n' "$1" >> "$MUTATIONS"; }
+# Like the real recycle, this activates the runner's pool in the caller's shell.
+cmd_recycle() { printf 'recycle %s\n' "$1" >> "$MUTATIONS"; pool_activate "$(runner_pool "$1")"; }
 start_one() {
   in_list "$NAME_PREFIX-$1" "$EXISTING" && return 0
   printf '%s-%s\n' "$NAME_PREFIX" "$1" >> "$STARTS"
@@ -163,6 +166,73 @@ start_stopped_managed >>"$LOG" 2>&1 || fail "restoring stopped runners failed on
 [ "$(removed)" = 'ci-runner-old-5' ] || fail "a stopped retired runner was not removed: $(removed)"
 grep -q '^recreate ' "$MUTATIONS" && fail "a stopped retired runner was recreated"
 STOPPED=''
+
+# One reconcile pass recycles one stale runner and still retires every
+# retired runner, each under its own slot prefix. A recycle earlier in the pass
+# activates another pool, and the provider cleanup accepts only names under the
+# active prefix.
+EXISTING="$EXISTING ci-runner-small-2 ci-runner-small-3 ci-runner-old-7 ci-runner-old-8"
+STALE='ci-runner-small-2 ci-runner-small-3'
+: > "$MUTATIONS"
+reconcile_stale_runners >>"$LOG" 2>&1 || fail "reconcile failed beside a recycle"
+[ "$(grep -c '^recycle ' "$MUTATIONS")" = 1 ] && grep -qx 'recycle ci-runner-small-2' "$MUTATIONS" \
+  || fail "one pass did not recycle exactly one stale runner: $(cat "$MUTATIONS")"
+[ "$(removed)" = 'ci-runner-old-7 ci-runner-old-8' ] || fail "a recycle stopped the retirement: $(removed)"
+[ "$(grep '^remove ' "$MUTATIONS" | cut -d' ' -f3 | sort -u)" = ci-runner-old ] \
+  || fail "a retired runner was removed under another pool's prefix: $(grep '^remove ' "$MUTATIONS")"
+STALE=''; pool_base_refresh; pool_activate default
+
+# A stopped GitLab manager whose executor still runs a job is busy. It is kept
+# until the job ends, then removed.
+EXPECT_PROVIDER=gitlab
+EXISTING="$EXISTING ci-runner-old-9"; STOPPED='ci-runner-old-9'; BUSY="$BUSY ci-runner-old-9"
+: > "$MUTATIONS"; : > "$LOG"
+retire_runner ci-runner-old-9 id-ci-runner-old-9 gitlab >>"$LOG" 2>&1 || fail "retiring a busy stopped manager failed"
+retire_runner ci-runner-old-9 id-ci-runner-old-9 gitlab >>"$LOG" 2>&1 || fail "retiring a busy stopped manager failed"
+[ -z "$(removed)" ] || fail "a stopped manager with a running job was removed"
+[ "$(grep -c 'ci-runner-old-9' "$LOG")" = 1 ] || fail "the busy stopped manager was not reported once"
+BUSY="${BUSY/ci-runner-old-9/}"
+retire_runner ci-runner-old-9 id-ci-runner-old-9 gitlab >>"$LOG" 2>&1 || fail "retiring a finished stopped manager failed"
+[ "$(removed)" = 'ci-runner-old-9' ] || fail "a finished stopped manager was not removed"
+EXPECT_PROVIDER=github; STOPPED=''
+: > "$MUTATIONS"
+
+# A removal that keeps failing is reported once, not on every check.
+eval "saved_$(declare -f remove_runner)"
+remove_runner() { err "provider refused removal of $1"; return 1; }
+EXISTING="$EXISTING ci-runner-old-10"; : > "$LOG"
+for _ in 1 2 3; do
+  if retire_runner ci-runner-old-10 id-ci-runner-old-10 github >>"$LOG" 2>&1; then fail "a failed removal reported success"; fi
+done
+[ "$(grep -c 'retire: removing ci-runner-old-10' "$LOG")" = 1 ] && [ "$(grep -c 'retire: could not remove ci-runner-old-10' "$LOG")" = 1 ] \
+  || fail "a failing removal was reported on every check: $(cat "$LOG")"
+eval "$(declare -f saved_remove_runner | sed '1s/saved_//')"; unset -f saved_remove_runner
+drop ci-runner-old-10
+
+# Reconcile returns 2 when it skipped a runner whose config cannot be worked
+# out. The Apply drain then stops at once instead of waiting for its timeout.
+BROKEN_POOL=small
+rc=0; reconcile_stale_runners >>"$LOG" 2>&1 || rc=$?
+[ "$rc" = 2 ] || fail "reconcile did not report a skipped runner (rc $rc)"
+load_cfg() { :; }; reload_secret_files() { :; }
+sleep() { fail "the Apply drain waited instead of stopping on a skipped runner"; }
+( cmd_reconcile_drain ) > "$tmp/drain.log" 2>&1 || fail "the Apply drain failed: $(cat "$tmp/drain.log")"
+grep -q 'could not be worked out' "$tmp/drain.log" || fail "the Apply drain did not explain its stop: $(cat "$tmp/drain.log")"
+BROKEN_POOL=none
+rc=0; reconcile_stale_runners >>"$LOG" 2>&1 || rc=$?
+[ "$rc" = 0 ] || fail "reconcile reported a skip with nothing skipped (rc $rc)"
+unset -f sleep
+
+# The image roll skips a retired runner and goes on with the other slots.
+drain_and_recreate() { printf 'drain %s\n' "$1" >> "$MUTATIONS"; }
+effective_image() { printf 'image\n'; }
+EXISTING="$EXISTING ci-runner-old-11"
+: > "$MUTATIONS"
+imageupdate_rollover false >>"$LOG" 2>&1 || fail "the image roll failed beside a retired runner"
+grep -q '^drain ci-runner-old' "$MUTATIONS" && fail "the image roll drained a retired runner"
+grep -qx 'drain ci-runner-small-1' "$MUTATIONS" || fail "the image roll stopped at a retired runner: $(cat "$MUTATIONS")"
+drop ci-runner-old-11
+: > "$MUTATIONS"
 
 # An invalid saved layout is a configuration error, never a retirement.
 EXISTING="$EXISTING ci-runner-old-6"

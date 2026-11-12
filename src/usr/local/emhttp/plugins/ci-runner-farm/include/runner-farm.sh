@@ -574,26 +574,35 @@ reconcile_notice_prune() {
 # Retire runner $1 (immutable ID $2, provider $3) of a removed pool. A stopped
 # runner, or a running one that is idle or in an error state, is removed. A
 # busy or starting runner is left to finish and is removed on a later check.
+# A stopped GitLab manager whose executor still runs a job counts as busy.
 # Returns 1 only when a removal failed. Every outcome is logged once.
 retire_runner() {
-  local c="$1" id="$2" provider="$3" pool running
-  pool="$(runner_pool "$c" 2>/dev/null)" || pool=unknown
+  local c="$1" id="$2" provider="$3" pool running state
+  pool="$(runner_pool "$c" 2>/dev/null)" || pool=""
+  # Remove under the runner's own slot prefix, as pool_activate would set it.
+  # The provider cleanup only accepts names under the active prefix, and the
+  # caller may have activated a different pool earlier in the same pass.
+  local NAME_PREFIX="$BASE_NAME_PREFIX" CRF_POOL_ID="${pool:-default}"
+  [ -z "$pool" ] || NAME_PREFIX="${BASE_NAME_PREFIX}-${pool}"
   running="$(docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null)" || {
-    reconcile_notice "$id" retire-failed err "retire: could not inspect $c of removed pool $pool; will retry"
+    reconcile_notice "$id" retire-inspect err "retire: could not inspect $c of removed pool ${pool:-unknown}; will retry"
     return 1
   }
+  reconcile_notice_clear "$id" retire-inspect
+  state=idle
+  if [ "$running" = true ] || [ "$provider" = gitlab ]; then state="$(runner_state "$c")"; fi
   if [ "$running" = true ]; then
-    case "$(runner_state "$c")" in
-      idle|error) ;;
-      *)
-        reconcile_notice "$id" retire-wait log "retire: $c belongs to removed pool $pool; it will be removed after its current job"
-        return 0
-        ;;
-    esac
+    case "$state" in idle|error) state=idle ;; esac
+  else
+    case "$state" in busy) ;; *) state=idle ;; esac
   fi
-  log "retire: removing $c; its pool $pool is no longer configured"
+  if [ "$state" != idle ]; then
+    reconcile_notice "$id" retire-wait log "retire: $c belongs to removed pool ${pool:-unknown}; it will be removed after its current job"
+    return 0
+  fi
+  reconcile_notice "$id" retire-remove log "retire: removing $c; its pool ${pool:-unknown} is no longer configured"
   if ! remove_runner "$c" true "$id" "$provider"; then
-    reconcile_notice "$id" retire-failed err "retire: could not remove $c of removed pool $pool; will retry"
+    reconcile_notice "$id" retire-failed err "retire: could not remove $c of removed pool ${pool:-unknown}; will retry"
     return 1
   fi
 }
@@ -1200,8 +1209,9 @@ autoscale_tick() {
   if pool_mode_enabled; then
     validate_runner_mode || return 1
     start_stopped_managed || return 1
-    reconcile_stale_runners || return 1
-    local started=0
+    local reconciled=0 started=0
+    reconcile_stale_runners || reconciled=$?
+    [ "$reconciled" = 0 ] || [ "$reconciled" = 2 ] || return 1
     start_configured_capacity || started=$?
     growth_state_publish
     return "$started"
@@ -1628,6 +1638,9 @@ imageupdate_rollover() {
     # A manual Stop/Recycle may have removed a previously pending slot. Do not
     # resurrect it merely because an older image-update pass recorded its name.
     docker inspect "$c" >/dev/null 2>&1 || continue
+    # A runner of a removed pool has no pool to be recreated in. Reconcile
+    # retires it, so it must not halt the roll for the slots after it.
+    runner_pool_retired "$c" && continue
     if [ "$failed" -ne 0 ]; then
       # Stop at the first unsafe slot. Preserve every unattempted name so this
       # pass cannot drain the rest of the fleet after one fail-closed recycle.
@@ -2745,11 +2758,13 @@ reconcile_stale_runners() {
   # Otherwise a drain waiting for the lock can recreate per-slot files from a
   # token that was cleared/rotated while it waited.
   reload_locked_snapshot || return 1
-  local cur c gen names snapshot id provider role index reason ids=() recycled=false
+  local cur c gen names snapshot id provider role index reason ids=() recycled=false skipped=0
   names="$(managed_names)" || return 1
   for c in $names; do
     [ -n "$c" ] || continue
-    snapshot="$(managed_runner_snapshot "$c")" || return 1
+    # After this pass's one recycle, an ownership failure ends the pass as it
+    # did before retirement existed: the recycle already succeeded.
+    snapshot="$(managed_runner_snapshot "$c")" || { [ "$recycled" = true ] && return 0; return 1; }
     IFS='|' read -r id provider role index gen <<< "$snapshot"
     ids+=("$id")
     # A runner of a removed pool is retired, never recycled. Retirement is not
@@ -2766,6 +2781,7 @@ reconcile_stale_runners() {
     if ! cur="$(expected_runner_confgen "$c" 2>"$RUNDIR/reconcile.lookup.err")"; then
       reason="$(head -c 300 "$RUNDIR/reconcile.lookup.err" 2>/dev/null | tr '\n' ' ')"
       reconcile_notice "$id" lookup err "reconcile: could not work out the current config of $c, so it is skipped until that succeeds${reason:+: $reason}"
+      skipped=1
       continue
     fi
     reconcile_notice_clear "$id" lookup
@@ -2795,6 +2811,10 @@ reconcile_stale_runners() {
     recycled=true                                     # one per pass; the drain/tick loop re-invokes
   done
   reconcile_notice_prune ${ids[@]+"${ids[@]}"}
+  # 2: the pass finished, but at least one runner was skipped because its
+  # config could not be worked out. A tick still grows the fleet; the Apply
+  # drain stops, because that runner can never migrate.
+  [ "$skipped" = 0 ] || return 2
   return 0
 }
 
@@ -2825,7 +2845,13 @@ cmd_reconcile_drain() {
     fi
     [ "$stale" -eq 0 ] && break
     [ "$announced" = 0 ] && { log "reconcile: config changed — migrating runners onto it as they go idle"; announced=1; }
-    if ! with_fleet_lock wait reconcile_stale_runners; then
+    local pass=0
+    with_fleet_lock wait reconcile_stale_runners || pass=$?
+    if [ "$pass" = 2 ]; then
+      paused=1
+      log "reconcile: migration paused because the current config of a runner could not be worked out (see the error above); fix it and Apply again"
+      break
+    elif [ "$pass" != 0 ]; then
       paused=1
       log "reconcile: migration paused after a slot failed; no additional runners will be drained until a later retry"
       break
