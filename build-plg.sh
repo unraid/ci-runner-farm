@@ -65,7 +65,7 @@ build_native_auth() {
   local temporary
   command -v go >/dev/null 2>&1 || { echo "Go is required to build runner authentication" >&2; return 1; }
   temporary="$(mktemp -d)" || return 1
-  if ! GOTOOLCHAIN=go1.26.10 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+  if ! GOTOOLCHAIN=go1.26.11 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' \
     -o "$temporary/ci-runner-auth" ./cmd/ci-runner-auth; then
     rm -rf -- "$temporary"

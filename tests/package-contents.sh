@@ -48,7 +48,9 @@ assert header[:6] == b'\x7fELF\x02\x01', 'authentication helper must be little-e
 assert struct.unpack_from('<H', header, 18)[0] == 62, 'authentication helper must target amd64'
 assert os.stat(sys.argv[1]).st_mode & 0o111, 'authentication helper must be executable'
 PY
-go version -m "$tmp/extracted/bin/ci-runner-auth" | grep -qF 'go1.26.10'
+# Read all of the output: grep -q stops at the first match, and under pipefail
+# the writer's SIGPIPE would then fail this check at random.
+go version -m "$tmp/extracted/bin/ci-runner-auth" | grep -F 'go1.26.11' >/dev/null
 
 # Execute only the generated obsolete-runtime cleanup in an isolated fixture.
 # An overlay extraction must not leave the retired allocation executable callable.
