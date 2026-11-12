@@ -730,10 +730,13 @@ per pool (`default` in the single layout):
 
 `state` is `at_max` (running slots reached the maximum), `withheld` (the growth
 gate refused a start in the last check; `reason` is `cpu`, `memory`,
-`memory-pressure`, `cpu-block`, `settings` or `metrics`), `growing` (the pool
+`memory-pressure`, `cpu-block`, `settings` or `metrics`, or `pool-setup` when
+the check could not prepare the pool at all), `growing` (the pool
 is below its growth target and the gate let starts through or is pacing them),
 or `steady` (below the maximum with no demand to grow). The file also carries
-`ci_runner_farm_autoscale_enabled`, `ci_runner_farm_autoscale_running` and
+`ci_runner_farm_autoscale_enabled`, `ci_runner_farm_autoscale_running` (whether
+the daemon runs, so a manual `autoscale-tick` while it is stopped still reads
+as stopped), `ci_runner_farm_autoscale_interval_seconds` and
 `ci_runner_farm_growth_written_timestamp_seconds`. Stopping autoscale, which a
 drain before a reboot does, rewrites the file with `autoscale_running 0` and
 no pools. A daemon that dies stops updating the write time, so a reader can

@@ -324,8 +324,11 @@ growth_gate_status() {
 #   ci_runner_farm_pool_runners / _min / _max            running slots and bounds
 #   ci_runner_farm_pool_growth_since_timestamp_seconds   value = when the state
 #     began, labels state=at_max|withheld|growing|steady and, for withheld,
-#     reason=cpu|memory|memory-pressure|cpu-block|settings|metrics
-# plus ci_runner_farm_autoscale_enabled/_running and the write time. Stopping
+#     reason=cpu|memory|memory-pressure|cpu-block|settings|metrics, or
+#     pool-setup when the check could not prepare the pool at all
+# plus ci_runner_farm_autoscale_enabled/_running, the check interval, and the
+# write time. "Running" is whether the daemon runs, so a manual check while
+# autoscale is stopped still reads as stopped. Stopping
 # autoscale (including a drain before a reboot) publishes running 0 with no
 # pools, and a daemon that dies stops refreshing the write time, so readers
 # can tell a stopped or dead autoscaler from a steady one.
@@ -338,6 +341,9 @@ growth_gate_status() {
 GROWTH_METRICS_DIR="${CRF_GROWTH_METRICS_DIR:-${CRF_RUNDIR:+$CRF_RUNDIR/metrics}}"
 GROWTH_METRICS_DIR="${GROWTH_METRICS_DIR:-/var/run/ci-runner-farm-metrics}"
 GROWTH_METRICS_FILE="ci-runner-farm.prom"
+# When each pool entered its state, kept beside the file (node_exporter reads
+# only *.prom). Not in RUNDIR, which can fall back to flash.
+GROWTH_POOLS_STATE="$GROWTH_METRICS_DIR/.growth-pools.state"
 
 growth_metrics_writable() {
   case "$GROWTH_METRICS_DIR/" in /boot/*|"${CFGDIR:-/boot}"/*) return 1 ;; esac
@@ -359,16 +365,34 @@ growth_metrics_header() {
   printf '# HELP ci_runner_farm_autoscale_running 1 while the autoscale daemon runs, 0 after it stopped.\n'
   printf '# TYPE ci_runner_farm_autoscale_running gauge\n'
   printf 'ci_runner_farm_autoscale_running %s\n' "$running"
+  printf '# HELP ci_runner_farm_autoscale_interval_seconds Seconds between autoscale checks.\n'
+  printf '# TYPE ci_runner_farm_autoscale_interval_seconds gauge\n'
+  printf 'ci_runner_farm_autoscale_interval_seconds %s\n' "$(growth_uint "${AUTOSCALE_INTERVAL:-}" && echo "$AUTOSCALE_INTERVAL" || echo 30)"
   printf '# HELP ci_runner_farm_growth_written_timestamp_seconds When the farm last wrote this file.\n'
   printf '# TYPE ci_runner_farm_growth_written_timestamp_seconds gauge\n'
   printf 'ci_runner_farm_growth_written_timestamp_seconds %s\n' "$now"
+}
+
+# A pool the check could not prepare (activation, growth target or image) is
+# published as withheld for pool-setup instead of disappearing.
+growth_pool_setup_failed() {
+  [ "${AUTOSCALE:-false}" = true ] || return 0
+  GROWTH_POOL_DECISION["$1"]="withheld:pool-setup"
+  GROWTH_POOL_TARGET["$1"]=0
+}
+
+# 1 while the autoscale daemon's pid file names a live process.
+growth_autoscale_running() {
+  local pid
+  read -r pid 2>/dev/null < "${AUTOSCALE_PID:-/nonexistent}" && growth_uint "$pid" && kill -0 "$pid" 2>/dev/null \
+    && echo 1 || echo 0
 }
 
 # Publish "autoscale stopped". Called after the daemon stops or exits.
 growth_state_publish_stopped() {
   (
     growth_metrics_writable || exit 0
-    rm -f "$RUNDIR/growth-pools.state" 2>/dev/null
+    rm -f "$GROWTH_POOLS_STATE" 2>/dev/null
     growth_metrics_header "$(date +%s)" 0 | growth_metrics_replace
   ) >/dev/null 2>&1 || true
 }
@@ -406,11 +430,11 @@ growth_state_publish() {
       for pool in "${!GROWTH_POOL_RUNNERS[@]}"; do count["$pool"]="${GROWTH_POOL_RUNNERS[$pool]}"; done
     fi
     # Keep when each pool entered its state across ticks.
-    if [ -f "$RUNDIR/growth-pools.state" ]; then
+    if [ -f "$GROWTH_POOLS_STATE" ]; then
       while IFS='|' read -r pool state since; do
         [ -n "$pool" ] && growth_uint "$since" || continue
         prev_state["$pool"]="$state"; prev_since["$pool"]="$since"
-      done < "$RUNDIR/growth-pools.state"
+      done < "$GROWTH_POOLS_STATE"
     fi
     local runners_lines="" min_lines="" max_lines="" growth_lines="" state_lines=""
     for pool in $(printf '%s\n' "${!GROWTH_POOL_TARGET[@]}" | sort); do
@@ -432,11 +456,11 @@ growth_state_publish() {
       [ -z "$reason" ] || line+=",reason=\"$reason\""
       growth_lines+="$line} $since"$'\n'
     done
-    printf '%s' "$state_lines" > "$RUNDIR/growth-pools.state.tmp.$$" \
-      && mv -f "$RUNDIR/growth-pools.state.tmp.$$" "$RUNDIR/growth-pools.state" \
-      || rm -f "$RUNDIR/growth-pools.state.tmp.$$"
+    printf '%s' "$state_lines" > "$GROWTH_POOLS_STATE.tmp.$$" \
+      && mv -f "$GROWTH_POOLS_STATE.tmp.$$" "$GROWTH_POOLS_STATE" \
+      || rm -f "$GROWTH_POOLS_STATE.tmp.$$"
     {
-      growth_metrics_header "$now" 1
+      growth_metrics_header "$now" "$(growth_autoscale_running)"
       printf '# HELP ci_runner_farm_pool_runners Running runner slots in the pool.\n# TYPE ci_runner_farm_pool_runners gauge\n%s' "$runners_lines"
       printf '# HELP ci_runner_farm_pool_min The pool minimum, refilled without the growth gate.\n# TYPE ci_runner_farm_pool_min gauge\n%s' "$min_lines"
       printf '# HELP ci_runner_farm_pool_max The most runner slots the pool may grow to.\n# TYPE ci_runner_farm_pool_max gauge\n%s' "$max_lines"

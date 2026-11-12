@@ -2504,17 +2504,17 @@ start_configured_capacity() {
   if pool_mode_enabled; then
     while IFS= read -r rec; do
       pool="$(printf '%s' "$rec" | cut -d'|' -f2)"
-      pool_activate "$pool" || { failed=1; continue; }
+      pool_activate "$pool" || { growth_pool_setup_failed "$pool"; failed=1; continue; }
       if [ "$AUTOSCALE" = true ]; then
-        startn="$(pool_start_target "$pool")" || { failed=1; continue; }
+        startn="$(pool_start_target "$pool")" || { growth_pool_setup_failed "$pool"; failed=1; continue; }
         GROWTH_POOL_TARGET["$pool"]="$startn"
       else
         startn="$(pool_fixed "$pool")" || { failed=1; continue; }
       fi
       if [ "$IMAGE_SOURCE" = remote ] && provider_remote_image_host_pull_required; then
-        registry_login || { failed=1; continue; }
+        registry_login || { growth_pool_setup_failed "$pool"; failed=1; continue; }
         provider_prepare_remote_image "$(effective_image)" >/dev/null \
-          || { err "could not prepare image $(effective_image) for pool $pool"; failed=1; continue; }
+          || { err "could not prepare image $(effective_image) for pool $pool"; growth_pool_setup_failed "$pool"; failed=1; continue; }
       fi
       for i in $(seq 1 "$startn"); do
         # Starting a missing slot above the pool minimum is growth: it waits

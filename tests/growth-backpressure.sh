@@ -534,9 +534,15 @@ prom_valid() {
 RUNNER_POOLS='v3|build|general-build|unraid,build|2|2|8|1|4|16g|builtin'
 EXISTING='ci-runner-build-1 ci-runner-build-2 ci-runner-build-3 ci-runner-build-4 ci-runner-build-5'
 STOPPED='ci-runner-build-4 ci-runner-build-5'
+# A manual check while the daemon is not running still reads as stopped.
+rm -f "$AUTOSCALE_PID"
+set_host 95 80; autoscale_tick >>"$LOG"
+[ "$(metric 'ci_runner_farm_autoscale_running')" = 0 ] || fail "a check without the daemon published autoscale running"
+printf '%s\n' "$$" > "$AUTOSCALE_PID"   # the daemon runs ticks; its pid is live
 set_host 95 80; : > "$STARTS"
 autoscale_tick >>"$LOG" || fail "tick failed while publishing growth state"
 prom_valid
+[ "$(metric 'ci_runner_farm_autoscale_interval_seconds')" = "$AUTOSCALE_INTERVAL" ] || fail "check interval not published"
 [ "$(metric 'ci_runner_farm_autoscale_running')" = 1 ] && [ "$(metric 'ci_runner_farm_autoscale_enabled')" = 1 ] \
   || fail "running tick did not publish autoscale running"
 [ "$(metric 'ci_runner_farm_pool_runners{pool="build"}')" = 3 ] || fail "running count is not the running slots: $(cat "$PROM")"
@@ -548,7 +554,7 @@ withheld_since="$(metric 'ci_runner_farm_pool_growth_since_timestamp_seconds{poo
   && [ "$(stat -c %a "$RUNDIR/metrics" 2>/dev/null || stat -f %Lp "$RUNDIR/metrics")" = 755 ] \
   || fail "metrics file is not readable by an unprivileged collector"
 # The same state keeps the time it began.
-sed -i.bak "s/|withheld:cpu|.*/|withheld:cpu|1000/" "$RUNDIR/growth-pools.state"
+sed -i.bak "s/|withheld:cpu|.*/|withheld:cpu|1000/" "$RUNDIR/metrics/.growth-pools.state"
 set_host 95 80; autoscale_tick >>"$LOG"
 [ "$(metric 'ci_runner_farm_pool_growth_since_timestamp_seconds{pool="build",state="withheld",reason="cpu"}')" = 1000 ] \
   || fail "an unchanged state restarted its clock: $(cat "$PROM")"
@@ -572,6 +578,13 @@ set_host 95 80; autoscale_tick >>"$LOG"
 metric 'ci_runner_farm_pool_growth_since_timestamp_seconds{pool="build",state="steady"}' >/dev/null \
   || fail "pool without demand was not published as steady: $(cat "$PROM")"
 eval "$saved_target"
+# A pool the check cannot prepare is published, not dropped.
+saved_target="$(declare -f pool_start_target)"
+pool_start_target() { return 1; }
+set_host 10 200; autoscale_tick >>"$LOG" || true
+metric 'ci_runner_farm_pool_growth_since_timestamp_seconds{pool="build",state="withheld",reason="pool-setup"}' >/dev/null \
+  || fail "a pool that failed setup was not published: $(cat "$PROM")"
+eval "$saved_target"
 # Stopping autoscale (a drain before a reboot does this) publishes it stopped.
 stop_worker_group() { :; }
 autoscale_stop || fail "autoscale_stop failed"
@@ -580,15 +593,26 @@ if grep -q 'pool=' "$PROM"; then fail "stopped autoscale kept pool states: $(cat
 prom_valid
 stop_worker_group() { return 1; }
 if autoscale_stop; then fail "a failed stop reported success"; fi
+# The daemon exiting because autoscale was turned off publishes it stopped.
+set_host 10 200; autoscale_tick >>"$LOG"
+( load_cfg() { AUTOSCALE=false; }; reload_secret_files() { :; }; autoscale_daemon ) >>"$LOG" 2>&1
+[ "$(metric 'ci_runner_farm_autoscale_running')" = 0 ] && [ "$(metric 'ci_runner_farm_autoscale_enabled')" = 0 ] \
+  || fail "a daemon that exited for disabled autoscale did not publish it: $(cat "$PROM")"
 # A write failure never fails a tick.
 rm -rf "$RUNDIR/metrics"; : > "$RUNDIR/metrics"
 set_host 10 200; autoscale_tick >>"$LOG" || fail "an unwritable metrics directory failed the tick"
 rm -f "$RUNDIR/metrics"
 # Nothing is ever written to flash.
-GROWTH_METRICS_DIR="$CFGDIR/metrics"
+GROWTH_METRICS_DIR="$CFGDIR/metrics" GROWTH_POOLS_STATE="$CFGDIR/metrics/.growth-pools.state"
 growth_state_publish; growth_state_publish_stopped
 [ ! -e "$CFGDIR/metrics" ] || fail "growth state was written to flash"
-GROWTH_METRICS_DIR="$RUNDIR/metrics"
+GROWTH_METRICS_DIR="$RUNDIR/metrics" GROWTH_POOLS_STATE="$RUNDIR/metrics/.growth-pools.state"
+# The per-pool state file stays in RAM even when the runtime directory fell back to flash.
+saved_rundir="$RUNDIR"; RUNDIR="$CFGDIR"
+set_host 95 80; autoscale_tick >>"$LOG"
+[ -s "$saved_rundir/metrics/.growth-pools.state" ] && [ ! -e "$CFGDIR/growth-pools.state" ] \
+  || fail "the per-pool state file followed the runtime directory onto flash"
+RUNDIR="$saved_rundir"
 # Single layout publishes one default pool bounded by the autoscale settings.
 RUNNER_MODE=single fleet_cur=16
 saved_provider="$(declare -f provider_call)"
