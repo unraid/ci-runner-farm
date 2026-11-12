@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.5.1](https://github.com/unraid/ci-runner-farm/compare/v3.5.0...v3.5.1) (2026-11-12)
+
+
+### Bug Fixes
+
+* **deps:** build with Go 1.26.11 for a net/http security fix ([#233](https://github.com/unraid/ci-runner-farm/issues/233)) ([693241c](https://github.com/unraid/ci-runner-farm/commit/693241c3d41aa3e9b62b69108c5345fdef6205fa))
+* **pools:** retire runners of a removed pool instead of stopping growth ([#235](https://github.com/unraid/ci-runner-farm/issues/235)) ([733fade](https://github.com/unraid/ci-runner-farm/commit/733fadec57cc2153476f3943c13fbf74552c0c99))
+
 ## [3.5.0](https://github.com/unraid/ci-runner-farm/compare/v3.4.5...v3.5.0) (2026-11-12)
 
 
