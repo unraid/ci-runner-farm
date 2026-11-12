@@ -52,6 +52,7 @@ python3 tests/test-nightly-migration.py
 bash tests/pool-runtime.sh
 bash tests/runner-only.sh
 bash tests/runner-pool-growth.sh
+bash tests/removed-pool.sh
 bash tests/runner-network-endpoint.sh
 bash tests/runner-dns.sh
 bash tests/cold-image-auth.sh
