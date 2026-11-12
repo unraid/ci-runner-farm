@@ -63,6 +63,24 @@ fixture; fixture_bind="$fixture_root/unrelated"
 if cmd_prune_completed_docker --apply >/dev/null 2>&1; then fail 'wrong owned fixture_bind accepted'; fi
 fixture; mv "$fixture_root/docker" "$fixture_root/real-docker"; ln -s "$fixture_root/real-docker" "$fixture_root/docker"
 if cmd_prune_completed_docker --apply >/dev/null 2>&1; then fail 'symlink parent accepted'; fi
+# A completed runner of a removed pool has no pool settings. It is left for
+# retirement, and the runners after it are still cleaned.
+fixture
+eval "saved_$(declare -f runner_pool)"; eval "saved_$(declare -f pool_activate)"
+saved_mode="${RUNNER_MODE:-}" saved_pools="${RUNNER_POOLS:-}" saved_scope="${GH_SCOPE:-}"
+RUNNER_MODE=pools GH_SCOPE=org RUNNER_POOLS='v3|build|general-build|unraid,build|2|2|8|1|4|16g|builtin'
+runner_pool() { case "$1" in ci-runner-old-*) echo old ;; *) echo build ;; esac; }
+pool_activate() { [ "$1" != old ]; }
+runner_pool_retired ci-runner-old-1 || fail 'the removed pool was not detected'
+if runner_pool_retired "$fixture_name"; then fail 'a configured pool was treated as removed'; fi
+managed_names() { printf '%s\n' ci-runner-old-1 "$fixture_name"; }
+cmd_prune_completed_docker --apply >/dev/null || fail 'a runner of a removed pool stopped cleanup'
+[ "$(cat "$tmp/order")" = remove ] || fail 'a runner of a removed pool was cleaned instead of retired'
+for saved in runner_pool pool_activate; do
+  eval "$(declare -f "saved_$saved" | sed '1s/saved_//')"; unset -f "saved_$saved"
+done
+RUNNER_MODE="$saved_mode" RUNNER_POOLS="$saved_pools" GH_SCOPE="$saved_scope"
+managed_names() { echo "$fixture_name"; }
 fixture
 DOCKER_CACHE_MIN_FREE_PERCENT=15
 df_mode=pressure

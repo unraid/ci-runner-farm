@@ -530,6 +530,83 @@ expected_runner_confgen() {
   ( pool_activate "$pool" && crf_confgen )
 }
 
+# Returns 0 iff runner $1 belongs to a pool that is no longer in the saved pool
+# layout. Such a runner can never be recreated, because its pool has no
+# settings, so it is retired instead (retire_runner). Any lookup failure,
+# including an invalid layout, returns 1: it is an error, not a retirement.
+runner_pool_retired() {
+  local pool records
+  pool_mode_enabled || return 1
+  pool="$(runner_pool "$1")" || return 1
+  [ "$pool" != default ] || return 1
+  records="$(pool_records 2>/dev/null)" || return 1
+  ! printf '%s\n' "$records" | cut -d'|' -f2 | grep -Fxq -- "$pool"
+}
+
+# Per-container log-once markers for conditions that every tick re-checks.
+# A marker is keyed by the container's immutable ID, so a new container that
+# reuses a slot name is reported again.
+RECONCILE_NOTICES="$RUNDIR/reconcile-notices"
+reconcile_notice_file() { printf '%s/%s.%s\n' "$RECONCILE_NOTICES" "${1//[^A-Za-z0-9_.-]/_}" "$2"; }
+# reconcile_notice <id> <kind> <log|err> <message>: log once until cleared.
+reconcile_notice() {
+  local file
+  file="$(reconcile_notice_file "$1" "$2")"
+  [ -e "$file" ] && return 0
+  "$3" "$4"
+  ( umask 077; mkdir -p "$RECONCILE_NOTICES" && : > "$file" ) 2>/dev/null || true
+}
+reconcile_notice_clear() { rm -f "$(reconcile_notice_file "$1" "$2")" 2>/dev/null || true; }
+# Drop the markers of containers that no longer exist. $@ are the current IDs.
+reconcile_notice_prune() {
+  local file id keep
+  [ -d "$RECONCILE_NOTICES" ] || return 0
+  for file in "$RECONCILE_NOTICES"/*; do
+    [ -e "$file" ] || continue
+    keep=false
+    for id in "$@"; do
+      case "${file##*/}" in "${id//[^A-Za-z0-9_.-]/_}".*) keep=true; break ;; esac
+    done
+    [ "$keep" = true ] || rm -f "$file" 2>/dev/null || true
+  done
+}
+
+# Retire runner $1 (immutable ID $2, provider $3) of a removed pool. A stopped
+# runner, or a running one that is idle or in an error state, is removed. A
+# busy or starting runner is left to finish and is removed on a later check.
+# A stopped GitLab manager whose executor still runs a job counts as busy.
+# Returns 1 only when a removal failed. Every outcome is logged once.
+retire_runner() {
+  local c="$1" id="$2" provider="$3" pool running state
+  pool="$(runner_pool "$c" 2>/dev/null)" || pool=""
+  # Remove under the runner's own slot prefix, as pool_activate would set it.
+  # The provider cleanup only accepts names under the active prefix, and the
+  # caller may have activated a different pool earlier in the same pass.
+  local NAME_PREFIX="$BASE_NAME_PREFIX" CRF_POOL_ID="${pool:-default}"
+  [ -z "$pool" ] || NAME_PREFIX="${BASE_NAME_PREFIX}-${pool}"
+  running="$(docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null)" || {
+    reconcile_notice "$id" retire-inspect err "retire: could not inspect $c of removed pool ${pool:-unknown}; will retry"
+    return 1
+  }
+  reconcile_notice_clear "$id" retire-inspect
+  state=idle
+  if [ "$running" = true ] || [ "$provider" = gitlab ]; then state="$(runner_state "$c")"; fi
+  if [ "$running" = true ]; then
+    case "$state" in idle|error) state=idle ;; esac
+  else
+    case "$state" in busy) ;; *) state=idle ;; esac
+  fi
+  if [ "$state" != idle ]; then
+    reconcile_notice "$id" retire-wait log "retire: $c belongs to removed pool ${pool:-unknown}; it will be removed after its current job"
+    return 0
+  fi
+  reconcile_notice "$id" retire-remove log "retire: removing $c; its pool ${pool:-unknown} is no longer configured"
+  if ! remove_runner "$c" true "$id" "$provider"; then
+    reconcile_notice "$id" retire-failed err "retire: could not remove $c of removed pool ${pool:-unknown}; will retry"
+    return 1
+  fi
+}
+
 # The image a runner SHOULD be on, resolved to a local image ID through that
 # runner's OWN pool — named-pool mode can give each pool a different image, so a
 # single global effective_image() would report false drift for every pool but one.
@@ -1132,8 +1209,9 @@ autoscale_tick() {
   if pool_mode_enabled; then
     validate_runner_mode || return 1
     start_stopped_managed || return 1
-    reconcile_stale_runners || return 1
-    local started=0
+    local reconciled=0 started=0
+    reconcile_stale_runners || reconciled=$?
+    [ "$reconciled" = 0 ] || [ "$reconciled" = 2 ] || return 1
     start_configured_capacity || started=$?
     growth_state_publish
     return "$started"
@@ -1374,6 +1452,11 @@ lifecycle_replace() {
   else
     [ "$(runner_state "$candidate")" = idle ] || return 0
   fi
+  # A finished runner of a removed pool is removed, not recreated.
+  if runner_pool_retired "$candidate"; then
+    retire_runner "$candidate" "${snapshot%%|*}" "$provider"
+    return
+  fi
   # A slot above the autoscale floor is growth: keep it exited, never removed,
   # until the host has headroom. Refills up to the floor are never gated.
   growth_gate_admit_slot "$candidate" "$index" || return 0
@@ -1555,6 +1638,9 @@ imageupdate_rollover() {
     # A manual Stop/Recycle may have removed a previously pending slot. Do not
     # resurrect it merely because an older image-update pass recorded its name.
     docker inspect "$c" >/dev/null 2>&1 || continue
+    # A runner of a removed pool has no pool to be recreated in. Reconcile
+    # retires it, so it must not halt the roll for the slots after it.
+    runner_pool_retired "$c" && continue
     if [ "$failed" -ne 0 ]; then
       # Stop at the first unsafe slot. Preserve every unattempted name so this
       # pass cannot drain the rest of the fleet after one fail-closed recycle.
@@ -2564,6 +2650,12 @@ start_stopped_managed() {
     st="$(docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null)" \
       || { err "could not inspect stopped/running state for owned runner $c"; return 1; }
     [ "$st" = "true" ] && continue
+    # A stopped runner of a removed pool has no pool to be recreated in.
+    # Remove it; a failed removal is logged and retried on a later pass.
+    if runner_pool_retired "$c"; then
+      retire_runner "$c" "$id" "$provider" || true
+      continue
+    fi
     # A stopped slot above the autoscale floor stays stopped, not removed,
     # until the host has headroom. Refills up to the floor are never gated.
     growth_gate_admit_slot "$c" "$idx" || continue
@@ -2666,13 +2758,33 @@ reconcile_stale_runners() {
   # Otherwise a drain waiting for the lock can recreate per-slot files from a
   # token that was cleared/rotated while it waited.
   reload_locked_snapshot || return 1
-  local cur c gen names snapshot id provider role index
+  local cur c gen names snapshot id provider role index reason ids=() recycled=false skipped=0
   names="$(managed_names)" || return 1
   for c in $names; do
     [ -n "$c" ] || continue
-    snapshot="$(managed_runner_snapshot "$c")" || return 1
+    # After this pass's one recycle, an ownership failure ends the pass as it
+    # did before retirement existed: the recycle already succeeded.
+    snapshot="$(managed_runner_snapshot "$c")" || { [ "$recycled" = true ] && return 0; return 1; }
     IFS='|' read -r id provider role index gen <<< "$snapshot"
-    cur="$(expected_runner_confgen "$c")" || return 1
+    ids+=("$id")
+    # A runner of a removed pool is retired, never recycled. Retirement is not
+    # limited to one per pass and a failure does not stop the pass, so it can
+    # never hold back the pools that are still configured.
+    if runner_pool_retired "$c"; then
+      retire_runner "$c" "$id" "$provider" || true
+      continue
+    fi
+    [ "$recycled" = false ] || continue
+    # One runner whose config cannot be worked out (an unreadable label, a pool
+    # whose credentials are missing) is skipped, and reported once, so it
+    # cannot stop the pass for every other runner.
+    if ! cur="$(expected_runner_confgen "$c" 2>"$RUNDIR/reconcile.lookup.err")"; then
+      reason="$(head -c 300 "$RUNDIR/reconcile.lookup.err" 2>/dev/null | tr '\n' ' ')"
+      reconcile_notice "$id" lookup err "reconcile: could not work out the current config of $c, so it is skipped until that succeeds${reason:+: $reason}"
+      skipped=1
+      continue
+    fi
+    reconcile_notice_clear "$id" lookup
     [ "$gen" = "$cur" ] && continue                  # already on the current config
     # Migrate idle runners; also migrate error-state ones (a wedged runner will never
     # reach idle on its own, so leaving it would strand it on the old config forever).
@@ -2696,8 +2808,13 @@ reconcile_stale_runners() {
       fi
       return 1
     fi
-    return 0                                          # one per pass; the drain/tick loop re-invokes
+    recycled=true                                     # one per pass; the drain/tick loop re-invokes
   done
+  reconcile_notice_prune ${ids[@]+"${ids[@]}"}
+  # 2: the pass finished, but at least one runner was skipped because its
+  # config could not be worked out. A tick still grows the fleet; the Apply
+  # drain stops, because that runner can never migrate.
+  [ "$skipped" = 0 ] || return 2
   return 0
 }
 
@@ -2728,7 +2845,13 @@ cmd_reconcile_drain() {
     fi
     [ "$stale" -eq 0 ] && break
     [ "$announced" = 0 ] && { log "reconcile: config changed — migrating runners onto it as they go idle"; announced=1; }
-    if ! with_fleet_lock wait reconcile_stale_runners; then
+    local pass=0
+    with_fleet_lock wait reconcile_stale_runners || pass=$?
+    if [ "$pass" = 2 ]; then
+      paused=1
+      log "reconcile: migration paused because the current config of a runner could not be worked out (see the error above); fix it and Apply again"
+      break
+    elif [ "$pass" != 0 ]; then
       paused=1
       log "reconcile: migration paused after a slot failed; no additional runners will be drained until a later retry"
       break
@@ -4440,6 +4563,9 @@ cmd_prune_completed_docker() {
     [ "$provider" = github ] || continue
     state="$(docker inspect --format '{{.State.Status}}|{{.State.Running}}|{{.State.Restarting}}|{{.State.Pid}}|{{.HostConfig.RestartPolicy.Name}}' "$id")" || return 1
     case "$state" in exited\|false\|false\|0\|no|dead\|false\|false\|0\|no) ;; *) continue ;; esac
+    # A runner of a removed pool has no pool settings to resolve its store
+    # with. Retirement removes it together with its store.
+    runner_pool_retired "$c" && continue
     pool_activate "$(runner_pool "$c")" || return 1
     root="$(crf_safe_cache_root)" || return 1
     store="$root/docker/$c"
