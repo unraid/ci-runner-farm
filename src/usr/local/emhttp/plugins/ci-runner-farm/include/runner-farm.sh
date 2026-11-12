@@ -1133,8 +1133,10 @@ autoscale_tick() {
     validate_runner_mode || return 1
     start_stopped_managed || return 1
     reconcile_stale_runners || return 1
-    start_configured_capacity
-    return $?
+    local started=0
+    start_configured_capacity || started=$?
+    growth_state_publish
+    return "$started"
   fi
   reap_dead_runners || return 1  # drop dead containers first so idle accounting is real
   local cur=0 busy=0 idle=0 statef over target queue_target qdepth
@@ -1166,6 +1168,8 @@ autoscale_tick() {
   if [ "$cur" -lt "$floor" ]; then
     log "autoscale: count $cur < floor $floor -> grow to $floor"
     cmd_scale "$floor" >/dev/null; echo 0 > "$statef"
+    GROWTH_POOL_TARGET[default]="$floor"; GROWTH_POOL_RUNNERS[default]="$cur"
+    growth_state_publish
     return 0
   fi
 
@@ -1182,6 +1186,7 @@ autoscale_tick() {
       && growth_gate_admit default "$((granted + 1))" "runner $((granted + 1))"; do
       granted=$((granted + 1))
     done
+    GROWTH_POOL_TARGET[default]="$target"
     if [ "$granted" -gt "$cur" ]; then
       target="$granted"
       log "autoscale: idle=$idle/$cur queued=$qdepth < buffer $AUTOSCALE_MIN_IDLE -> grow to $target"
@@ -1207,7 +1212,12 @@ autoscale_tick() {
   # previous baked config onto the current one (idle only). Also the path that eventually
   # picks up a direct cfg edit, or a runner whose job outlasted the Apply drain timeout.
   # Runs LAST so it never perturbs the scale math above; already under the fleet lock.
-  reconcile_stale_runners
+  local reconciled=0
+  reconcile_stale_runners || reconciled=$?
+  [ -n "${GROWTH_POOL_TARGET[default]:-}" ] || GROWTH_POOL_TARGET[default]="$cur"
+  GROWTH_POOL_RUNNERS[default]="$cur"
+  growth_state_publish
+  return "$reconciled"
 }
 
 # long-running loop; re-reads config each tick so UI changes apply live
@@ -1224,7 +1234,7 @@ autoscale_daemon() {
   while true; do
     load_cfg
     reload_secret_files
-    [ "$AUTOSCALE" = "true" ] || { log "autoscale disabled -> daemon exit"; rm -f "$AUTOSCALE_PID"; break; }
+    [ "$AUTOSCALE" = "true" ] || { log "autoscale disabled -> daemon exit"; rm -f "$AUTOSCALE_PID"; growth_state_publish_stopped; break; }
     # Timestamp each tick so autoscale.log lines can be correlated with jobs.
     log "autoscale tick $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     with_fleet_lock try autoscale_tick
@@ -1298,7 +1308,8 @@ stop_worker_group() {
 }
 
 autoscale_stop() {
-  stop_worker_group "autoscale" "$AUTOSCALE_PID" '[r]unner-farm.sh autoscale-daemon'
+  stop_worker_group "autoscale" "$AUTOSCALE_PID" '[r]unner-farm.sh autoscale-daemon' || return 1
+  growth_state_publish_stopped
 }
 autoscale_status() {
   if [ -f "$AUTOSCALE_PID" ] && kill -0 "$(cat "$AUTOSCALE_PID" 2>/dev/null)" 2>/dev/null; then
@@ -2496,6 +2507,7 @@ start_configured_capacity() {
       pool_activate "$pool" || { failed=1; continue; }
       if [ "$AUTOSCALE" = true ]; then
         startn="$(pool_start_target "$pool")" || { failed=1; continue; }
+        GROWTH_POOL_TARGET["$pool"]="$startn"
       else
         startn="$(pool_fixed "$pool")" || { failed=1; continue; }
       fi

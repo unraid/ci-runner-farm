@@ -714,6 +714,32 @@ land on a busy block. Use pinning with growth when tools that size themselves
 from `nproc` are the bigger problem. Leave pinning off when a pool is often far
 above that block count.
 
+#### Published growth state
+
+After each autoscale check the farm writes
+`/var/run/ci-runner-farm-metrics/ci-runner-farm.prom`, a world-readable
+Prometheus text file that a node_exporter textfile collector can read
+(`--collector.textfile.directory=/var/run/ci-runner-farm-metrics`). It says,
+per pool (`default` in the single layout):
+
+| Metric | Value |
+| --- | --- |
+| `ci_runner_farm_pool_runners{pool}` | running runner slots |
+| `ci_runner_farm_pool_min{pool}`, `ci_runner_farm_pool_max{pool}` | the pool's bounds |
+| `ci_runner_farm_pool_growth_since_timestamp_seconds{pool,state,reason}` | when the pool entered its state |
+
+`state` is `at_max` (running slots reached the maximum), `withheld` (the growth
+gate refused a start in the last check; `reason` is `cpu`, `memory`,
+`memory-pressure`, `cpu-block`, `settings` or `metrics`), `growing` (the pool
+is below its growth target and the gate let starts through or is pacing them),
+or `steady` (below the maximum with no demand to grow). The file also carries
+`ci_runner_farm_autoscale_enabled`, `ci_runner_farm_autoscale_running` and
+`ci_runner_farm_growth_written_timestamp_seconds`. Stopping autoscale, which a
+drain before a reboot does, rewrites the file with `autoscale_running 0` and
+no pools. A daemon that dies stops updating the write time, so a reader can
+tell it apart from a steady pool. Writing the file never fails or delays a
+check, and it is never written to flash.
+
 ![Fleet state and controls](docs/images/fleet.png)
 
 ## CLI
