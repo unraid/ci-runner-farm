@@ -58,6 +58,9 @@ growth_gate_reset() {
   GROWTH_MEM_PSI_FULL=""
   GROWTH_BLOCK_BUSY=""
   GROWTH_BLOCK_ADMITTED=false
+  # Per pool, for the published growth state: the latest gate decision key,
+  # and the target and running count the tick worked toward.
+  declare -gA GROWTH_POOL_DECISION=() GROWTH_POOL_TARGET=() GROWTH_POOL_RUNNERS=()
 }
 growth_gate_reset
 
@@ -205,8 +208,10 @@ growth_runner_cpus() {
 growth_cores() { printf '%d.%02d' "$(( $1 / 1000 ))" "$(( $1 % 1000 / 10 ))"; }
 
 # Record a decision and log it when its state differs from the previous one.
+# The pool's latest decision in this tick feeds the published growth state.
 growth_gate_record() {
-  local key="$1" target="$2" detail="$3" file="$RUNDIR/growth-gate.state" previous=""
+  local key="$1" target="$2" detail="$3" pool="${4:-}" file="$RUNDIR/growth-gate.state" previous=""
+  [ -z "$pool" ] || GROWTH_POOL_DECISION["$pool"]="$key"
   if [ -f "$file" ]; then IFS='|' read -r previous _ < "$file" 2>/dev/null || true; fi
   ( umask 077; printf '%s|%s|%s\n' "$key" "$(date +%s)" "$detail" > "$file.tmp.$$" \
     && mv -f "$file.tmp.$$" "$file" ) 2>/dev/null || rm -f "$file.tmp.$$" 2>/dev/null
@@ -229,7 +234,7 @@ growth_gate_admit() {
   if ! growth_uint "$ceiling" || [ "$ceiling" -lt 1 ] || [ "$ceiling" -gt 100 ] \
     || ! reserve="$(growth_size_bytes "${GROWTH_MEMORY_RESERVE:-}")" \
     || ! runner="$(growth_runner_memory_bytes "$pool")"; then
-    growth_gate_record withheld:settings "$label" "the CPU ceiling, memory reserve, or runner memory limit is invalid"
+    growth_gate_record withheld:settings "$label" "the CPU ceiling, memory reserve, or runner memory limit is invalid" "$pool"
     return 1
   fi
   if [ "$GROWTH_SAMPLED" != true ]; then
@@ -241,7 +246,7 @@ growth_gate_admit() {
     GROWTH_MEM_PSI_FULL="$(growth_psi_avg10 memory full 2>/dev/null)" || GROWTH_MEM_PSI_FULL=""
   fi
   if ! growth_uint "$GROWTH_CPU_PCT" || ! growth_uint "$GROWTH_MEM_AVAIL"; then
-    growth_gate_record withheld:metrics "$label" "host CPU or memory metrics are unreadable"
+    growth_gate_record withheld:metrics "$label" "host CPU or memory metrics are unreadable" "$pool"
     return 1
   fi
   cpu="$GROWTH_CPU_PCT"
@@ -249,18 +254,18 @@ growth_gate_admit() {
   need=$(( runner + reserve ))
   numbers="cpu ${cpu}% (ceiling ${ceiling}%), MemAvailable $(growth_mib "$avail") MiB (need $(growth_mib "$runner") + reserve $(growth_mib "$reserve") MiB)"
   if [ "$cpu" -gt "$ceiling" ]; then
-    growth_gate_record withheld:cpu "$label" "$numbers"
+    growth_gate_record withheld:cpu "$label" "$numbers" "$pool"
     return 1
   fi
   if [ "$avail" -lt "$need" ]; then
-    growth_gate_record withheld:memory "$label" "$numbers"
+    growth_gate_record withheld:memory "$label" "$numbers" "$pool"
     return 1
   fi
   if growth_uint "$GROWTH_MEM_PSI_SOME" || growth_uint "$GROWTH_MEM_PSI_FULL"; then
     numbers+=", memory pressure some $(growth_pct_or_dash "$GROWTH_MEM_PSI_SOME") full $(growth_pct_or_dash "$GROWTH_MEM_PSI_FULL") (limits $(growth_pct "$GROWTH_MEMORY_PRESSURE_SOME_LIMIT") / $(growth_pct "$GROWTH_MEMORY_PRESSURE_FULL_LIMIT"))"
     if { growth_uint "$GROWTH_MEM_PSI_FULL" && [ "$GROWTH_MEM_PSI_FULL" -gt "$GROWTH_MEMORY_PRESSURE_FULL_LIMIT" ]; } \
       || { growth_uint "$GROWTH_MEM_PSI_SOME" && [ "$GROWTH_MEM_PSI_SOME" -gt "$GROWTH_MEMORY_PRESSURE_SOME_LIMIT" ]; }; then
-      growth_gate_record withheld:memory-pressure "$label" "$numbers"
+      growth_gate_record withheld:memory-pressure "$label" "$numbers" "$pool"
       return 1
     fi
   fi
@@ -276,7 +281,7 @@ growth_gate_admit() {
     # Starts within a tick only add load, so a busy verdict holds for the tick.
     case " $GROWTH_BLOCK_BUSY " in
       *" $cpus "*)
-        growth_gate_record withheld:cpu-block "$label" "$numbers, CPU block busy (checked earlier in this tick)"
+        growth_gate_record withheld:cpu-block "$label" "$numbers, CPU block busy (checked earlier in this tick)" "$pool"
         return 1 ;;
     esac
     if choice="$(crf_cpu_pinning_choose "$cpus" "$label" 2>/dev/null)"; then
@@ -285,7 +290,7 @@ growth_gate_admit() {
         numbers+=", CPU block $block in use $(growth_cores "$block_use") cores (limit $(growth_cores "$GROWTH_BLOCK_CORES_LIMIT"))"
         if [ "$block_use" -ge "$GROWTH_BLOCK_CORES_LIMIT" ]; then
           GROWTH_BLOCK_BUSY+=" $cpus"
-          growth_gate_record withheld:cpu-block "$label" "$numbers"
+          growth_gate_record withheld:cpu-block "$label" "$numbers" "$pool"
           return 1
         fi
         GROWTH_BLOCK_ADMITTED=true
@@ -294,7 +299,7 @@ growth_gate_admit() {
   fi
   GROWTH_ADMITTED=$(( GROWTH_ADMITTED + 1 ))
   GROWTH_DEDUCTED=$(( GROWTH_DEDUCTED + runner ))
-  growth_gate_record admitted "$label" "$numbers"
+  growth_gate_record admitted "$label" "$numbers" "$pool"
   return 0
 }
 
@@ -310,4 +315,156 @@ growth_gate_status() {
   else
     printf 'on, no growth requested yet\n'
   fi
+}
+
+# ---- Published growth state ------------------------------------------------
+# After each autoscale tick the farm publishes why each pool is or is not
+# growing, as a Prometheus text file a node_exporter textfile collector can
+# read (world-readable, no secrets). Per pool:
+#   ci_runner_farm_pool_runners / _min / _max            running slots and bounds
+#   ci_runner_farm_pool_growth_since_timestamp_seconds   value = when the state
+#     began, labels state=at_max|withheld|growing|steady and, for withheld,
+#     reason=cpu|memory|memory-pressure|cpu-block|settings|metrics, or
+#     pool-setup when the check could not prepare the pool at all
+# plus ci_runner_farm_autoscale_enabled/_running, the check interval, and the
+# write time. "Running" is whether the daemon runs, so a manual check while
+# autoscale is stopped still reads as stopped. Stopping
+# autoscale (including a drain before a reboot) publishes running 0 with no
+# pools, and a daemon that dies stops refreshing the write time, so readers
+# can tell a stopped or dead autoscaler from a steady one.
+#
+# The directory is the farm's own, in RAM, and readable by unprivileged
+# collectors; the runtime directory is not used because it holds credentials.
+# Publishing is best effort: every failure is ignored and the file is replaced
+# atomically, so it never fails a tick. It adds one Docker listing per tick
+# (pool mode). It never writes to flash.
+GROWTH_METRICS_DIR="${CRF_GROWTH_METRICS_DIR:-${CRF_RUNDIR:+$CRF_RUNDIR/metrics}}"
+GROWTH_METRICS_DIR="${GROWTH_METRICS_DIR:-/var/run/ci-runner-farm-metrics}"
+GROWTH_METRICS_FILE="ci-runner-farm.prom"
+# When each pool entered its state, kept beside the file (node_exporter reads
+# only *.prom). Not in RUNDIR, which can fall back to flash.
+GROWTH_POOLS_STATE="$GROWTH_METRICS_DIR/.growth-pools.state"
+
+growth_metrics_writable() {
+  case "$GROWTH_METRICS_DIR/" in /boot/*|"${CFGDIR:-/boot}"/*) return 1 ;; esac
+  mkdir -p "$GROWTH_METRICS_DIR" 2>/dev/null && chmod 0755 "$GROWTH_METRICS_DIR" 2>/dev/null
+}
+
+# Replace the metrics file with stdin, atomically.
+growth_metrics_replace() {
+  local file="$GROWTH_METRICS_DIR/$GROWTH_METRICS_FILE" tmp
+  tmp="$file.tmp.$$"
+  { cat > "$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$file"; } 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
+}
+
+growth_metrics_header() {
+  local now="$1" running="$2"
+  printf '# HELP ci_runner_farm_autoscale_enabled 1 when autoscale is configured on.\n'
+  printf '# TYPE ci_runner_farm_autoscale_enabled gauge\n'
+  printf 'ci_runner_farm_autoscale_enabled %s\n' "$([ "${AUTOSCALE:-false}" = true ] && echo 1 || echo 0)"
+  printf '# HELP ci_runner_farm_autoscale_running 1 while the autoscale daemon runs, 0 after it stopped.\n'
+  printf '# TYPE ci_runner_farm_autoscale_running gauge\n'
+  printf 'ci_runner_farm_autoscale_running %s\n' "$running"
+  printf '# HELP ci_runner_farm_autoscale_interval_seconds Seconds between autoscale checks.\n'
+  printf '# TYPE ci_runner_farm_autoscale_interval_seconds gauge\n'
+  printf 'ci_runner_farm_autoscale_interval_seconds %s\n' "$(growth_uint "${AUTOSCALE_INTERVAL:-}" && echo "$AUTOSCALE_INTERVAL" || echo 30)"
+  printf '# HELP ci_runner_farm_growth_written_timestamp_seconds When the farm last wrote this file.\n'
+  printf '# TYPE ci_runner_farm_growth_written_timestamp_seconds gauge\n'
+  printf 'ci_runner_farm_growth_written_timestamp_seconds %s\n' "$now"
+}
+
+# A pool the check could not prepare (activation, growth target or image) is
+# published as withheld for pool-setup instead of disappearing.
+growth_pool_setup_failed() {
+  [ "${AUTOSCALE:-false}" = true ] || return 0
+  GROWTH_POOL_DECISION["$1"]="withheld:pool-setup"
+  GROWTH_POOL_TARGET["$1"]=0
+}
+
+# 1 while the autoscale daemon's pid file names a live process.
+growth_autoscale_running() {
+  local pid
+  read -r pid 2>/dev/null < "${AUTOSCALE_PID:-/nonexistent}" && growth_uint "$pid" && kill -0 "$pid" 2>/dev/null \
+    && echo 1 || echo 0
+}
+
+# Publish "autoscale stopped". Called after the daemon stops or exits.
+growth_state_publish_stopped() {
+  (
+    growth_metrics_writable || exit 0
+    rm -f "$GROWTH_POOLS_STATE" 2>/dev/null
+    growth_metrics_header "$(date +%s)" 0 | growth_metrics_replace
+  ) >/dev/null 2>&1 || true
+}
+
+# Running slots per pool in pool mode, as "pool count" lines.
+growth_running_by_pool() {
+  local names pool
+  names="$(docker ps --filter "label=${MANAGED_LABEL}" --filter status=running --format '{{.Names}}')" || return 1
+  for pool in "${!GROWTH_POOL_TARGET[@]}"; do
+    printf '%s %s\n' "$pool" "$(printf '%s\n' "$names" | grep -cE "^${BASE_NAME_PREFIX}-${pool}-[0-9]+\$")"
+  done
+}
+
+# The state of one pool from this tick's facts.
+growth_pool_state() {
+  local runners="$1" max="$2" target="$3" decision="$4"
+  if [ "$runners" -ge "$max" ]; then printf 'at_max \n'
+  elif [ "${decision%%:*}" = withheld ]; then printf 'withheld %s\n' "${decision#withheld:}"
+  elif [ "$decision" = admitted ] || [ "$target" -gt "$runners" ]; then printf 'growing \n'
+  else printf 'steady \n'; fi
+}
+
+# Publish this tick's per-pool state. GROWTH_POOL_TARGET names the pools the
+# tick handled; GROWTH_POOL_RUNNERS may supply counts (single layout).
+growth_state_publish() {
+  (
+    growth_metrics_writable || exit 0
+    local now pool runners min max target state reason since previous counts line
+    local -A count=() prev_state=() prev_since=()
+    now="$(date +%s)"
+    if [ "${#GROWTH_POOL_RUNNERS[@]}" -eq 0 ]; then
+      counts="$(growth_running_by_pool)" || exit 0
+      while read -r pool runners; do [ -n "$pool" ] && count["$pool"]="$runners"; done <<< "$counts"
+    else
+      for pool in "${!GROWTH_POOL_RUNNERS[@]}"; do count["$pool"]="${GROWTH_POOL_RUNNERS[$pool]}"; done
+    fi
+    # Keep when each pool entered its state across ticks.
+    if [ -f "$GROWTH_POOLS_STATE" ]; then
+      while IFS='|' read -r pool state since; do
+        [ -n "$pool" ] && growth_uint "$since" || continue
+        prev_state["$pool"]="$state"; prev_since["$pool"]="$since"
+      done < "$GROWTH_POOLS_STATE"
+    fi
+    local runners_lines="" min_lines="" max_lines="" growth_lines="" state_lines=""
+    for pool in $(printf '%s\n' "${!GROWTH_POOL_TARGET[@]}" | sort); do
+      runners="${count[$pool]:-}"; target="${GROWTH_POOL_TARGET[$pool]}"
+      if [ "$pool" = default ] && ! pool_mode_enabled; then
+        min="$(autoscale_floor)"; max="$AUTOSCALE_MAX"
+      else
+        min="$(pool_min "$pool")" && max="$(pool_max "$pool")" || continue
+      fi
+      growth_uint "$runners" && growth_uint "$target" && growth_uint "$min" && growth_uint "$max" || continue
+      read -r state reason <<< "$(growth_pool_state "$runners" "$max" "$target" "${GROWTH_POOL_DECISION[$pool]:-}")"
+      since="$now"
+      [ "${prev_state[$pool]:-}" != "$state:$reason" ] || since="${prev_since[$pool]}"
+      state_lines+="$pool|$state:$reason|$since"$'\n'
+      runners_lines+="ci_runner_farm_pool_runners{pool=\"$pool\"} $runners"$'\n'
+      min_lines+="ci_runner_farm_pool_min{pool=\"$pool\"} $min"$'\n'
+      max_lines+="ci_runner_farm_pool_max{pool=\"$pool\"} $max"$'\n'
+      line="ci_runner_farm_pool_growth_since_timestamp_seconds{pool=\"$pool\",state=\"$state\""
+      [ -z "$reason" ] || line+=",reason=\"$reason\""
+      growth_lines+="$line} $since"$'\n'
+    done
+    printf '%s' "$state_lines" > "$GROWTH_POOLS_STATE.tmp.$$" \
+      && mv -f "$GROWTH_POOLS_STATE.tmp.$$" "$GROWTH_POOLS_STATE" \
+      || rm -f "$GROWTH_POOLS_STATE.tmp.$$"
+    {
+      growth_metrics_header "$now" "$(growth_autoscale_running)"
+      printf '# HELP ci_runner_farm_pool_runners Running runner slots in the pool.\n# TYPE ci_runner_farm_pool_runners gauge\n%s' "$runners_lines"
+      printf '# HELP ci_runner_farm_pool_min The pool minimum, refilled without the growth gate.\n# TYPE ci_runner_farm_pool_min gauge\n%s' "$min_lines"
+      printf '# HELP ci_runner_farm_pool_max The most runner slots the pool may grow to.\n# TYPE ci_runner_farm_pool_max gauge\n%s' "$max_lines"
+      printf '# HELP ci_runner_farm_pool_growth_since_timestamp_seconds When the pool entered its growth state.\n# TYPE ci_runner_farm_pool_growth_since_timestamp_seconds gauge\n%s' "$growth_lines"
+    } | growth_metrics_replace
+  ) >/dev/null 2>&1 || true
 }

@@ -369,7 +369,12 @@ docker() {
       fi
       case " $EXISTING " in *" $2 "*) return 0 ;; *) return 1 ;; esac ;;
     top) printf 'PID COMMAND\n1 Runner.Listener\n2 Runner.Worker\n' ;;
-    ps) printf '%s\n' "$EXISTING" | tr ' ' '\n' ;;
+    ps)
+      # Only the growth state listing filters on running; it skips STOPPED.
+      for slot in $EXISTING; do
+        case "$*:: $STOPPED " in *status=running*" $slot "*) continue ;; esac
+        printf '%s\n' "$slot"
+      done ;;
     *) printf 'docker %s\n' "$*" >> "$MUTATIONS"; return 1 ;;
   esac
 }
@@ -509,6 +514,120 @@ GROWTH_BACKPRESSURE=false fleet_cur=4
 GROWTH_BACKPRESSURE=true
 RUNNER_MODE=pools
 
+# ---- published growth state ------------------------------------------------------
+# Each autoscale tick publishes per-pool growth state for a node_exporter
+# textfile collector; stopping autoscale publishes that it stopped.
+PROM="$RUNDIR/metrics/ci-runner-farm.prom"
+[ "$(CRF_RUNDIR='' CRF_GROWTH_METRICS_DIR='' bash -c '. src/usr/local/emhttp/plugins/ci-runner-farm/include/growth-backpressure.sh 2>/dev/null; printf %s "$GROWTH_METRICS_DIR"')" \
+  = /var/run/ci-runner-farm-metrics ] || fail "the default metrics directory changed"
+metric() { awk -v key="$1" 'index($0, key " ") == 1 { print $2; found=1 } END { exit !found }' "$PROM"; }
+prom_valid() {
+  local line
+  while IFS= read -r line; do
+    case "$line" in
+      '# HELP ci_runner_farm_'*|'# TYPE ci_runner_farm_'*' gauge') ;;
+      *) [[ "$line" =~ ^ci_runner_farm_[a-z_]+(\{[a-z_]+=\"[a-z0-9-]*\"(,[a-z_]+=\"[a-z0-9_-]*\")*\})?\ [0-9]+$ ]] \
+           || fail "invalid exposition line: $line" ;;
+    esac
+  done < "$PROM"
+}
+RUNNER_POOLS='v3|build|general-build|unraid,build|2|2|8|1|4|16g|builtin'
+EXISTING='ci-runner-build-1 ci-runner-build-2 ci-runner-build-3 ci-runner-build-4 ci-runner-build-5'
+STOPPED='ci-runner-build-4 ci-runner-build-5'
+# A manual check while the daemon is not running still reads as stopped.
+rm -f "$AUTOSCALE_PID"
+set_host 95 80; autoscale_tick >>"$LOG"
+[ "$(metric 'ci_runner_farm_autoscale_running')" = 0 ] || fail "a check without the daemon published autoscale running"
+printf '%s\n' "$$" > "$AUTOSCALE_PID"   # the daemon runs ticks; its pid is live
+set_host 95 80; : > "$STARTS"
+autoscale_tick >>"$LOG" || fail "tick failed while publishing growth state"
+prom_valid
+[ "$(metric 'ci_runner_farm_autoscale_interval_seconds')" = "$AUTOSCALE_INTERVAL" ] || fail "check interval not published"
+[ "$(metric 'ci_runner_farm_autoscale_running')" = 1 ] && [ "$(metric 'ci_runner_farm_autoscale_enabled')" = 1 ] \
+  || fail "running tick did not publish autoscale running"
+[ "$(metric 'ci_runner_farm_pool_runners{pool="build"}')" = 3 ] || fail "running count is not the running slots: $(cat "$PROM")"
+[ "$(metric 'ci_runner_farm_pool_min{pool="build"}')" = 2 ] && [ "$(metric 'ci_runner_farm_pool_max{pool="build"}')" = 8 ] \
+  || fail "pool bounds missing: $(cat "$PROM")"
+withheld_since="$(metric 'ci_runner_farm_pool_growth_since_timestamp_seconds{pool="build",state="withheld",reason="cpu"}')" \
+  || fail "CPU-hot pool was not published as withheld for CPU: $(cat "$PROM")"
+[ "$(stat -c %a "$PROM" 2>/dev/null || stat -f %Lp "$PROM")" = 644 ] \
+  && [ "$(stat -c %a "$RUNDIR/metrics" 2>/dev/null || stat -f %Lp "$RUNDIR/metrics")" = 755 ] \
+  || fail "metrics file is not readable by an unprivileged collector"
+# The same state keeps the time it began.
+sed -i.bak "s/|withheld:cpu|.*/|withheld:cpu|1000/" "$RUNDIR/metrics/.growth-pools.state"
+set_host 95 80; autoscale_tick >>"$LOG"
+[ "$(metric 'ci_runner_farm_pool_growth_since_timestamp_seconds{pool="build",state="withheld",reason="cpu"}')" = 1000 ] \
+  || fail "an unchanged state restarted its clock: $(cat "$PROM")"
+set_host 10 30; autoscale_tick >>"$LOG"
+metric 'ci_runner_farm_pool_growth_since_timestamp_seconds{pool="build",state="withheld",reason="memory"}' >/dev/null \
+  || fail "memory withhold was not published: $(cat "$PROM")"
+set_host 10 200; autoscale_tick >>"$LOG"
+grow_since="$(metric 'ci_runner_farm_pool_growth_since_timestamp_seconds{pool="build",state="growing"}')" \
+  || fail "admitted pool was not published as growing: $(cat "$PROM")"
+[ "$grow_since" -ge "$withheld_since" ] || fail "a new state kept the old start time"
+if grep -q 'withheld' "$PROM"; then fail "a pool kept a stale withheld line: $(cat "$PROM")"; fi
+STOPPED=''
+EXISTING="$(printf 'ci-runner-build-%s ' 1 2 3 4 5 6 7 8)"
+set_host 95 80; autoscale_tick >>"$LOG"
+metric 'ci_runner_farm_pool_growth_since_timestamp_seconds{pool="build",state="at_max"}' >/dev/null \
+  || fail "full pool was not published at its max: $(cat "$PROM")"
+EXISTING='ci-runner-build-1 ci-runner-build-2'
+saved_target="$(declare -f pool_start_target)"
+pool_start_target() { printf '2\n'; }
+set_host 95 80; autoscale_tick >>"$LOG"
+metric 'ci_runner_farm_pool_growth_since_timestamp_seconds{pool="build",state="steady"}' >/dev/null \
+  || fail "pool without demand was not published as steady: $(cat "$PROM")"
+eval "$saved_target"
+# A pool the check cannot prepare is published, not dropped.
+saved_target="$(declare -f pool_start_target)"
+pool_start_target() { return 1; }
+set_host 10 200; autoscale_tick >>"$LOG" || true
+metric 'ci_runner_farm_pool_growth_since_timestamp_seconds{pool="build",state="withheld",reason="pool-setup"}' >/dev/null \
+  || fail "a pool that failed setup was not published: $(cat "$PROM")"
+eval "$saved_target"
+# Stopping autoscale (a drain before a reboot does this) publishes it stopped.
+stop_worker_group() { :; }
+autoscale_stop || fail "autoscale_stop failed"
+[ "$(metric 'ci_runner_farm_autoscale_running')" = 0 ] || fail "stop did not publish autoscale stopped"
+if grep -q 'pool=' "$PROM"; then fail "stopped autoscale kept pool states: $(cat "$PROM")"; fi
+prom_valid
+stop_worker_group() { return 1; }
+if autoscale_stop; then fail "a failed stop reported success"; fi
+# The daemon exiting because autoscale was turned off publishes it stopped.
+set_host 10 200; autoscale_tick >>"$LOG"
+( load_cfg() { AUTOSCALE=false; }; reload_secret_files() { :; }; autoscale_daemon ) >>"$LOG" 2>&1
+[ "$(metric 'ci_runner_farm_autoscale_running')" = 0 ] && [ "$(metric 'ci_runner_farm_autoscale_enabled')" = 0 ] \
+  || fail "a daemon that exited for disabled autoscale did not publish it: $(cat "$PROM")"
+# A write failure never fails a tick.
+rm -rf "$RUNDIR/metrics"; : > "$RUNDIR/metrics"
+set_host 10 200; autoscale_tick >>"$LOG" || fail "an unwritable metrics directory failed the tick"
+rm -f "$RUNDIR/metrics"
+# Nothing is ever written to flash.
+GROWTH_METRICS_DIR="$CFGDIR/metrics" GROWTH_POOLS_STATE="$CFGDIR/metrics/.growth-pools.state"
+growth_state_publish; growth_state_publish_stopped
+[ ! -e "$CFGDIR/metrics" ] || fail "growth state was written to flash"
+GROWTH_METRICS_DIR="$RUNDIR/metrics" GROWTH_POOLS_STATE="$RUNDIR/metrics/.growth-pools.state"
+# The per-pool state file stays in RAM even when the runtime directory fell back to flash.
+saved_rundir="$RUNDIR"; RUNDIR="$CFGDIR"
+set_host 95 80; autoscale_tick >>"$LOG"
+[ -s "$saved_rundir/metrics/.growth-pools.state" ] && [ ! -e "$CFGDIR/growth-pools.state" ] \
+  || fail "the per-pool state file followed the runtime directory onto flash"
+RUNDIR="$saved_rundir"
+# Single layout publishes one default pool bounded by the autoscale settings.
+RUNNER_MODE=single fleet_cur=16
+saved_provider="$(declare -f provider_call)"
+provider_call() { [ "$1" = autoscale_counts ] || return 1; cur="$fleet_cur"; busy="$fleet_cur"; idle=0; }
+reap_dead_runners() { :; }
+set_host 10 80; : > "$STARTS"; autoscale_tick >>"$LOG"
+[ "$(metric 'ci_runner_farm_pool_max{pool="default"}')" = 16 ] \
+  && metric 'ci_runner_farm_pool_growth_since_timestamp_seconds{pool="default",state="at_max"}' >/dev/null \
+  || fail "single layout did not publish its default pool at max: $(cat "$PROM")"
+fleet_cur=4; set_host 95 80; autoscale_tick >>"$LOG"
+metric 'ci_runner_farm_pool_growth_since_timestamp_seconds{pool="default",state="withheld",reason="cpu"}' >/dev/null \
+  || fail "single layout did not publish its withheld growth: $(cat "$PROM")"
+eval "$saved_provider"
+RUNNER_MODE=pools STOPPED=''
+
 # Status shows host pressure whenever the kernel exposes it and autoscale is on.
 psi cpu 35.20 0.00; psi memory 0.00 0.00; psi io 1.40 0.05
 saved_existing="$EXISTING"; EXISTING=''
@@ -555,4 +674,4 @@ off_confgen="$(crf_confgen)"
 GROWTH_BACKPRESSURE=true GROWTH_CPU_CEILING=50 GROWTH_MEMORY_RESERVE=1g
 [ "$(crf_confgen)" = "$off_confgen" ] || fail "backpressure settings changed the runner fingerprint"
 
-echo "growth-backpressure: OK — thresholds, memory budget, pacing, floor refills, fail-safe metrics, log-once, start paths, no mutations, fingerprint"
+echo "growth-backpressure: OK — thresholds, memory budget, pacing, floor refills, fail-safe metrics, log-once, start paths, published growth state, no mutations, fingerprint"
