@@ -144,15 +144,15 @@ rollback_block="$(awk '
   emit && /^REMOTE_ROLLBACK$/ { exit }
 ' "$INSTALLER")"
 [ -n "$rollback_block" ] || fail "could not locate rollback transaction"
-if printf '%s\n' "$rollback_block" | grep -qF 'plugin install'; then
+if grep -qF 'plugin install' <<< "$rollback_block"; then
   fail "rollback overlays the baseline runtime through plugin install"
 fi
-if printf '%s\n' "$rollback_block" | grep -Eq 'tar[[:space:]]+-x|/usr/local/emhttp/plugins.*(cp|mv)'; then
+if grep -Eq 'tar[[:space:]]+-x|/usr/local/emhttp/plugins.*(cp|mv)' <<< "$rollback_block"; then
   fail "rollback overlays files into the live runtime"
 fi
 grep -qF 'Reboot is required; this script did not reboot.' "$INSTALLER" \
   || fail "rollback does not state the reboot boundary"
-if printf '%s\n' "$rollback_block" | grep -Eq '(^|[[:space:]])(reboot|shutdown)([[:space:]]|$)'; then
+if grep -Eq '(^|[[:space:]])(reboot|shutdown)([[:space:]]|$)' <<< "$rollback_block"; then
   fail "rollback reboots the host"
 fi
 

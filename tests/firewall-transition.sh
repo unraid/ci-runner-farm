@@ -104,13 +104,13 @@ grep -q -- '-I INPUT 1 -s 172.31.0.0/16 -d 157.180.7.27 -p tcp --dport 22' "$IPT
 # historical remote-default-only behavior.
 IMAGE_SOURCE=builtin
 gitlab_builtin_endpoints="$(configured_strict_endpoints)"
-printf '%s\n' "$gitlab_builtin_endpoints" | grep -q '^10\.20\.30\.50 5001 registry$' \
+grep -q '^10\.20\.30\.50 5001 registry$' <<< "$gitlab_builtin_endpoints" \
   || fail "built-in-default GitLab policy omitted the configured override registry"
 CI_PROVIDER=github
-if configured_strict_endpoints | grep -q ' registry$'; then
+if grep -q ' registry$' <<< "$(configured_strict_endpoints)"; then
   fail "built-in GitHub policy unexpectedly enabled a registry exception"
 fi
-configured_strict_endpoints | grep -q '^100\.100\.10\.20 8333 artifact$' \
+grep -q '^100\.100\.10\.20 8333 artifact$' <<< "$(configured_strict_endpoints)" \
   || fail "artifact exception depended on provider or remote-image configuration"
 
 # URL ports are decimal; leading zeros must never change the allowed TCP port.

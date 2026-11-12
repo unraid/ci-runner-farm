@@ -41,7 +41,7 @@ docker() {
       if [ "$DOCKER_DOWN" = 1 ]; then
         echo 'Cannot connect to the Docker daemon. Is the docker daemon running?' >&2; return 1
       fi
-      printf '%s\n' "$EXISTING" | tr ' ' '\n' | grep -Fxq -- "$target" && return 0
+      grep -Fxq -- "$target" <<< "${EXISTING// /$'\n'}" && return 0
       echo "Error: No such container: $target" >&2; return 1 ;;
     'image inspect') return 0 ;;
     run*)
@@ -161,7 +161,7 @@ expect_refusal() { # <slot> <why> <expected error text>
   : > "$RUN_LOG"
   if errors="$(start_one "${1##*-}" 2>&1 >/dev/null)"; then fail "$2: the runner started"; fi
   [ ! -s "$RUN_LOG" ] || fail "$2: docker was asked to create a container"
-  printf '%s\n' "$errors" | grep -qF -- "$3" || fail "$2: unexpected error: $errors"
+  grep -qF -- "$3" <<< "$errors" || fail "$2: unexpected error: $errors"
 }
 
 # 7. An existing same-named container may still use the directory.

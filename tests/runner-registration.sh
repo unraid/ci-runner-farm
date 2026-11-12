@@ -21,12 +21,12 @@ suffix_re='r[0-9a-f]{6}'
 # ── Per-start names ──────────────────────────────────────────────────────────
 n1="$(github_runner_instance_name ci-runner-build-12)"
 n2="$(github_runner_instance_name ci-runner-build-12)"
-printf '%s\n' "$n1" | grep -qxE "mockhost-ci-runner-build-12-$suffix_re" || fail "bad per-start name: $n1"
+grep -qxE "mockhost-ci-runner-build-12-$suffix_re" <<< "$n1" || fail "bad per-start name: $n1"
 [ "$n1" != "$n2" ] || fail "two starts produced the same name"
 od() { return 1; }    # no /dev/urandom reader: the fallback still yields a valid name
 n3="$(github_runner_instance_name ci-runner-build-12)"
 unset -f od
-printf '%s\n' "$n3" | grep -qxE "mockhost-ci-runner-build-12-$suffix_re" || fail "fallback name invalid: $n3"
+grep -qxE "mockhost-ci-runner-build-12-$suffix_re" <<< "$n3" || fail "fallback name invalid: $n3"
 github_registration_of_slot ci-runner-build-12 "$n1" || fail "own per-start name not recognized"
 github_registration_of_slot ci-runner-build-12 mockhost-ci-runner-build-12 || fail "legacy name not recognized"
 for other in mockhost-ci-runner-build-1-rabcdef mockhost-ci-runner-build-12-rABCDEF \
@@ -54,7 +54,7 @@ args2="$(printf '%s\n' "${ARGS[@]}")"
 env1="$(printf '%s\n' "$args1" | sed -n 's/^RUNNER_NAME=//p')"
 label1="$(printf '%s\n' "$args1" | sed -n "s/^${GITHUB_RUNNER_NAME_LABEL}=//p")"
 env2="$(printf '%s\n' "$args2" | sed -n 's/^RUNNER_NAME=//p')"
-printf '%s\n' "$env1" | grep -qxE "mockhost-ci-runner-build-12-$suffix_re" || fail "argv runner name: $env1"
+grep -qxE "mockhost-ci-runner-build-12-$suffix_re" <<< "$env1" || fail "argv runner name: $env1"
 [ "$env1" = "$label1" ] || fail 'runner name label does not match the registered name'
 [ "$env1" != "$env2" ] || fail 'recreated runner reused the previous registration name'
 

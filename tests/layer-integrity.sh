@@ -122,20 +122,20 @@ out="$(check "$S")"
 bad_chains="$(printf '%s\n' "$out" | awk '$1 == "BAD" { print $2 }' | sort -u)"
 expected="$(printf '%s\n' "$(chain_of "$S" dnf)" "$(chain_of "$S" sized)" "$(chain_of "$S" gone)" | sort -u)"
 [ "$bad_chains" = "$expected" ] || fail "wrong bad layers: $out"
-printf '%s\n' "$out" | grep -qx "BAD $(chain_of "$S" dnf) checksum usr/lib/sysimage/rpm/rpmdb.sqlite-shm" \
+grep -qx "BAD $(chain_of "$S" dnf) checksum usr/lib/sysimage/rpm/rpmdb.sqlite-shm" <<< "$out" \
   || fail "checksum fault not reported: $out"
-printf '%s\n' "$out" | grep -qx "BAD $(chain_of "$S" sized) size var/lib/app/state.db-wal" || fail "size fault not reported"
-printf '%s\n' "$out" | grep -qx "BAD $(chain_of "$S" gone) missing var/lib/rpm/__db.002" || fail "missing file not reported"
+grep -qx "BAD $(chain_of "$S" sized) size var/lib/app/state.db-wal" <<< "$out" || fail "size fault not reported"
+grep -qx "BAD $(chain_of "$S" gone) missing var/lib/rpm/__db.002" <<< "$out" || fail "missing file not reported"
 # Only memory-mapped database files are read: a changed binary is out of scope.
-printf '%s\n' "$out" | grep -q 'usr/bin/tool' && fail "checker read a file outside its scope"
-printf '%s\n' "$out" | grep -q "$(chain_of "$S" vector)" && fail "standard CRC64 vector rejected"
-printf '%s\n' "$out" | grep -qx 'SUMMARY checked=5 cached=0 young=0 skipped=0 bytes=[0-9]*' || fail "bad summary: $out"
+grep -q 'usr/bin/tool' <<< "$out" && fail "checker read a file outside its scope"
+grep -q "$(chain_of "$S" vector)" <<< "$out" && fail "standard CRC64 vector rejected"
+grep -qx 'SUMMARY checked=5 cached=0 young=0 skipped=0 bytes=[0-9]*' <<< "$out" || fail "bad summary: $out"
 
 # Incremental: consistent layers are cached; bad layers are rechecked every pass.
 grep -q "^$(chain_of "$S" base) aaa1$" "$S.verified" || fail "consistent layer not cached"
 grep -q "^$(chain_of "$S" dnf) " "$S.verified" && fail "bad layer cached as verified"
 out="$(check "$S")"
-printf '%s\n' "$out" | grep -qx 'SUMMARY checked=3 cached=2 young=0 skipped=0 bytes=[0-9]*' || fail "cache not used: $out"
+grep -qx 'SUMMARY checked=3 cached=2 young=0 skipped=0 bytes=[0-9]*' <<< "$out" || fail "cache not used: $out"
 # The cache forgets layers that no longer exist.
 echo "$(printf 'f%.0s' $(seq 64)) zzz9" >> "$S.verified"
 check "$S" >/dev/null
@@ -151,12 +151,12 @@ cat > "$tmp/b.json" <<'JSON'
 JSON
 build "$S2" "$tmp/b.json"
 out="$(check "$S2" 30 120 8)"
-printf '%s\n' "$out" | grep -q '^BAD' && fail "young or oversized entry reported: $out"
-printf '%s\n' "$out" | grep -qx 'SUMMARY checked=1 cached=0 young=1 skipped=1 bytes=0' || fail "bounds summary: $out"
+grep -q '^BAD' <<< "$out" && fail "young or oversized entry reported: $out"
+grep -qx 'SUMMARY checked=1 cached=0 young=1 skipped=1 bytes=0' <<< "$out" || fail "bounds summary: $out"
 grep -q "$(chain_of "$S2" fresh)" "$S2.verified" && fail "young layer cached before it was checked"
 rm -f "$S2.verified"
 out="$(check "$S2" 0 0)"
-printf '%s\n' "$out" | grep -qx 'SUMMARY checked=0 cached=0 young=0 skipped=0 bytes=0 partial' || fail "zero budget not partial: $out"
+grep -qx 'SUMMARY checked=0 cached=0 young=0 skipped=0 bytes=0 partial' <<< "$out" || fail "zero budget not partial: $out"
 
 # Links: a symlinked directory inside the diff, or a symlinked diff, is never followed.
 S3="$tmp/c/docker/ci-runner-build-4"
@@ -172,9 +172,9 @@ mkdir -p "$S3/overlay2/hhh8/diff/var/lib"; ln -s "$tmp/outside/rpm" "$S3/overlay
 rm -rf "$S3/overlay2/iii9/diff"; mkdir -p "$tmp/outside/x"; printf 'outside' > "$tmp/outside/x/y-shm"
 ln -s "$tmp/outside" "$S3/overlay2/iii9/diff"
 out="$(check "$S3")"
-printf '%s\n' "$out" | grep -qx "BAD $(chain_of "$S3" link) missing var/lib/rpm/rpmdb.sqlite-shm" \
+grep -qx "BAD $(chain_of "$S3" link) missing var/lib/rpm/rpmdb.sqlite-shm" <<< "$out" \
   || fail "followed a symlinked directory: $out"
-printf '%s\n' "$out" | grep -q "$(chain_of "$S3" linkdiff)" && fail "read through a symlinked diff directory"
+grep -q "$(chain_of "$S3" linkdiff)" <<< "$out" && fail "read through a symlinked diff directory"
 # Unsafe member names are rejected rather than resolved.
 for name in '../escape-shm' '/abs-shm' 'a/../../b-shm'; do
   S4="$tmp/d$RANDOM/docker/ci-runner-build-5"
@@ -194,8 +194,8 @@ cat > "$tmp/e.json" <<'JSON'
 JSON
 build "$S5" "$tmp/e.json"
 out="$(check "$S5")"
-printf '%s\n' "$out" | grep -q 'rpmdb.sqlite-shm' && fail "./-prefixed consistent member reported: $out"
-printf '%s\n' "$out" | grep -qx "BAD $(chain_of "$S5" dot) checksum ./var/lib/rpm/./other.sqlite-wal" \
+grep -q 'rpmdb.sqlite-shm' <<< "$out" && fail "./-prefixed consistent member reported: $out"
+grep -qx "BAD $(chain_of "$S5" dot) checksum ./var/lib/rpm/./other.sqlite-wal" <<< "$out" \
   || fail "./-prefixed corrupt member not checked: $out"
 # No store yet: nothing to do, and success.
 check "$tmp/none" | grep -q . && fail "missing store produced output"
@@ -243,7 +243,7 @@ for l in dnf sized gone; do grep -qx "chain $(chain_of "$S" "$l")" "$flag" || fa
 grep -qx "image sha256:$(image_of "$S" uses-dnf)" "$flag" || fail "flag misses image using the bad layer"
 grep -qx "image sha256:$(image_of "$S" uses-all)" "$flag" || fail "flag misses image with a deep bad layer"
 grep -q "$(image_of "$S" clean)" "$flag" && fail "flag lists an image without bad layers"
-printf '%s\n' "$log_out" | grep -q 'layer-integrity: ci-runner-build-2 holds 3 cached layer(s) that cannot be exported, used by 2 image(s)' \
+grep -q 'layer-integrity: ci-runner-build-2 holds 3 cached layer(s) that cannot be exported, used by 2 image(s)' <<< "$log_out" \
   || fail "scan finding not logged: $log_out"
 # A store whose container still exists is left to the idle-slot pass.
 reset; exists=true
@@ -284,7 +284,7 @@ unset -f ionice
 [ -d "$EVS" ] && [ -z "$(ls -A "$EVS")" ] || fail "flagged store not replaced by an empty one"
 [ ! -e "$flag" ] && [ ! -e "$CRF_RUNDIR/layer-verified.$slot" ] && [ ! -e "$CRF_RUNDIR/layer-scan.$slot" ] \
   || fail "eviction left stale per-slot state"
-printf '%s\n' "$log_out" | grep -q "evicted $slot's Docker store before start" || fail "store eviction not logged: $log_out"
+grep -q "evicted $slot's Docker store before start" <<< "$log_out" || fail "store eviction not logged: $log_out"
 wait_reaped || fail "moved-aside store was not deleted"
 # Anything uncertain keeps the store and its pending eviction.
 for case in consumer parent mount refs-failure trash-link; do
@@ -359,7 +359,7 @@ crf_safe_cache_root() { printf '%s' "$tmp/clean"; }   # same slot, no corrupt la
 rm -f "$CRF_RUNDIR/layer-scan.$slot"
 log_out="$(heal_corrupt_layers 2>&1)"
 [ ! -f "$flag" ] && [ ! -s "$DOCKER_LOG" ] || fail "flag not cleared by the clean full scan itself"
-printf '%s\n' "$log_out" | grep -q 'no longer holds corrupt layers' || fail "flag clearing not logged"
+grep -q 'no longer holds corrupt layers' <<< "$log_out" || fail "flag clearing not logged"
 crf_safe_cache_root() { printf '%s' "$tmp/a"; }
 
 # Fail open: a checker crash, an unsafe store, or a non-DinD farm never blocks.
@@ -369,7 +369,7 @@ SCRIPT_DIR="$tmp/missing" layer_integrity_scan "$slot" 2>/dev/null || fail "chec
 reset; mv "$tmp/a/docker" "$tmp/a/real-docker"; ln -s "$tmp/a/real-docker" "$tmp/a/docker"
 log_out="$(layer_integrity_precreate "$slot" 2>&1)"
 [ ! -f "$flag" ] && [ -d "$tmp/a/real-docker/$slot/image" ] && [ ! -e "$tmp/a/docker-evicted" ] \
-  && ! printf '%s\n' "$log_out" | grep -q layer-integrity || fail "scanned or evicted through a symlinked store"
+  && ! grep -q layer-integrity <<< "$log_out" || fail "scanned or evicted through a symlinked store"
 rm "$tmp/a/docker"; mv "$tmp/a/real-docker" "$tmp/a/docker"
 reset; DIND=false
 layer_integrity_precreate "$slot" 2>/dev/null; heal_corrupt_layers 2>/dev/null
@@ -378,7 +378,7 @@ DIND=true
 
 # The lifecycle tick runs the pass and survives its failure.
 grep -q 'heal_corrupt_layers' <(declare -f lifecycle_tick) || fail "lifecycle tick does not run the heal pass"
-declare -f cmd_prune_cache | grep -q 'docker-evicted' || fail "prune-cache leaves moved-aside stores behind"
+grep -q 'docker-evicted' <<< "$(declare -f cmd_prune_cache)" || fail "prune-cache leaves moved-aside stores behind"
 grep -q 'layer_integrity_precreate "\$name"' <(declare -f github_start_one) || fail "slot creation does not scan"
 grep -q 'layer_integrity_precreate "\$name"' <(declare -f cmd_recycle) || fail "recycle does not scan"
 

@@ -114,7 +114,7 @@ for required_remove_line in \
   'if ! rm -rf -- "$PLGDIR" || [ -e "$PLGDIR" ]; then' \
   'if ! rm -f -- "$CFGDIR"/ci-runner-farm-*.tgz; then'
 do
-  printf '%s\n' "$remove_block" | grep -qF "$required_remove_line" || {
+  grep -qF "$required_remove_line" <<< "$remove_block" || {
     echo "package-contents: generated remove action is missing: $required_remove_line" >&2
     exit 1
   }

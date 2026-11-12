@@ -214,7 +214,7 @@ crf_history_record_snapshot() {
     read -r runner cpu mem phase job64 started provider project64 jobid _ <<< "$row"
     [ "$phase" = busy ] || continue
     [ -n "$runner" ] && [ "$runner" != _ ] || continue
-    cur="$(printf '%s\n' "$current" | awk -v n="$runner" '$1 == n { print; exit }')"
+    cur="$(awk -v n="$runner" '$1 == n { print; exit }' <<< "$current")"
     [ -n "$cur" ] || continue
     read -r _ cur_cpu cur_mem cur_phase cur_job64 cur_started cur_provider cur_project64 cur_jobid _ <<< "$cur"
       same=false

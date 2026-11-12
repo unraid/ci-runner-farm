@@ -25,8 +25,7 @@ assert_all_jobs_guarded() {
       emit && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { exit }
       emit { print }
     ' "$file")"
-    printf '%s\n' "$block" \
-      | grep -Eq "^    if:.*github\.repository == 'unraid/ci-runner-farm'" || {
+    grep -Eq "^    if:.*github\.repository == 'unraid/ci-runner-farm'" <<< "$block" || {
         echo "release-guard: unguarded job '$job' in $file" >&2
         return 1
       }

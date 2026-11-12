@@ -367,7 +367,7 @@ github_reap_stale_registrations() {
     case "$id" in ''|*[!0-9]*) continue ;; esac
     [ "$status" = offline ] && [ "$busy" = false ] || continue
     case "$base" in /orgs/*|/repos/*) ;; *) continue ;; esac
-    printf '%s' "$owned" | grep -qxF -- "$name" && continue
+    grep -qxF -- "$name" <<< "$owned" && continue
     seen="$seen$id"$'\n'
     # Marker: offline readings, inventory generation of the last reading, and
     # the time of the last delete attempt (0 = never).
@@ -403,7 +403,7 @@ github_reap_stale_registrations() {
   # Forget registrations that came back online, were deleted, or became owned.
   for marker in "$RUNDIR"/github-stale-registration.*; do
     [ -e "$marker" ] || break
-    printf '%s' "$seen" | grep -qxF -- "${marker##*.}" || rm -f "$marker"
+    grep -qxF -- "${marker##*.}" <<< "$seen" || rm -f "$marker"
   done
   return "$failed"
 }
@@ -1166,7 +1166,7 @@ github_queued_refresh() {
     [ -n "$r" ] || continue
     i=$((i+1)); body="$(cat "$tmpd/$i" 2>/dev/null)"
     case "$body" in *'"total_count"'*) got=1 ;; esac
-    n="$(printf '%s' "$body" | grep -m1 -oE '"total_count":[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | head -1)"
+    n="$(grep -m1 -oE '"total_count":[[:space:]]*[0-9]+' <<< "$body" | grep -oE '[0-9]+' | head -1)"
     total=$(( total + ${n:-0} ))
   done
   rm -rf "$tmpd"

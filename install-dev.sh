@@ -471,7 +471,7 @@ docker_names "GitLab validation jobs" \
   --filter 'label=net.unraid.ci-runner-farm.slot'
 all_names="$(docker ps -a --format '{{.Names}}' 2>/dev/null)" \
   || fail "cannot enumerate Docker names for legacy mirror verification"
-if printf '%s\n' "$all_names" | grep -qxF ci-runner-mirror; then
+if grep -qxF ci-runner-mirror <<< "$all_names"; then
   legacy_cache_root=/mnt/cache/github-runner
   cfg="$canonical_cfg/ci-runner-farm.cfg"
   if [ -e "$cfg" ]; then
@@ -495,7 +495,7 @@ if printf '%s\n' "$all_names" | grep -qxF ci-runner-mirror; then
   if [ "$legacy_name" = /ci-runner-mirror ] \
      && [ "$legacy_image" = registry:2 ] \
      && [ "$legacy_source" = "$legacy_cache_root/registry-mirror" ] \
-     && printf '%s\n' "$legacy_env" | grep -qx 'REGISTRY_PROXY_REMOTEURL=https://registry-1.docker.io'; then
+     && grep -qx 'REGISTRY_PROXY_REMOTEURL=https://registry-1.docker.io' <<< "$legacy_env"; then
     fail "fixed-name registry mirror remains after Stop"
   fi
 fi

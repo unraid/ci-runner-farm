@@ -87,11 +87,11 @@ grep -qF 'POST /repos/example/one/actions/runners/registration-token' "$GH_API_L
 GH_SCOPE=repo
 github_build_args 2 || fail "GitHub default-name repo argv generation failed"
 github_args="$(printf '%s\n' "${ARGS[@]}")"
-printf '%s\n' "$github_args" | grep -qx 'ci-runner-2' \
+grep -qx 'ci-runner-2' <<< "$github_args" \
   || fail "GitHub default runner name did not use its function argument"
-printf '%s\n' "$github_args" | grep -qx 'REPO_URL=https://github.com/example/two' \
+grep -qx 'REPO_URL=https://github.com/example/two' <<< "$github_args" \
   || fail "GitHub repo round-robin assignment changed"
-if printf '%s\n' "$github_args" | grep -qF short-registration-token; then
+if grep -qF short-registration-token <<< "$github_args"; then
   fail "short-lived GitHub registration token leaked into Docker argv"
 fi
 gh_envfile="$(printf '%s\n' "$github_args" | grep -A1 -Fx -- '--env-file' | tail -1)"
@@ -100,11 +100,11 @@ grep -qx 'RUNNER_TOKEN=short-registration-token' "$gh_envfile" \
   || fail "short-lived GitHub registration token missing from its protected env file"
 [ "$(mode_of "$gh_envfile")" = 600 ] || fail "GitHub registration-token env file is not mode 0600"
 [ "$ARGS_TMPDIR" = "${gh_envfile%/*}" ] || fail "GitHub adapter did not publish its token dir for engine cleanup"
-if printf '%s\n' "$github_args" | grep -qF "$ACCESS_TOKEN"; then fail "GitHub PAT leaked into runner argv"; fi
-printf '%s\n' "$github_args" | grep -qx -- '--privileged' || fail "GitHub DinD privilege flag missing"
-printf '%s\n' "$github_args" | grep -qx -- '--cgroupns=private' || fail "GitHub DinD cgroup namespace flag missing"
-printf '%s\n' "$github_args" | grep -qx 'START_DOCKER_SERVICE=true' || fail "GitHub DinD environment missing"
-printf '%s\n' "$github_args" | grep -qx '/_work:rw,exec,size=2g' || fail "GitHub workspace tmpfs changed"
+if grep -qF "$ACCESS_TOKEN" <<< "$github_args"; then fail "GitHub PAT leaked into runner argv"; fi
+grep -qx -- '--privileged' <<< "$github_args" || fail "GitHub DinD privilege flag missing"
+grep -qx -- '--cgroupns=private' <<< "$github_args" || fail "GitHub DinD cgroup namespace flag missing"
+grep -qx 'START_DOCKER_SERVICE=true' <<< "$github_args" || fail "GitHub DinD environment missing"
+grep -qx '/_work:rw,exec,size=2g' <<< "$github_args" || fail "GitHub workspace tmpfs changed"
 
 # Generic user-share mounts work across repository/org runners, owners, and
 # runner groups; CACHE_ROOT remains separate for Docker-in-Docker data.
@@ -163,16 +163,16 @@ if clear_args_tmpdir 2>/dev/null; then fail "engine accepted a traversal out of 
 github_kvm_gid() { printf '108\n'; }
 github_build_args 1 ci-runner-1 || fail "ordinary GitHub runner argv generation failed"
 github_args="$(printf '%s\n' "${ARGS[@]}")"
-if printf '%s\n' "$github_args" | grep -qFx -- '--device'; then fail "ordinary runner received KVM"; fi
-if printf '%s\n' "$github_args" | grep -qF 'KVM_GID='; then fail "ordinary runner received KVM group"; fi
+if grep -qFx -- '--device' <<< "$github_args"; then fail "ordinary runner received KVM"; fi
+if grep -qF 'KVM_GID=' <<< "$github_args"; then fail "ordinary runner received KVM group"; fi
 clear_args_tmpdir || fail "engine could not retire the ordinary runner token dir"
 RUNNER_LABELS='self-hosted,unraid,build,kvm'
 github_build_args 1 ci-runner-1 || fail "GitHub KVM runner argv generation failed"
 github_args="$(printf '%s\n' "${ARGS[@]}")"
-printf '%s\n' "$github_args" | grep -qx 'LABELS=self-hosted,unraid,build,kvm' || fail "KVM label missing"
+grep -qx 'LABELS=self-hosted,unraid,build,kvm' <<< "$github_args" || fail "KVM label missing"
 printf '%s\n' "$github_args" | grep -A1 -Fx -- '--device' | tail -1 | grep -qx '/dev/kvm' || fail "KVM device missing"
 printf '%s\n' "$github_args" | grep -A1 -Fx -- '--group-add' | tail -1 | grep -qx '108' || fail "KVM group missing"
-printf '%s\n' "$github_args" | grep -qx 'KVM_GID=108' || fail "KVM group was not sent to the runner entrypoint"
+grep -qx 'KVM_GID=108' <<< "$github_args" || fail "KVM group was not sent to the runner entrypoint"
 [ "$(crf_confgen)" != "$legacy_confgen" ] || fail "KVM availability did not change the runner fingerprint"
 clear_args_tmpdir || fail "engine could not retire the KVM runner token dir"
 github_kvm_gid() { return 1; }
@@ -184,7 +184,7 @@ GH_SCOPE=org
 github_build_args 1 ci-runner-1 || fail "GitHub org argv generation failed"
 github_args="$(printf '%s\n' "${ARGS[@]}")"
 for expected in 'RUNNER_SCOPE=org' 'ORG_NAME=example-owner' 'RUNNER_GROUP=secure-group'; do
-  printf '%s\n' "$github_args" | grep -qx "$expected" || fail "GitHub org argv missing $expected"
+  grep -qx "$expected" <<< "$github_args" || fail "GitHub org argv missing $expected"
 done
 grep -qF 'POST /orgs/example-owner/actions/runners/registration-token' "$GH_API_LOG" \
   || fail "GitHub org registration endpoint changed"
@@ -192,9 +192,9 @@ grep -qF 'POST /orgs/example-owner/actions/runners/registration-token' "$GH_API_
 GH_SCOPE=repo; DIND=false; SHARE_DOCKER_SOCK=true; WORK_TMPFS_SIZE=''
 github_build_args 1 ci-runner-1 || fail "GitHub host-socket argv generation failed"
 github_args="$(printf '%s\n' "${ARGS[@]}")"
-printf '%s\n' "$github_args" | grep -qx '/var/run/docker.sock:/var/run/docker.sock' \
+grep -qx '/var/run/docker.sock:/var/run/docker.sock' <<< "$github_args" \
   || fail "GitHub host-socket mount changed"
-printf '%s\n' "$github_args" | grep -qx "$CACHE_ROOT/work/ci-runner-1:/_work" \
+grep -qx "$CACHE_ROOT/work/ci-runner-1:/_work" <<< "$github_args" \
   || fail "GitHub bind-workspace fallback changed"
 
 # GitHub removal must stop the listener before deleting its registration.
@@ -292,16 +292,16 @@ for leaked in "$redact_access" "$redact_runner" "$redact_api" "$redact_registry"
   "$redact_routable" "$redact_routable_legacy" "$redact_routable_custom" \
   glpat-abcdefghijklmnop github_pat_abcdefghijklmnop ghp_abcdefghijklmnop
 do
-  if printf '%s\n' "$redacted_log" | grep -Fq -- "$leaked"; then fail "log redaction leaked $leaked"; fi
+  if grep -Fq -- "$leaked" <<< "$redacted_log"; then fail "log redaction leaked $leaked"; fi
 done
-printf '%s\n' "$redacted_log" | grep -q '\[REDACTED\]' \
+grep -q '\[REDACTED\]' <<< "$redacted_log" \
   || fail "loaded-secret redaction marker is missing"
-printf '%s\n' "$redacted_log" | grep -q '\[REDACTED_GITLAB_TOKEN\]' \
+grep -q '\[REDACTED_GITLAB_TOKEN\]' <<< "$redacted_log" \
   || fail "GitLab shape redaction marker is missing"
 printf '%s\n' "$redacted_log" \
   | grep -Fx 'shape [REDACTED_GITLAB_TOKEN] [REDACTED_GITLAB_TOKEN] [REDACTED_GITLAB_TOKEN]' >/dev/null \
   || fail "routable GitLab token redaction left a dotted suffix visible"
-printf '%s\n' "$redacted_log" | grep -q '\[REDACTED_GITHUB_TOKEN\]' \
+grep -q '\[REDACTED_GITHUB_TOKEN\]' <<< "$redacted_log" \
   || fail "GitHub shape redaction marker is missing"
 
 GITLAB_RUNNER_TOKEN="$ROUTABLE_GITLAB_RUNNER_TOKEN"
@@ -815,9 +815,9 @@ IMAGE_SOURCE=builtin; IMAGE=''; REGISTRY_SERVER=''; DIND=true; SHARE_DOCKER_SOCK
 rm -f "$SECURITY_CACHE"
 GITLAB_API_TOKEN=''; GITLAB_PROJECTS=''; DIND=true; SHARE_DOCKER_SOCK=false
 security_warning="$(provider_public_problem)"
-printf '%s' "$security_warning" | grep -qF 'job, helper, and service containers' \
+grep -qF 'job, helper, and service containers' <<< "$security_warning" \
   || fail "GitLab DinD warning omits the slot sibling-container blast radius"
-printf '%s' "$security_warning" | grep -qF 'not a security boundary against the Unraid host' \
+grep -qF 'not a security boundary against the Unraid host' <<< "$security_warning" \
   || fail "GitLab DinD warning implies privileged DinD is a host boundary"
 gitlab_gen_before="$(crf_confgen)"
 GITLAB_RUNNER_TOKEN='glrt-memory-snapshot-changed-1234567890' # kingfisher:ignore synthetic token, not a credential
@@ -855,21 +855,21 @@ curl() {
     printf '%s' "$code"
     return 0
   fi
-  if printf '%s' "$url" | grep -q 'scope%5B%5D=pending'; then
-    if printf '%s' "$url" | grep -q 'group%2Fsub%2Fproject'; then
+  if grep -q 'scope%5B%5D=pending' <<< "$url"; then
+    if grep -q 'group%2Fsub%2Fproject' <<< "$url"; then
       printf 'x-total: 2\r\n\r\n' >> "$headers"
     else
       printf 'x-total: 3\r\n\r\n' >> "$headers"
     fi
     printf '%s' '[{"id":101,"status":"pending","pipeline":{"id":9},"runner":{"id":4}}]' > "$output"
-  elif printf '%s' "$url" | grep -q '/jobs?per_page=50'; then
-    if printf '%s' "$url" | grep -q 'group%2Fsub%2Fproject'; then
+  elif grep -q '/jobs?per_page=50' <<< "$url"; then
+    if grep -q 'group%2Fsub%2Fproject' <<< "$url"; then
       printf '%s' '[{"id":7,"status":"canceled","pipeline":{"id":8,"status":"success"},"runner":{"id":9,"status":"online"}},{"id":10,"status":"skipped","pipeline":{"id":11,"status":"failed"},"runner":{"id":12,"status":"offline"}}]' > "$output"
     else
       printf '%s' '[{"id":1,"status":"success","pipeline":{"id":2,"status":"failed"},"runner":{"id":3,"status":"online"}},{"id":4,"status":"failed","pipeline":{"id":5,"status":"success"},"runner":{"id":6,"status":"offline"}}]' > "$output"
     fi
   else
-    if printf '%s' "$url" | grep -q 'group%2Fsub%2Fproject'; then
+    if grep -q 'group%2Fsub%2Fproject' <<< "$url"; then
       printf '%s' '{"visibility":"public"}' > "$output"
     else
       printf '%s' '{"visibility":"private"}' > "$output"
@@ -890,7 +890,7 @@ read -r sprovider _ sok sfail scancel sother stotal < "$CRF_RUNDIR/stats.cache"
   || fail "GitLab multi-project stats aggregation counted nested status fields"
 rm -f "$SECURITY_CACHE"
 public_warning="$(gitlab_public_repo_problem)"
-printf '%s' "$public_warning" | grep -qF 'group/sub/project' \
+grep -qF 'group/sub/project' <<< "$public_warning" \
   || fail "GitLab public-project warning did not inspect every monitored project"
 if grep -qF "$GITLAB_API_TOKEN" "$MOCK_CURL_ARGS"; then fail "API token leaked into curl argv"; fi
 while IFS= read -r curl_args; do
@@ -957,7 +957,7 @@ assert r.get("provider") == "gitlab" and r.get("project") == "group/project"
 assert r.get("job_id") == "42" and r.get("ref") == "main"
 assert r.get("repo") == "" and r.get("run_id") == ""
 ' || fail "provider-neutral status JSON mapping failed"
-if printf '%s' "$status_json" | grep -qF "$GITLAB_RUNNER_TOKEN"; then fail "runner token leaked into status JSON"; fi
+if grep -qF "$GITLAB_RUNNER_TOKEN" <<< "$status_json"; then fail "runner token leaked into status JSON"; fi
 
 # A cache row must agree with the live container provider. This prevents stale
 # provider-switch data from being presented as the new provider's current job.

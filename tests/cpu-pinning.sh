@@ -504,15 +504,15 @@ args_of() { printf '%s\n' "${ARGS[@]}"; }
 CPU_PINNING=false
 : > "$DOCKER_LOG"
 NO_REGISTER=1 github_build_args 1 ci-runner-build-1 2>"$tmp/build.err" || fail "disabled argv build failed: $(cat "$tmp/build.err")"
-args_of | grep -qx -- '--cpus=4' || fail "disabled pinning dropped --cpus"
-if args_of | grep -q -- '--cpuset-cpus'; then fail "disabled pinning added --cpuset-cpus"; fi
+grep -qx -- '--cpus=4' <<< "$(args_of)" || fail "disabled pinning dropped --cpus"
+if grep -q -- '--cpuset-cpus' <<< "$(args_of)"; then fail "disabled pinning added --cpuset-cpus"; fi
 if grep -q '^ps ' "$DOCKER_LOG"; then fail "disabled pinning inspected the container inventory"; fi
 CPU_PINNING=true
 NO_REGISTER=1 github_build_args 1 ci-runner-build-1 2>"$tmp/build.err" || fail "enabled argv build failed: $(cat "$tmp/build.err")"
-args_of | grep -qx -- '--cpus=4' || fail "enabled pinning dropped --cpus"
-args_of | grep -qx -- '--cpuset-cpus=0-3' || fail "enabled pinning did not add --cpuset-cpus=0-3"
-args_of | grep -qx -- 'net.unraid.ci-runner-farm.cpuset=0-3' || fail "enabled pinning did not label the cpuset"
-args_of | grep -qx -- "net.unraid.ci-runner-farm.confgen=$enabled_confgen" || fail "enabled argv carries a different fingerprint"
+grep -qx -- '--cpus=4' <<< "$(args_of)" || fail "enabled pinning dropped --cpus"
+grep -qx -- '--cpuset-cpus=0-3' <<< "$(args_of)" || fail "enabled pinning did not add --cpuset-cpus=0-3"
+grep -qx -- 'net.unraid.ci-runner-farm.cpuset=0-3' <<< "$(args_of)" || fail "enabled pinning did not label the cpuset"
+grep -qx -- "net.unraid.ci-runner-farm.confgen=$enabled_confgen" <<< "$(args_of)" || fail "enabled argv carries a different fingerprint"
 # Both container start paths receive the same argv.
 run_owned_github_container 1 >/dev/null || fail "docker run path failed"
 grep -qx -- '--cpuset-cpus=0-3' "$tmp/run.argv" || fail "docker run did not receive --cpuset-cpus"
@@ -520,8 +520,8 @@ grep -qx -- '--cpus=4' "$tmp/run.argv" || fail "docker run did not receive --cpu
 # A fractional limit keeps the quota, warns, and starts unpinned.
 RUNNER_CPUS='2.5'
 NO_REGISTER=1 github_build_args 1 ci-runner-build-1 2>"$tmp/build.err" || fail "fractional argv build failed"
-args_of | grep -qx -- '--cpus=2.5' || fail "fractional limit dropped --cpus"
-if args_of | grep -q -- '--cpuset-cpus'; then fail "fractional limit added --cpuset-cpus"; fi
+grep -qx -- '--cpus=2.5' <<< "$(args_of)" || fail "fractional limit dropped --cpus"
+if grep -q -- '--cpuset-cpus' <<< "$(args_of)"; then fail "fractional limit added --cpuset-cpus"; fi
 grep -qF 'warning: CPU pinning skipped for ci-runner-build-1: pinning needs a whole-number CPU limit' "$tmp/build.err" \
   || fail "fractional limit did not warn"
 

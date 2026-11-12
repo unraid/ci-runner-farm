@@ -21,7 +21,7 @@ argv() { printf '%s\n' "${ARGS[@]}"; }
 
 CACHE_MOUNTS='npm:/home/runner/.npm'
 github_build_args 1 test-runner || fail 'configuration without a blob cache rejected'
-if argv | grep -q '^CI_BLOB_CACHE_DIR='; then fail 'runner without a blob-cache mount received its variable'; fi
+if grep -q '^CI_BLOB_CACHE_DIR=' <<< "$(argv)"; then fail 'runner without a blob-cache mount received its variable'; fi
 before="$(github_confgen)"
 
 for dest in /home/runner/.cache/unraid-blobs /opt/blob-cache; do
@@ -40,9 +40,9 @@ fingerprint_input() {
   tr '\0' '\n' < "$tmp/fingerprint"
 }
 CACHE_MOUNTS='blob-cache:/opt/blobs'
-fingerprint_input | grep -q -- '-blob-cache-v1' || fail 'blob-cache slots carry no drain salt'
+grep -q -- '-blob-cache-v1' <<< "$(fingerprint_input)" || fail 'blob-cache slots carry no drain salt'
 CACHE_MOUNTS='npm:/home/runner/.npm'
-if fingerprint_input | grep -q -- '-blob-cache-v1'; then fail 'unrelated slots received the blob-cache salt'; fi
+if grep -q -- '-blob-cache-v1' <<< "$(fingerprint_input)"; then fail 'unrelated slots received the blob-cache salt'; fi
 
 # The pnpm store keeps its own variables beside the blob cache.
 CACHE_MOUNTS='pnpm-store:/opt/store blob-cache:/opt/blobs'
