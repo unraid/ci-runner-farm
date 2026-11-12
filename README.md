@@ -599,6 +599,17 @@ The watchdog runs independently of autoscaling, so fixed-size fleets receive
 the same protection. GitLab keeps its manager-owned lifecycle path and exposes
 no candidate to this watchdog.
 
+The watchdog also replaces a GitHub runner as soon as it exits cleanly. A
+single-use runner exits with code 0 when its job ends, and the watchdog reads
+Docker's exit events for farm containers. It then replaces that slot within
+seconds. It uses the same lock, exit check, growth gate and replacement steps as
+its periodic check, so the two can never both start one slot. Exits that arrive
+together are handled as one batch, and one batch has the same growth limit as
+one periodic check. The watchdog does not act on an event when the runner
+exited with an error, when autoscaling is on but its daemon is stopped, or when
+a settings drain runs. In those cases, and when an event is missed, the
+periodic check replaces the slot after two consecutive checks find it exited.
+
 Each GitHub runner start registers under its own name,
 `<host>-<slot>-r<6 hex digits>`, so a slot recreated quickly after an ephemeral
 job can never collide with the previous runner's still-open session. The

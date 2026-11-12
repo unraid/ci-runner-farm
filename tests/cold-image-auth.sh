@@ -29,7 +29,7 @@ github_build_args() { echo registration >> "$tmp/order"; ARGS=(-d --name "$2" "$
 clear_args_tmpdir() { [ "${ARGS[${#ARGS[@]}-1]}" = "$IMAGE" ] || fail 'runner argv lost image'; echo cleanup >> "$tmp/order"; }
 run_runner() { github_start_one 1 ci-runner-build-1 || fail 'runner start failed'; }
 run_runner
-[ "$(cat "$tmp/order")" = $'inspect\nlogin\npull\nregistration\nrun\ncleanup' ] || fail 'cold private image was not authenticated before registration and runner creation'
+[ "$(cat "$tmp/order")" = $'inspect\ninspect\nlogin\npull\nregistration\nrun\ncleanup' ] || fail 'cold private image was not authenticated before registration and runner creation'
 : > "$tmp/order"; cached=true
 run_runner
 [ "$(cat "$tmp/order")" = $'inspect\nregistration\nrun\ncleanup' ] || fail 'cached image performed unnecessary authentication or pull'
@@ -50,5 +50,19 @@ run_runner
 )
 : > "$tmp/order"; IMAGE_SOURCE=remote cached=false
 github_start_one 1 ci-runner-build-1
-[ "$(cat "$tmp/order")" = $'inspect\nlogin\npull\nregistration\nrun\ncleanup' ] || fail 'legacy startup lost authenticated image preparation'
-printf 'cold-image-auth: cold, cached, login/pull refusal, ordinary startup passed\n'
+[ "$(cat "$tmp/order")" = $'inspect\ninspect\nlogin\npull\nregistration\nrun\ncleanup' ] || fail 'legacy startup lost authenticated image preparation'
+# A digest that is already local needs no login and no pull: the registry
+# cannot change what a digest names. A tag can move, so it is still pulled.
+: > "$tmp/order"; cached=true
+github_prepare_remote_image "$IMAGE" || fail 'cached digest preparation failed'
+[ "$(cat "$tmp/order")" = inspect ] || fail "cached digest logged in or pulled: $(tr '\n' ' ' < "$tmp/order")"
+: > "$tmp/order"; cached=false
+github_prepare_remote_image "$IMAGE" || fail 'cold digest preparation failed'
+[ "$(cat "$tmp/order")" = $'inspect\nlogin\npull' ] || fail 'cold digest was not authenticated and pulled'
+: > "$tmp/order"; cached=true login_ok=false
+if github_prepare_remote_image "${IMAGE%@*}:latest"; then fail 'a tag skipped its authenticated pull'; fi
+[ "$(cat "$tmp/order")" = login ] || fail "a tag did not try to log in and pull: $(tr '\n' ' ' < "$tmp/order")"
+: > "$tmp/order"; login_ok=true
+( IMAGE="${IMAGE%@*}:latest"; github_prepare_remote_image "$IMAGE" ) || fail 'tag preparation failed'
+[ "$(cat "$tmp/order")" = $'login\npull' ] || fail "a cached tag was not pulled: $(tr '\n' ' ' < "$tmp/order")"
+printf 'cold-image-auth: cold, cached, login/pull refusal, ordinary startup, cached digest passed\n'

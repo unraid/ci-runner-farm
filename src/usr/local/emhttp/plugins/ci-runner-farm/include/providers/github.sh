@@ -52,7 +52,13 @@ github_validate_docker_cache_policy() {
 github_strict_endpoint() { return 0; }
 github_imageupdate_pull() { return 1; }
 github_remote_image_host_pull_required() { return 0; }
-github_prepare_remote_image() { registry_login && host_docker_pull "$1"; }
+# A digest names one immutable image, so a pull of a digest that is already
+# local can change nothing. Skip the login and the registry round trip then.
+# A tag can move, so a tag is still pulled each time.
+github_prepare_remote_image() {
+  image_digest_present "$1" && return 0
+  registry_login && host_docker_pull "$1"
+}
 github_remote_image_update_allowed() { return 0; }
 github_stop_cleanup() { return 0; }
 github_docker_stopping_timeout() { echo 0; }
