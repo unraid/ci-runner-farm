@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.5.0](https://github.com/unraid/ci-runner-farm/compare/v3.4.5...v3.5.0) (2026-11-12)
+
+
+### Features
+
+* **autoscale:** publish per-pool growth state for textfile collectors ([#231](https://github.com/unraid/ci-runner-farm/issues/231)) ([917f007](https://github.com/unraid/ci-runner-farm/commit/917f0072e80f46de42b83cc242713128498bf361))
+
 ## [3.4.5](https://github.com/unraid/ci-runner-farm/compare/v3.4.4...v3.4.5) (2026-11-11)
 
 
