@@ -161,22 +161,43 @@ pool_config_validate() {
 
 pool_mode_enabled() { [ "${RUNNER_MODE:-single}" = pools ]; }
 
+# Validation is a pure function of these four inputs, and it costs dozens of
+# processes. Every pool field lookup reads the records, so a tick that looks up
+# each slot's pool settings would validate the same string hundreds of times.
+# Keep the last valid result per process, keyed by its exact inputs. A caller in
+# a command substitution keeps nothing, so a long-lived caller primes the cache
+# in its own process (pool_records_prime). A failed validation is never kept.
+POOL_RECORDS_CACHE_KEY=""
+POOL_RECORDS_CACHE=""
+pool_records_prime() { pool_records >/dev/null 2>&1 || true; }
+
 pool_records() {
-  pool_config_validate "${RUNNER_MODE:-single}" "${RUNNER_POOLS:-}" "${GH_SCOPE:-repo}" "${CI_PROVIDER:-github}" || return 1
+  local key rec
   if pool_mode_enabled; then
-    printf '%s\n' "$POOL_RECORDS" | tr ';' '\n'
-  else
-    printf 'single|default|legacy||%s|%s|%s|%s|inherit|inherit|%s\n' \
-      "${RUNNER_COUNT:-4}" "${AUTOSCALE_MIN:-2}" "${AUTOSCALE_MAX:-16}" \
-      "${AUTOSCALE_MIN_IDLE:-2}" "${IMAGE:-builtin}"
+    key="${RUNNER_POOLS:-}"$'\n'"${GH_SCOPE:-repo}"$'\n'"${CI_PROVIDER:-github}"
+    if [ -z "$POOL_RECORDS_CACHE_KEY" ] || [ "$POOL_RECORDS_CACHE_KEY" != "$key" ]; then
+      POOL_RECORDS_CACHE_KEY=""
+      pool_config_validate pools "${RUNNER_POOLS:-}" "${GH_SCOPE:-repo}" "${CI_PROVIDER:-github}" || return 1
+      POOL_RECORDS_CACHE="$POOL_RECORDS"
+      POOL_RECORDS_CACHE_KEY="$key"
+    fi
+    while IFS= read -r rec; do printf '%s\n' "$rec"; done <<< "${POOL_RECORDS_CACHE//;/$'\n'}"
+    return 0
   fi
+  pool_config_validate "${RUNNER_MODE:-single}" "${RUNNER_POOLS:-}" "${GH_SCOPE:-repo}" "${CI_PROVIDER:-github}" || return 1
+  printf 'single|default|legacy||%s|%s|%s|%s|inherit|inherit|%s\n' \
+    "${RUNNER_COUNT:-4}" "${AUTOSCALE_MIN:-2}" "${AUTOSCALE_MAX:-16}" \
+    "${AUTOSCALE_MIN_IDLE:-2}" "${IMAGE:-builtin}"
 }
 
 pool_record() {
   local want="$1" rec
+  local records rest
+  records="$(pool_records)" || return 1
   while IFS= read -r rec; do
-    [ "$(printf '%s' "$rec" | cut -d'|' -f2)" = "$want" ] && { printf '%s\n' "$rec"; return 0; }
-  done < <(pool_records)
+    rest="${rec#*|}"
+    [ "${rest%%|*}" = "$want" ] && { printf '%s\n' "$rec"; return 0; }
+  done <<< "$records"
   return 1
 }
 

@@ -487,6 +487,7 @@ pool_base_refresh() {
   BASE_IMAGE_SOURCE="$IMAGE_SOURCE"
   BASE_IMAGE="$IMAGE"
   BASE_GITLAB_RUNNER_TOKEN="$GITLAB_RUNNER_TOKEN"
+  pool_records_prime
 }
 
 pool_activate() {
@@ -1489,16 +1490,186 @@ replenish_fixed_github_capacity() {
   done
 }
 
+# ---- exit-driven replacement -------------------------------------------------
+# A single-use runner exits as soon as its job ends. Between ticks its slot is
+# dead capacity, and a tick needs two confirmations, so a short job could leave
+# its slot dead for longer than the job ran. The lifecycle daemon therefore also
+# reads Docker's "die" events for farm-owned containers and replaces an exited
+# slot within seconds. It uses the same lock, the same exit check, the same
+# growth gate and the same recycle path as the tick (lifecycle_replace), so the
+# two cannot both start a slot. The tick stays as the fallback for an event that
+# is missed, for example while Docker restarts.
+#
+# Only a clean exit (code 0) is replaced at once. A finished runner exits 0. A
+# runner that fails while it starts usually exits with an error, and the tick's
+# confirmations then keep its retries to the old pace instead of a fast loop.
+LIFECYCLE_EVENT_LOCK_WAIT="${CRF_LIFECYCLE_EVENT_LOCK_WAIT:-60}" # seconds an exit batch waits for fleet.lock
+LIFECYCLE_EVENT_BATCH_WAIT="${CRF_LIFECYCLE_EVENT_BATCH_WAIT:-1}" # seconds to collect more exits into one batch
+LIFECYCLE_EVENT_BATCH_MAX=64
+LIFECYCLE_EVENT_BATCH_SPAN=3 # most seconds one batch keeps collecting
+LIFECYCLE_EVENT_FD=""
+LIFECYCLE_EVENT_PID=""
+LIFECYCLE_SLEEP_PID=""
+LIFECYCLE_EVENT_ACTED=false
+
+# Start reading die events of farm-owned containers, one "ID name exit-code"
+# line each.
+lifecycle_events_open() {
+  exec {LIFECYCLE_EVENT_FD}< <(exec docker events --filter type=container --filter event=die \
+    --filter "label=${MANAGED_LABEL}" \
+    --format '{{.Actor.ID}} {{.Actor.Attributes.name}} {{.Actor.Attributes.exitCode}}' 2>/dev/null)
+  LIFECYCLE_EVENT_PID=$!
+}
+
+lifecycle_events_close() {
+  if [ -n "$LIFECYCLE_EVENT_PID" ]; then
+    kill "$LIFECYCLE_EVENT_PID" 2>/dev/null || true
+    wait "$LIFECYCLE_EVENT_PID" 2>/dev/null || true
+  fi
+  if [ -n "$LIFECYCLE_EVENT_FD" ]; then exec {LIFECYCLE_EVENT_FD}<&- 2>/dev/null || true; fi
+  LIFECYCLE_EVENT_FD=""; LIFECYCLE_EVENT_PID=""
+}
+
+# Sleep in the background, so that a stop signal ends the daemon at once.
+lifecycle_sleep() {
+  [ "$1" -gt 0 ] || return 0
+  sleep "$1" &
+  LIFECYCLE_SLEEP_PID=$!
+  wait "$LIFECYCLE_SLEEP_PID" 2>/dev/null || true
+  LIFECYCLE_SLEEP_PID=""
+}
+
+# The tick has a confirmation delay. An exit event acts at once, so it also
+# stays out of the way of work that is stopping or moving the fleet:
+#   - when autoscaling is on, the autoscale daemon must be running. A drain for
+#     a host reboot stops autoscale first and then this daemon, and no slot may
+#     start in between.
+#   - no settings drain may be running. The drain recycles slots itself.
+lifecycle_event_allowed() {
+  if [ "$AUTOSCALE" = true ] && [ "$(growth_autoscale_running)" != 1 ]; then
+    log "lifecycle: $1 exited while autoscale is stopped; not replacing it"
+    return 1
+  fi
+  if pgrep -f '[r]unner-farm.sh reconcile-drain' >/dev/null 2>&1; then
+    log "lifecycle: $1 exited during a settings drain; the drain or the next tick replaces it"
+    return 1
+  fi
+}
+
+# Replace slot $2 if it still holds the container $1 that exited. Runs under
+# fleet.lock. Every check is repeated here because the event is only a hint:
+# a tick, a recycle or a stop can have changed the slot before the lock came.
+# Sets LIFECYCLE_EVENT_ACTED when it tried a replacement.
+lifecycle_event_replace() {
+  local id="$1" name="$2" current provider role
+  [[ "$id" =~ ^[0-9a-f]{64}$ ]] || return 0
+  [[ "$name" =~ ^ci-runner-([0-9]+|[a-z][a-z0-9-]{0,23}-[0-9]+)$ ]] || return 0
+  [ "$CI_PROVIDER" = github ] || return 0
+  runner_starts_allowed || return 0
+  # A slot that was removed, or that already holds a newer container, is done.
+  current="$(docker inspect -f '{{.Id}}|{{ index .Config.Labels "net.unraid.ci-runner-farm.provider" }}|{{ index .Config.Labels "net.unraid.ci-runner-farm.role" }}' "$name" 2>/dev/null)" \
+    || return 0
+  IFS='|' read -r current provider role <<< "$current"
+  [ "$current" = "$id" ] || return 0
+  # Releases before provider labels have no provider or role label. Validation
+  # containers carry the managed label too but are never fleet slots.
+  case "$provider:$role" in github:runner|'<no value>:<no value>'|:) ;; *) return 0 ;; esac
+  lifecycle_event_allowed "$name" || return 0
+  LIFECYCLE_EVENT_ACTED=true
+  lifecycle_replace "$name"
+}
+
+# Keep the exits that may be replaced at once, as "ID name" lines.
+lifecycle_event_candidates() {
+  local id name code
+  while read -r id name code; do
+    [[ "$id" =~ ^[0-9a-f]{64}$ ]] || continue
+    [[ "$name" =~ ^ci-runner-([0-9]+|[a-z][a-z0-9-]{0,23}-[0-9]+)$ ]] || continue
+    if [ "$code" != 0 ]; then
+      log "lifecycle: $name exited with code ${code:-unknown}; the periodic check replaces it" >&2
+      continue
+    fi
+    printf '%s %s\n' "$id" "$name"
+  done <<< "$1"
+}
+
+# Hand fleet.lock to any waiter between replacements, as the tick does, then
+# wait for it again. Resume only from the snapshot after the lock returns.
+lifecycle_event_yield() {
+  flock -u 8 2>/dev/null
+  sleep "$LIFECYCLE_YIELD"
+  flock -w "$LIFECYCLE_EVENT_LOCK_WAIT" 8 2>/dev/null || return 1
+  reload_locked_snapshot
+}
+
+# Replace one batch of exits ("ID name exit-code" lines) under one lock. Like
+# one tick, the batch has one growth-gate budget, so a burst of exits above the
+# pool minimum cannot start more runners at once than a tick could.
+lifecycle_event_dispatch() {
+  local candidates
+  # The engine treats every provider value except gitlab as github.
+  [ "$CI_PROVIDER" != gitlab ] || return 0
+  candidates="$(lifecycle_event_candidates "$1")"
+  [ -n "$candidates" ] || return 0
+  ( flock -w "$LIFECYCLE_EVENT_LOCK_WAIT" 8 \
+      || { log "lifecycle: fleet.lock stayed busy; the next tick replaces $(cut -d' ' -f2 <<< "$candidates" | tr '\n' ' ')"; exit 0; }
+    reload_locked_snapshot || exit 1
+    growth_gate_reset
+    [ "${CPU_PINNING:-false}" != true ] || crf_cpu_usage_refresh >/dev/null 2>&1 || true
+    failed=0
+    while read -r id name; do
+      if [ "$LIFECYCLE_EVENT_ACTED" = true ]; then
+        lifecycle_event_yield \
+          || { log "lifecycle: fleet.lock stayed busy; the next tick replaces the rest of this batch"; break; }
+        LIFECYCLE_EVENT_ACTED=false
+      fi
+      lifecycle_event_replace "$id" "$name" || failed=1
+    done <<< "$candidates"
+    exit "$failed" ) 8>"$RUNDIR/fleet.lock"
+}
+
 lifecycle_daemon() {
   # This daemon is nohup'd from cmd_start under fleet.lock. Do not inherit that
   # lock or the worker would hold it for its entire lifetime.
   { exec 8>&- 7>&- 9>&-; } 2>/dev/null || true
-  log "lifecycle watchdog up (every ${LIFECYCLE_INTERVAL}s)"
+  trap 'lifecycle_events_close; [ -z "$LIFECYCLE_SLEEP_PID" ] || kill "$LIFECYCLE_SLEEP_PID" 2>/dev/null || true' EXIT
+  trap 'exit 0' HUP INT TERM
+  log "lifecycle watchdog up (every ${LIFECYCLE_INTERVAL}s and on runner exit)"
+  local next=0 now line batch count rc until
   while true; do
-    load_cfg
-    reload_secret_files
-    with_fleet_lock try lifecycle_tick
-    sleep "$LIFECYCLE_INTERVAL"
+    # Open the event stream before the tick, so exits during the tick wait in
+    # the pipe instead of being lost.
+    [ -n "$LIFECYCLE_EVENT_FD" ] || lifecycle_events_open
+    now="$(date +%s)"
+    if [ "$now" -ge "$next" ]; then
+      load_cfg
+      reload_secret_files
+      # Runners and helpers started under the lock must not hold the event
+      # pipe open after this daemon ends.
+      with_fleet_lock try lifecycle_tick {LIFECYCLE_EVENT_FD}<&-
+      next=$(( $(date +%s) + LIFECYCLE_INTERVAL ))
+      continue
+    fi
+    rc=0
+    IFS= read -r -t "$((next - now))" -u "$LIFECYCLE_EVENT_FD" line || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      # Jobs often end together. Collect the exits that follow closely.
+      batch="$line"; count=1; until=$((SECONDS + LIFECYCLE_EVENT_BATCH_SPAN))
+      while [ "$count" -lt "$LIFECYCLE_EVENT_BATCH_MAX" ] && [ "$SECONDS" -lt "$until" ] \
+        && IFS= read -r -t "$LIFECYCLE_EVENT_BATCH_WAIT" -u "$LIFECYCLE_EVENT_FD" line; do
+        batch+=$'\n'"$line"; count=$((count + 1))
+      done
+      load_cfg
+      reload_secret_files
+      lifecycle_event_dispatch "$batch" {LIFECYCLE_EVENT_FD}<&-
+    elif [ "$rc" -le 128 ]; then
+      # The event stream ended, for example because Docker restarted. Ticks
+      # continue, and the stream opens again after the next tick.
+      log "lifecycle: Docker event stream ended; replacing exited runners on ticks until it reopens"
+      lifecycle_events_close
+      now="$(date +%s)"
+      lifecycle_sleep "$((next - now))"
+    fi
   done
 }
 
@@ -1579,8 +1750,9 @@ imageupdate_pull() {
 # freshly-pulled image. Never interrupts a running job. If it stays busy past
 # IMAGE_DRAIN_TIMEOUT, leave it on the old image — the next cycle retries.
 drain_and_recreate() {
-  local c="$1" waited=0 limit all_names
+  local c="$1" waited=0 limit all_names drained_id
   limit="${IMAGE_DRAIN_TIMEOUT:-3600}"
+  drained_id="$(docker inspect -f '{{.Id}}' "$c" 2>/dev/null)" || drained_id=""
   # Wait for the runner to finish its job WITHOUT holding the fleet lock across the
   # (up to IMAGE_DRAIN_TIMEOUT — hours) idle-wait. fd 8 is the fleet mutex, held by our
   # with_fleet_lock caller; we hand it back during each sleep and re-take it only to
@@ -1606,6 +1778,18 @@ drain_and_recreate() {
     || { err "image-update: could not enumerate Docker containers after reacquiring the fleet lock"; return 1; }
   printf '%s\n' "$all_names" | grep -qx "$c" \
     || { log "image-update: $c no longer present — skipping recreate"; return 0; }
+  # A single-use runner exits when its job ends, and the lifecycle daemon can
+  # replace it while this drain sleeps. The replacement is already on the
+  # current image and may have a job, so it must not be recycled again.
+  if [ -n "$drained_id" ]; then
+    local current_id
+    current_id="$(docker inspect -f '{{.Id}}' "$c" 2>/dev/null)" \
+      || { log "image-update: could not inspect $c after its drain — deferring it to the next cycle"; return 1; }
+    if [ "$current_id" != "$drained_id" ]; then
+      log "image-update: $c was replaced while it drained — skipping recreate"
+      return 0
+    fi
+  fi
   if growth_gate_enabled && [ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" != true ]; then
     local index="${c##*-}"
     growth_gate_admit_slot "$c" "$index" \
@@ -1898,6 +2082,13 @@ registry_login() {
     err "registry: docker login to $REGISTRY_SERVER failed (check server/username/token; GHCR needs read:packages on the PAT)"
     return 1
   fi
+}
+
+# 0 when $1 is a digest reference (repo@sha256:<64 hex>) and the host already
+# holds that exact image.
+image_digest_present() {
+  [[ "$1" =~ @sha256:[0-9a-f]{64}$ ]] && image_ref_is_safe "$1" || return 1
+  docker image inspect "$1" >/dev/null 2>&1
 }
 
 host_docker_pull() {
@@ -2586,7 +2777,7 @@ pool_start_target() {
 }
 
 start_configured_capacity() {
-  local startn="$RUNNER_COUNT" i rec pool failed=0
+  local startn="$RUNNER_COUNT" i rec pool failed=0 present
   if pool_mode_enabled; then
     while IFS= read -r rec; do
       pool="$(printf '%s' "$rec" | cut -d'|' -f2)"
@@ -2597,12 +2788,22 @@ start_configured_capacity() {
       else
         startn="$(pool_fixed "$pool")" || { failed=1; continue; }
       fi
+      # The provider logs in only when it must pull.
       if [ "$IMAGE_SOURCE" = remote ] && provider_remote_image_host_pull_required; then
-        registry_login || { growth_pool_setup_failed "$pool"; failed=1; continue; }
         provider_prepare_remote_image "$(effective_image)" >/dev/null \
           || { err "could not prepare image $(effective_image) for pool $pool"; growth_pool_setup_failed "$pool"; failed=1; continue; }
       fi
+      # Both callers check the ownership of every managed slot in another pass
+      # (start_stopped_managed before this, and current_count after it in
+      # cmd_start), so a slot that exists needs no second inspect here. A name
+      # that is missing from this list goes to start_one, which still refuses
+      # a container that someone else made with that name. When the list is
+      # unavailable, every slot goes to start_one and its own check, as before.
+      present="$(managed_names 2>/dev/null)" || present=""
       for i in $(seq 1 "$startn"); do
+        # A pattern match, not printf | grep -q: under pipefail an early grep
+        # exit can fail the printf, and the slot would be checked twice.
+        case $'\n'"$present"$'\n' in *$'\n'"${NAME_PREFIX}-$i"$'\n'*) continue ;; esac
         # Starting a missing slot above the pool minimum is growth: it waits
         # for host headroom when backpressure is on.
         if growth_gate_enabled && ! docker inspect "${NAME_PREFIX}-$i" >/dev/null 2>&1 \

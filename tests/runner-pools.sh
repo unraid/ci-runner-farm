@@ -56,5 +56,35 @@ reject pools 'v3|qa-vm|qa-vm-client|linux|1|0|1|0|0|1g|builtin' org
 reject pools 'v3|qa-vm|qa-vm-client|linux|1|0|1|0|1|zero|builtin' org
 reject pools $'v3|qa-vm|qa-vm-client|linux|1|0|1|0|1|1g|builtin\n' org
 
+# The validated records are cached per process, keyed by their exact inputs.
+# Field lookups after the first validate nothing; any input change validates
+# again; a failed validation is not kept.
+eval "real_$(declare -f pool_config_validate)"
+count_file="$(mktemp)"
+trap 'rm -f "$count_file"' EXIT
+pool_config_validate() { echo x >> "$count_file"; real_pool_config_validate "$@"; }
+validations() { grep -c . "$count_file" || true; }
+RUNNER_MODE=pools RUNNER_POOLS="$valid" GH_SCOPE=org CI_PROVIDER=github
+POOL_RECORDS_CACHE_KEY=""
+pool_records_prime
+[ "$(validations)" -eq 1 ] && ok || bad "priming validated $(validations) times"
+for _ in 1 2 3; do
+  [ "$(pool_min build)" = 2 ] && [ "$(pool_max qa-vm)" = 3 ] && [ "$(pool_image qa-vm)" = "${qa##*|}" ] && ok || bad 'cached field lookup changed'
+done
+[ "$(pool_records)" = "$(printf '%s\n%s' "$build" "$qa")" ] && ok || bad 'cached records changed'
+[ "$(validations)" -eq 1 ] && ok || bad "cached lookups validated $(validations) times"
+RUNNER_POOLS="$build"
+pool_records_prime
+[ "$(pool_records)" = "$build" ] && ok || bad 'changed pools reused the old cache'
+pool_record qa-vm >/dev/null && bad 'a removed pool was still found' || ok
+GH_SCOPE=repo
+pool_records >/dev/null 2>&1 && bad 'a scope change reused the cached records' || ok
+pool_records >/dev/null 2>&1 && bad 'a failed validation was cached' || ok
+[ "$(validations)" -eq 4 ] && ok || bad "expected 4 validations, got $(validations)"
+GH_SCOPE=org
+[ "$(pool_records)" = "$build" ] && ok || bad 'records after a failure were wrong'
+RUNNER_MODE=single
+[ "$(pool_records | cut -d'|' -f1-2)" = 'single|default' ] && ok || bad 'single mode used the pools cache'
+
 printf 'runner-pools: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
