@@ -462,6 +462,36 @@ workspace space. Shared stores are for mutually trusted jobs. A raw Actions cach
 archive restore is not pnpm's coordinated install protocol; do not restore such
 an archive into a store being used by another job.
 
+## Guarded pnpm recovery
+
+Jobs using a compatible shared pnpm snapshot action receive
+`CI_PNPM_RECOVERY_DIR` for the configured store bind. A positive SQLite
+integrity failure publishes the fixed `.farm-pnpm-recovery-v1` request. The job
+still fails; it never clears or replaces the shared index.
+
+The existing autoscale and lifecycle ticks process this request under the
+fleet lock. New runner starts remain fenced. The farm rechecks corruption,
+retires only ownership-verified idle or stopped consumers, and waits for busy
+or unknown runners. Stopped and foreign containers with store or ancestor
+binds also block publication. Once there are no consumers, the farm takes the
+existing cold-initialization lock and refuses open host-side SQLite users.
+It moves the complete v11 tree, including WAL, SHM and package content, into
+`pnpm-quarantine/recovery.*` beside the store. It then publishes a fresh native
+CAS directory and clears the fence. Existing daemons refill capacity normally.
+Quarantines are retained for diagnosis; they are never restored as a service
+rollback or automatically deleted. Global pnpm configuration and Docker caches
+are preserved.
+
+An operator can request or advance the same recovery with
+`include/runner-farm.sh cache-recover-pnpm`. Exit 75 means consumers or the
+initialization lock still need time; existing ticks continue the task. Unsupported
+providers, non-ephemeral runners, unavailable integrity checks, unsafe paths,
+or a failed quarantine/publication keep the fence and require investigation.
+Do not delete the request to bypass an unresolved recovery. If fresh publication
+fails after quarantine, the damaged tree remains in the logged quarantine;
+complete publication of a verified fresh store while all consumers remain
+absent before clearing the request.
+
 ## User-share mounts
 
 Set `USER_SHARE_MOUNTS` to a space-separated list of

@@ -172,6 +172,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/growth-backpressure.sh"
 # shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/github-app.sh
 . "$SCRIPT_DIR/github-app.sh"
+# shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/pnpm-recovery.sh
+. "$SCRIPT_DIR/pnpm-recovery.sh"
 
 # Durable aggregate recommendation history lives under the plugin config
 # directory; active snapshots and locks remain on tmpfs in RUNDIR.
@@ -237,6 +239,10 @@ load_cfg
 # A removed allocator's saved state is not proof of unused host capacity.
 # Migration belongs to deployment; runner starts never delete or reinterpret it.
 runner_starts_allowed() {
+  if pnpm_recovery_pending; then
+    err "Shared pnpm recovery is pending; new runner starts are fenced."
+    return 1
+  fi
   local name
   for name in host-capacity.json shared-capacity.owner shared-capacity.enabled shared-capacity.closed; do
     if [ -e "$CFGDIR/$name" ] || [ -L "$CFGDIR/$name" ]; then
@@ -1202,6 +1208,7 @@ autoscale_queue_depth() {
 
 # one autoscaling evaluation: keep AUTOSCALE_MIN_IDLE warm runners, within [MIN,MAX]
 autoscale_tick() {
+  if pnpm_recovery_pending; then pnpm_recovery_tick; return $?; fi
   runner_starts_allowed || return 0
   [ "$AUTOSCALE" = "true" ] || return 0
   growth_gate_reset
@@ -1400,6 +1407,7 @@ autoscale_status() {
 # Run the provider lifecycle watchdog independently of autoscaling. A fixed-size
 # farm must receive the same cleanup and recycle protection as an autoscaled one.
 lifecycle_tick() {
+  if pnpm_recovery_pending; then pnpm_recovery_tick; return $?; fi
   runner_starts_allowed || return 0
   growth_gate_reset
   # Keep a recent CPU usage sample for load-aware placement.
@@ -5097,6 +5105,7 @@ case "${1:-status}" in
   cache-usage-refresh) cmd_cache_usage_refresh ;;
   usage-refresh) cmd_usage_refresh ;;
   cache-clear-pkg) with_fleet_lock wait cmd_cache_clear_pkg ;;
+  cache-recover-pnpm) with_fleet_lock wait cmd_recover_pnpm ;;
   stats-json)   cmd_stats_json ;;
   stats-refresh) cmd_stats_refresh ;;
   recycle)      with_fleet_lock wait cmd_recycle "${2:?usage: recycle <name>}" ;;
@@ -5137,5 +5146,5 @@ case "${1:-status}" in
   credential-clear-github-token) with_fleet_lock wait cmd_credential_clear_github_token ;;
   credential-clear-gitlab-runner) with_fleet_lock wait cmd_credential_clear_gitlab_runner "${2:-0}" ;;
   credential-clear-registry-token) with_fleet_lock wait cmd_credential_clear_registry_token ;;
-  *) echo "usage: $0 {start|boot-autostart|docker-stopping|stop|restart|scale N|recycle NAME|force-forget-gitlab NAME|reconcile-network|status|status-json|recommendations-json|logs i|validate|build-image|prune-cache|prune-completed-docker [--dry-run|--apply]|prune-retired-docker [--dry-run]|autoscale-tick|autoscale-start|autoscale-stop|autoscale-status|lifecycle-tick|lifecycle-start|lifecycle-stop|lifecycle-status|history-daemon|imageupdate-tick|imageupdate-start|imageupdate-stop|imageupdate-status}"; exit 1 ;;
+  *) echo "usage: $0 {start|boot-autostart|docker-stopping|stop|restart|scale N|recycle NAME|force-forget-gitlab NAME|reconcile-network|status|status-json|recommendations-json|logs i|validate|build-image|prune-cache|prune-completed-docker [--dry-run|--apply]|prune-retired-docker [--dry-run]|cache-recover-pnpm|autoscale-tick|autoscale-start|autoscale-stop|autoscale-status|lifecycle-tick|lifecycle-start|lifecycle-stop|lifecycle-status|history-daemon|imageupdate-tick|imageupdate-start|imageupdate-stop|imageupdate-status}"; exit 1 ;;
 esac

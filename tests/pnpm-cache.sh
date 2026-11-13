@@ -28,7 +28,7 @@ for dest in /home/runner/.local/share/pnpm/store /opt/custom-store /_work/persis
   CACHE_MOUNTS="npm:/home/runner/.npm pnpm-store:$dest"
   github_build_args 1 test-runner || fail 'valid store rejected'
   argv="$(printf '%s\n' "${ARGS[@]}")"
-  for value in "PNPM_CONFIG_STORE_DIR=$dest" "npm_config_store_dir=$dest" "$CACHE_ROOT/pnpm-store:$dest"; do
+  for value in "PNPM_CONFIG_STORE_DIR=$dest" "npm_config_store_dir=$dest" "CI_PNPM_RECOVERY_DIR=$dest" "$CACHE_ROOT/pnpm-store:$dest"; do
     [ "$(printf '%s\n' "$argv" | grep -Fxc -- "$value")" = 1 ] || fail "missing or duplicate $value"
   done
   [ "$(github_confgen)" != "$(old_confgen)" ] || fail 'existing store slots would not drain'
