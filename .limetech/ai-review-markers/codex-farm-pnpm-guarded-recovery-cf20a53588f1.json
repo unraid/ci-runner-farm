@@ -1,15 +1,8 @@
 {
   "disposition": "PATCH",
-  "expected_structural_delta": "One farm include, one fixed request representation and focused tests; no new service, daemon or state store.",
-  "minimum_design": "Extend the existing snapshot integrity guard and farm fleet lifecycle with a fixed recovery request, start fence, native drain and locked quarantine.",
-  "outcome": "Confirmed pnpm corruption requests guarded native host recovery and fresh-store restoration without deleting live data.",
-  "reuse_decisions": [
-    {
-      "decision": "extend",
-      "name": "Existing snapshot integrity and native fleet/cache owners",
-      "rationale": "Jobs report only; host locks, ownership checks and existing daemons own recovery."
-    }
-  ],
+  "forecast_commit": "4435ae6e0675e08dd35a84ea3ff269f8063ce26d",
+  "reviewed_sha": "caa308cc20668ec3919727b3022aba18c9c7ba0f",
   "schema": "limetech.ai-review-marker.v2",
-  "stage": "forecast"
+  "stage": "final",
+  "unresolved_proportionality_findings": []
 }
