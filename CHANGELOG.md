@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.7.0](https://github.com/unraid/ci-runner-farm/compare/v3.6.1...v3.7.0) (2026-11-13)
+
+
+### Features
+
+* **pinning:** optionally pin runners to whole-core groups ([#242](https://github.com/unraid/ci-runner-farm/issues/242)) ([90fe861](https://github.com/unraid/ci-runner-farm/commit/90fe861d1af76e28ae236b3e250f77e0556777df))
+
 ## [3.6.1](https://github.com/unraid/ci-runner-farm/compare/v3.6.0...v3.6.1) (2026-11-13)
 
 
