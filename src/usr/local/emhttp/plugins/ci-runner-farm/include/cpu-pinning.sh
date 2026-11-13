@@ -32,6 +32,20 @@
 #     overcommitted runner shares the least-loaded block instead of being
 #     refused. Ephemeral runners are placed again after every job, so placement
 #     keeps following the load without moving running containers.
+# With CPU_PINNING_WHOLE_CORES=true, a runner with CPU limit N gets every SMT
+# thread of N whole physical cores instead of N threads (on a 2-thread SMT host,
+# 2N threads; without SMT, the same N CPUs). Within each L3 domain, cores are
+# ordered by their first thread and cut into consecutive groups of N cores; a
+# trailing partial group is dropped, groups interleave domains, and when no
+# domain holds N cores the host is one domain. Cores left over in each domain
+# form cross-domain groups, offered last. Blocks of N threads share their
+# physical cores with a sibling block, so they do not isolate runners from each
+# other, but they stop a saturated block from using the idle sibling threads
+# next to it. A group lets the runners placed on it share those threads. This
+# helps only when a group's runners together want more than N CPUs. The CPU
+# limit still caps each runner at N CPUs, but tools that size their
+# parallelism from the affinity mask see 2N CPUs on an SMT host, so a lone
+# runner can be throttled again.
 # Any problem (a missing or fractional CPU limit, a limit larger than the host,
 # unreadable topology, or an unreadable container inventory) logs a warning and
 # yields no cpuset, so the runner starts unpinned exactly as with pinning off.
@@ -160,6 +174,66 @@ crf_cpu_pinning_candidates() {
   printf '%s\n' "${keyed[@]}" | sort -k1,1n -k2,2n -k3,3n | cut -d' ' -f4-
 }
 
+crf_cpu_pinning_whole_cores_enabled() { [ "${CPU_PINNING_WHOLE_CORES:-false}" = true ]; }
+
+# Read "cpu domain core" lines on stdin and print every candidate group of $1
+# whole cores (all threads of each core), one space-separated group per line,
+# most preferred first.
+crf_cpu_pinning_core_groups() {
+  local n="$1" line cpu domain core rank=0 start group_index
+  local -a lines=() domains=() cores=() keyed=() leftover=()
+  local -A core_first=() core_domain=() core_threads=() domain_min=()
+  mapfile -t lines
+  for line in "${lines[@]}"; do
+    read -r cpu domain core <<< "$line"
+    core_threads[$core]+="${core_threads[$core]:+ }$cpu"
+    # A core belongs to the domain of its lowest thread.
+    if [ -z "${core_first[$core]+x}" ] || [ "$cpu" -lt "${core_first[$core]}" ]; then
+      core_first[$core]="$cpu"; core_domain[$core]="$domain"
+    fi
+  done
+  for core in "${!core_first[@]}"; do
+    domain="${core_domain[$core]}"; cpu="${core_first[$core]}"
+    if [ -z "${domain_min[$domain]+x}" ] || [ "$cpu" -lt "${domain_min[$domain]}" ]; then domain_min[$domain]="$cpu"; fi
+  done
+  mapfile -t domains < <(for domain in "${!domain_min[@]}"; do
+    printf '%s %s\n' "${domain_min[$domain]}" "$domain"
+  done | sort -n | cut -d' ' -f2-)
+  for domain in "${domains[@]}"; do
+    mapfile -t cores < <(for core in "${!core_first[@]}"; do
+      [ "${core_domain[$core]}" = "$domain" ] || continue
+      printf '%s %s\n' "${core_first[$core]}" "$core"
+    done | sort -n | cut -d' ' -f2-)
+    group_index=0
+    for ((start = 0; start + n <= ${#cores[@]}; start += n)); do
+      line=""
+      for core in "${cores[@]:start:n}"; do line+="${line:+ }${core_threads[$core]}"; done
+      # shellcheck disable=SC2086  # $line is a whitespace-separated list of integers
+      keyed+=("$group_index $rank $(printf '%s\n' $line | sort -n | paste -sd' ' -)")
+      group_index=$((group_index + 1))
+    done
+    leftover+=("${cores[@]:start}")
+    rank=$((rank + 1))
+  done
+  # Cores left over in each domain form cross-domain groups, offered last, so
+  # no whole core stays unused when N does not divide a domain.
+  for ((start = 0; start + n <= ${#leftover[@]}; start += n)); do
+    line=""
+    for core in "${leftover[@]:start:n}"; do line+="${line:+ }${core_threads[$core]}"; done
+    # shellcheck disable=SC2086  # $line is a whitespace-separated list of integers
+    keyed+=("$((CRF_CPU_NUMBER_LIMIT + start)) $rank $(printf '%s\n' $line | sort -n | paste -sd' ' -)")
+  done
+  [ "${#keyed[@]}" -gt 0 ] || return 0
+  printf '%s\n' "${keyed[@]}" | sort -k1,1n -k2,2n | cut -d' ' -f3-
+}
+
+# Print the candidate cpusets for a runner with CPU limit $1 from the "cpu
+# domain core" topology lines on stdin: blocks of $1 threads, or groups of $1
+# whole cores with CPU_PINNING_WHOLE_CORES=true.
+crf_cpu_pinning_shape_candidates() {
+  if crf_cpu_pinning_whole_cores_enabled; then crf_cpu_pinning_core_groups "$1"; else crf_cpu_pinning_candidates "$1"; fi
+}
+
 # Print "id cpuset" for every other live managed container that has a cpuset.
 # A container that disappears between listing and inspection holds no CPUs.
 crf_cpu_pinning_load() {
@@ -275,7 +349,7 @@ crf_cpu_pinning_cpuset() {
 crf_cpu_pinning_choose() {
   local n="$1" name="$2" topology online candidates cpusets cpuset cpus cpu block score best="" best_score=0
   local rates="" snapshot id rate usage raw best_usage=0 best_raw=0 core size inside sibling measured=false
-  local -A load=() rate_of=() cpus_of=() core_of=() core_cpus=() in_block=()
+  local -A load=() rate_of=() cpus_of=() core_of=() core_cpus=() in_block=() busy_of=() seen=()
   if ! [[ "$n" =~ ^[1-9][0-9]{0,3}$ ]]; then
     crf_cpu_pinning_warn "$name" "pinning needs a whole-number CPU limit"
     return 1
@@ -289,12 +363,16 @@ crf_cpu_pinning_choose() {
     crf_cpu_pinning_warn "$name" "the CPU limit $n exceeds the $online online host CPUs"
     return 1
   fi
-  candidates="$(printf '%s\n' "$topology" | crf_cpu_pinning_candidates "$n")"
+  candidates="$(printf '%s\n' "$topology" | crf_cpu_pinning_shape_candidates "$n")"
   if [ -z "$candidates" ]; then
-    candidates="$(printf '%s\n' "$topology" | awk '{ print $1, "host", $3 }' | crf_cpu_pinning_candidates "$n")"
+    candidates="$(printf '%s\n' "$topology" | awk '{ print $1, "host", $3 }' | crf_cpu_pinning_shape_candidates "$n")"
   fi
   if [ -z "$candidates" ]; then
-    crf_cpu_pinning_warn "$name" "no block of $n host CPUs is available"
+    if crf_cpu_pinning_whole_cores_enabled; then
+      crf_cpu_pinning_warn "$name" "no group of $n whole host cores is available"
+    else
+      crf_cpu_pinning_warn "$name" "no block of $n host CPUs is available"
+    fi
     return 1
   fi
   if ! cpusets="$(crf_cpu_pinning_load "$name")"; then
@@ -320,6 +398,18 @@ crf_cpu_pinning_choose() {
     while read -r cpu _ core; do
       core_of[$cpu]="$core"; core_cpus[$core]+="${core_cpus[$core]:+ }$cpu"
     done <<< "$topology"
+    # A container without a rate counts as one busy core per CPU of its
+    # cpuset. With whole-core groups it counts one per physical core instead,
+    # which is its CPU limit, not twice that.
+    for id in "${!cpus_of[@]}"; do
+      seen=(); size=0
+      for cpu in ${cpus_of[$id]}; do
+        core="cpu$cpu"
+        ! crf_cpu_pinning_whole_cores_enabled || core="${core_of[$cpu]:-cpu$cpu}"
+        [ -n "${seen[$core]+x}" ] || { seen[$core]=1; size=$((size + 1)); }
+      done
+      busy_of[$id]=$((size * 1000))
+    done
   fi
   while IFS= read -r block; do
     score=0
@@ -344,7 +434,7 @@ crf_cpu_pinning_choose() {
             done
           fi
         done
-        rate="${rate_of[$id]-$((size * 1000))}"
+        rate="${rate_of[$id]-${busy_of[$id]}}"
         usage=$((usage + (rate * inside * 2 + rate * sibling) / (size * 2)))
       done
       raw="$usage"

@@ -342,7 +342,39 @@ grep -qx '6 ci-runner-build-10' "$CHOOSE_CALLS" || fail "an inherited CPU limit 
 BASE_RUNNER_CPUS=2.5; : > "$CHOOSE_CALLS"; set_host 10 80
 expect_admit build 10 ci-runner-build-10
 [ ! -s "$CHOOSE_CALLS" ] || fail "a fractional CPU limit consulted placement"
-RUNNER_POOLS="$saved_pools" BASE_RUNNER_CPUS="$saved_cpus" CPU_PINNING=false
+RUNNER_POOLS="$saved_pools" BASE_RUNNER_CPUS="$saved_cpus"
+# Whole-core groups: the limit is three quarters of a core per thread in the
+# group (6 cores for 8 threads), and never below the 3-core block limit.
+CPU_PINNING_WHOLE_CORES=true
+CHOICE='0-3,16-19 5999 1'; : > "$CHOOSE_CALLS"; set_host 10 80
+expect_admit build 10 ci-runner-build-10
+latest | grep -qF 'CPU group 0-3,16-19 in use 5.99 cores (limit 6.00)' \
+  || fail "the decision does not show the group load and limit: $(latest)"
+CHOICE='0-3,16-19 6000 1'; set_host 10 80
+expect_withhold build 10 ci-runner-build-10
+[ "$(state)" = withheld:cpu-block ] || fail "a busy CPU group withheld as $(state)"
+# The thread count comes from the chosen group: 6 threads allow 4.50 cores.
+CHOICE='0-2,16-18 4499 1'; set_host 10 80
+expect_admit build 10 ci-runner-build-10
+latest | grep -qF 'CPU group 0-2,16-18 in use 4.49 cores (limit 4.50)' \
+  || fail "the group limit did not follow the group size: $(latest)"
+# A busy verdict cached in the tick names the group.
+CHOICE='0-3,16-19 6000 1'; set_host 10 80
+expect_withhold build 10 ci-runner-build-10
+expect_withhold build 11 ci-runner-build-11
+latest | grep -qF 'CPU group busy (checked earlier in this tick)' || fail "the cached verdict does not name the group: $(latest)"
+# A one-core group of 2 threads keeps the 3-core block limit.
+CHOICE='0,16 2999 1'; set_host 10 80
+expect_admit small 4 ci-runner-small-4
+latest | grep -qF 'CPU group 0,16 in use 2.99 cores (limit 3.00)' \
+  || fail "a one-core group did not keep the block limit: $(latest)"
+# With the setting off, a block keeps the fixed 3-core limit whatever its size.
+CPU_PINNING_WHOLE_CORES=false
+CHOICE='0-7 3000 1'; set_host 10 80
+expect_withhold build 10 ci-runner-build-10
+latest | grep -qF 'CPU block 0-7 in use 3.00 cores (limit 3.00)' \
+  || fail "block mode did not keep its fixed limit: $(latest)"
+CPU_PINNING=false
 unset -f crf_cpu_pinning_choose
 # shellcheck source=/dev/null
 source src/usr/local/emhttp/plugins/ci-runner-farm/include/cpu-pinning.sh

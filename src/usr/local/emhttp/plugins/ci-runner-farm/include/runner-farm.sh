@@ -65,6 +65,7 @@ DOCKER_JOB_PRUNE="false"              # persistent DinD: prune job Docker state 
 RUNNER_CPUS=""                        # per-runner CPU cap; empty = uncapped (CFS time-shares fairly)
 CPU_PINNING="false"                   # true => GitHub runners with a whole-number CPU cap also get a cpuset of that
                                       # size, so tools see the right CPU count; the --cpus cap and accounting stay.
+CPU_PINNING_WHOLE_CORES="false"       # true => with CPU_PINNING, a cpuset is every SMT thread of N whole cores, not N threads
 RUNNER_MEMORY="16g"                   # per-runner memory cap (kept: memory isn't time-shared like CPU)
 CACHE_ROOT="/mnt/cache/github-runner" # must be a dedicated SUBDIR under a pool/disk, never a bare mount root (see crf_safe_cache_root)
 WORK_TMPFS_SIZE="8g"                  # empty => bind workdir to pool instead of RAM
@@ -183,7 +184,7 @@ HISTORY_FILE="${CRF_HISTORY_FILE:-${CFGDIR}/recommendations.history}"
 CFG_KEYS="CI_PROVIDER GH_SCOPE GH_OWNER GH_REPOS RUNNER_GROUP GH_APP_ID GH_APP_INSTALLATION_ID GITLAB_URL GITLAB_RUNNER_IMAGE GITLAB_PROJECTS GITLAB_SHUTDOWN_TIMEOUT \
 GITLAB_ALLOWED_IMAGES GITLAB_ALLOWED_SERVICES GITLAB_PULL_POLICY GITLAB_SHM_SIZE \
 RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS QUEUED_POOLS DOCKER_CACHE_MIN_FREE_PERCENT DOCKER_CACHE_BUILDERS DOCKER_JOB_PRUNE \
-RUNNER_CPUS CPU_PINNING RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE USER_SHARE_MOUNTS IMAGE_SOURCE IMAGE EPHEMERAL \
+RUNNER_CPUS CPU_PINNING CPU_PINNING_WHOLE_CORES RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE USER_SHARE_MOUNTS IMAGE_SOURCE IMAGE EPHEMERAL \
 RUN_AS_ROOT REGISTRY_SERVER REGISTRY_USERNAME CACHE_MOUNTS SHARE_DOCKER_SOCK DIND \
 SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK RUNNER_DNS ARTIFACT_ENDPOINT MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
 AUTOSCALE_MAX AUTOSCALE_MIN_IDLE AUTOSCALE_STEP AUTOSCALE_INTERVAL \
@@ -211,6 +212,7 @@ load_cfg() {
   DOCKER_JOB_PRUNE="false"
   RUNNER_DNS=""
   GROWTH_BACKPRESSURE="false"
+  CPU_PINNING_WHOLE_CORES="false"
   [ -f "$CFG" ] || return 0
   local line key val
   while IFS= read -r line || [ -n "$line" ]; do

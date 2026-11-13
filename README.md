@@ -703,6 +703,35 @@ topology logs a warning and starts that runner unpinned. Turning the setting on 
 fingerprint of pinnable slots, so they are recreated like any other baked
 setting; with it off, existing fingerprints are unchanged.
 
+`CPU_PINNING_WHOLE_CORES="true"` (off by default, used only with
+`CPU_PINNING="true"`) changes the shape of each cpuset. A runner with a limit of
+N CPUs gets every SMT thread of N whole physical cores instead of N threads.
+On a host with 2 threads per core, a 4-CPU runner gets 8 CPUs, for example
+`0-3,16-19`. Without SMT, the cpuset is the same N CPUs, but the growth gate
+still uses the group limit below. Within each L3 domain, cores are grouped in
+order of their first thread, and groups alternate between domains. Cores left
+over in each domain form cross-domain groups, which placement offers last. A
+block of N threads shares its physical cores with a sibling block, so blocks do
+not isolate runners from each other. But a block stops a busy runner from
+using the idle threads of the sibling block on the same cores. A group lets the
+runners placed on it share those threads. This helps only when the runners on
+a group together want more than N CPUs. The CPU limit stays, so each runner
+still uses at most N CPUs, but tools that read the affinity mask see 2N CPUs.
+A lone runner that starts 2N workers can therefore be throttled again; check
+the runners' `nr_throttled` in `cpu.stat` after you turn the setting on.
+Placement scores groups the same way as blocks, and a runner without a usage
+sample yet counts as N busy cores. The growth gate allows three quarters of a
+core per thread in the group (6 cores for 8 threads), and never less than the
+3-core block limit. This is looser than for blocks on purpose: a block counts
+its sibling threads at half, so under even load it stops growth when about
+half of the host's threads are busy. A group stops it at about three
+quarters, near the host CPU ceiling. Placement is not part of
+the configuration fingerprint, so changing this setting recreates no runner.
+Each runner gets the new shape when it is next placed: an ephemeral runner
+after its next job, a persistent runner only when it is recreated (a restart
+keeps its cpuset). Runners that
+still hold the old shape count as load where their cpusets overlap a group.
+
 ### Growth backpressure
 
 `GROWTH_BACKPRESSURE="true"` (off by default) makes autoscale growth depend on
@@ -714,7 +743,9 @@ runner's memory limit plus `GROWTH_MEMORY_RESERVE` (default `8g`). With `CPU_PIN
 checks the CPU block the new runner would be placed on: when that block's
 runners used 3 cores or more recently (counting half of the use on its SMT
 sibling CPUs, as placement does), the start waits. On a 4-CPU block this is
-about 75% use, so a new runner still gets about a core. Placement already picks the
+about 75% use, so a new runner still gets about a core. With
+`CPU_PINNING_WHOLE_CORES="true"`, the check uses the group and its larger limit
+(see CPU pinning). Placement already picks the
 least-used block, so this only withholds growth when every block is that busy.
 Runners started since the last usage sample count as fully busy, so growth
 can pause for a check or two right after a burst of starts, and only one start
