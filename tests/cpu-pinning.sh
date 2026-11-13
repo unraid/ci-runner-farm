@@ -468,6 +468,88 @@ DOCKER_PS_FAIL=1
 expect_unpinned 4 'the cpusets of other managed containers could not be read'
 DOCKER_PS_FAIL=0
 
+# ---- whole-core groups (CPU_PINNING_WHOLE_CORES) -------------------------------------
+[ "$CPU_PINNING_WHOLE_CORES" = false ] || fail "whole-core pinning is not off by default"
+CPU_PINNING_WHOLE_CORES=true
+# A 4-CPU runner gets all threads of 4 cores (a block and its sibling block),
+# alternating L3 domains. The host holds four groups, so the fifth runner shares
+# the first group, and every group then holds runners evenly.
+reset_host "$smt_host"
+expect_place 4 ci-runner-build-1 0-3,16-19
+expect_place 4 ci-runner-build-2 8-11,24-27
+expect_place 4 ci-runner-build-3 4-7,20-23
+expect_place 4 ci-runner-build-4 12-15,28-31
+expect_place 4 ci-runner-build-5 0-3,16-19
+expect_place 4 ci-runner-build-6 8-11,24-27
+# Groups never overlap: every cpuset is one of the four groups.
+[ "$(awk '{ print $3 }' "$CONTAINERS" | sort -u | wc -l | tr -d ' ')" = 4 ] \
+  || fail "whole-core groups overlapped: $(awk '{ print $3 }' "$CONTAINERS" | sort -u | tr '\n' ' ')"
+# A 1-CPU runner gets both threads of one core; a 3-CPU runner gets 3 whole
+# cores. The cores left over in each domain (6-7 and 14-15) form one more
+# group across domains, offered last; the last leftover core is dropped.
+reset_host "$smt_host"
+expect_place 1 ci-runner-tiny-1 0,16
+expect_place 1 ci-runner-tiny-2 8,24
+reset_host "$smt_host"
+expect_place 3 ci-runner-mid-1 0-2,16-18
+expect_place 3 ci-runner-mid-2 8-10,24-26
+expect_place 3 ci-runner-mid-3 3-5,19-21
+expect_place 3 ci-runner-mid-4 11-13,27-29
+expect_place 3 ci-runner-mid-5 6-7,14,22-23,30
+expect_place 3 ci-runner-mid-6 0-2,16-18
+# Runners that still hold 4-thread blocks from before the switch count as load
+# where they overlap a group: 0-3,16-19 holds two, 8-11,24-27 one, and
+# 4-7,20-23 none.
+reset_host "$smt_host"
+printf '%s\n' 'old-1 running 0-3' 'old-5 running 16-19' 'old-2 running 8-11' 'old-4 running 12-15' 'old-8 running 28-31' \
+  >> "$CONTAINERS"
+expect_place 4 ci-runner-build-9 4-7,20-23
+# Measured: a saturated block next to an idle sibling block. As blocks, the
+# idle half 16-19 would look free while it shares cores with 0-3. As groups,
+# 0-3,16-19 scores 4 cores, 8-11,24-27 6, 4-7,20-23 7 and 12-15,28-31 4.5, so
+# the runner joins 0-3,16-19, where its sibling threads are idle.
+eight_runners_blocks() {
+  reset_host "$smt_host"
+  printf '%s\n' 'ci-runner-build-1 running 0-3' 'ci-runner-build-2 running 8-11' 'ci-runner-build-3 running 4-7' \
+    'ci-runner-build-4 running 12-15' 'ci-runner-build-5 running 16-19' 'ci-runner-build-6 running 24-27' \
+    'ci-runner-build-7 running 20-23' 'ci-runner-build-8 running 28-31' >> "$CONTAINERS"
+}
+eight_runners_blocks
+set_rates 100 ci-runner-build-1=4000 ci-runner-build-5=0 ci-runner-build-2=3000 ci-runner-build-6=3000 \
+  ci-runner-build-3=3500 ci-runner-build-7=3500 ci-runner-build-4=2500 ci-runner-build-8=2000
+[ "$(crf_cpu_pinning_choose 4 ci-runner-build-9 2>/dev/null)" = '0-3,16-19 4000 1' ] \
+  || fail "measured whole-core placement chose '$(crf_cpu_pinning_choose 4 ci-runner-build-9 2>/dev/null)'"
+# Runners on whole-core groups: usage inside the group counts fully.
+reset_host "$smt_host"
+for i in 1 2 3 4 5 6 7 8; do place 4 "ci-runner-build-$i" >/dev/null || fail "group setup placement $i failed"; done
+set_rates 100 ci-runner-build-1=3500 ci-runner-build-5=3500 ci-runner-build-2=1000 ci-runner-build-6=500 \
+  ci-runner-build-3=3000 ci-runner-build-7=2000 ci-runner-build-4=4000 ci-runner-build-8=0
+[ "$(crf_cpu_pinning_choose 4 ci-runner-build-9 2>/dev/null)" = '8-11,24-27 1500 1' ] \
+  || fail "group occupants were not scored as group load"
+# A runner without a usage sample counts as its CPU limit (one core per
+# physical core of its group), not as twice that: the group with one new
+# runner (4 cores) beats the group whose two runners use 3.9 cores each.
+reset_host "$smt_host"
+printf '%s\n' 'fresh running 0-3,16-19' 'busy-a running 8-11,24-27' 'busy-b running 8-11,24-27' \
+  'busy-c running 4-7,20-23' 'busy-d running 12-15,28-31' >> "$CONTAINERS"
+set_rates 100 busy-a=3900 busy-b=3900 busy-c=8000 busy-d=8000
+[ "$(crf_cpu_pinning_choose 4 ci-runner-build-9 2>/dev/null)" = '0-3,16-19 4000 1' ] \
+  || fail "a new runner on a group counted as more than its CPU limit"
+# Without SMT a group is the same as a block.
+reset_host "$flat_host"
+expect_place 2 ci-runner-1 0-1
+expect_place 2 ci-runner-2 2-3
+# Older kernels: cores from core and package IDs, each package a domain.
+reset_host "$package_host"
+expect_place 2 ci-runner-1 0-1
+expect_place 2 ci-runner-2 2-3
+# A group larger than any L3 domain uses one host-wide domain; a limit with
+# more cores than the host has warns and starts unpinned.
+reset_host "$smt_host"
+expect_place 10 ci-runner-build-xl-1 0-9,16-25
+expect_unpinned 17 'no group of 17 whole host cores is available'
+CPU_PINNING_WHOLE_CORES=false
+
 # ---- runner argv and fingerprint ---------------------------------------------------
 # Disabled pinning must keep today's fingerprint byte-for-byte so existing
 # slots are not drained on upgrade; the chosen cpuset never enters it.
@@ -524,5 +606,28 @@ grep -qx -- '--cpus=2.5' <<< "$(args_of)" || fail "fractional limit dropped --cp
 if grep -q -- '--cpuset-cpus' <<< "$(args_of)"; then fail "fractional limit added --cpuset-cpus"; fi
 grep -qF 'warning: CPU pinning skipped for ci-runner-build-1: pinning needs a whole-number CPU limit' "$tmp/build.err" \
   || fail "fractional limit did not warn"
+
+# Whole-core groups change only the cpuset: the quota stays, the label records
+# the group, and the fingerprint stays the same, so no runner is recreated.
+reset_host "$smt_host"
+RUNNER_CPUS='4' CPU_PINNING=true CPU_PINNING_WHOLE_CORES=true
+NO_REGISTER=1 github_build_args 1 ci-runner-build-1 2>"$tmp/build.err" || fail "whole-core argv build failed: $(cat "$tmp/build.err")"
+grep -qx -- '--cpus=4' <<< "$(args_of)" || fail "whole-core pinning dropped --cpus"
+grep -qx -- '--cpuset-cpus=0-3,16-19' <<< "$(args_of)" || fail "whole-core pinning did not add --cpuset-cpus=0-3,16-19"
+grep -qx -- 'net.unraid.ci-runner-farm.cpuset=0-3,16-19' <<< "$(args_of)" || fail "whole-core pinning did not label the group"
+[ "$(crf_confgen)" = "$enabled_confgen" ] || fail "whole-core pinning changed the runner fingerprint"
+# Without CPU pinning the setting does nothing.
+CPU_PINNING=false
+NO_REGISTER=1 github_build_args 1 ci-runner-build-1 2>"$tmp/build.err" || fail "unpinned whole-core argv build failed"
+if grep -q -- '--cpuset-cpus' <<< "$(args_of)"; then fail "whole-core setting pinned a runner with CPU pinning off"; fi
+CPU_PINNING=true CPU_PINNING_WHOLE_CORES=false
+# The setting is read from the saved config, and omitting it turns it off.
+printf '%s\n' 'CPU_PINNING="true"' 'CPU_PINNING_WHOLE_CORES="true"' > "$CFG"
+load_cfg
+[ "$CPU_PINNING_WHOLE_CORES" = true ] || fail "the saved whole-core setting was not loaded"
+printf '%s\n' 'CPU_PINNING="true"' > "$CFG"
+load_cfg
+[ "$CPU_PINNING_WHOLE_CORES" = false ] || fail "an omitted whole-core setting did not turn it off"
+rm -f "$CFG"
 
 echo "cpu-pinning: OK — topology-aware placement, overcommit sharing, unpinned fallback, and argv/fingerprint contract"

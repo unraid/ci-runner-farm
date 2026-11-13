@@ -16,6 +16,13 @@
 #     (3 cores, about 75% of a 4-CPU block, so a new runner still gets about a
 #     core). Busy runners average about 1.8 cores, so a lower limit withholds
 #     growth on most blocks while the host is far from its CPU ceiling.
+#     With CPU_PINNING_WHOLE_CORES on, placement gives whole-core groups, and
+#     the limit is three quarters of a core per thread in the group (6 cores
+#     for a group of 8 threads), and never less than the 3-core block limit.
+#     This is looser than for blocks: a block counts its sibling threads at
+#     half, so under even load it stops growth when about half of the threads
+#     are busy. A group stops it at about three quarters, near the host CPU
+#     ceiling.
 #     Runners started since the last usage sample count as fully busy. Without
 #     a measured pinned runner this check is skipped. At most one start per
 #     tick passes this check, because the next preview cannot see a runner
@@ -38,13 +45,15 @@
 #
 # Safe to source from tests. Callers provide log(), RUNDIR, pool_mode_enabled,
 # pool_min, pool_memory, pool_cpus, autoscale_floor, BASE_RUNNER_MEMORY,
-# BASE_RUNNER_CPUS, CPU_PINNING, CI_PROVIDER and crf_cpu_pinning_choose.
+# BASE_RUNNER_CPUS, CPU_PINNING, CI_PROVIDER, crf_cpu_pinning_choose,
+# crf_cpu_pinning_whole_cores_enabled and crf_cpu_list_expand.
 # CRF_PROC_ROOT (default /proc) lets tests supply fake proc files.
 
 GROWTH_STARTS_PER_TICK="${CRF_GROWTH_STARTS_PER_TICK:-2}"  # internal pacing, not web-settable
 GROWTH_CPU_WINDOW="${CRF_GROWTH_CPU_WINDOW:-2}"            # seconds for a fresh CPU sample
 GROWTH_CPU_SAMPLE_MAX_AGE=300                              # older stored samples are not reused
-GROWTH_BLOCK_CORES_LIMIT=3000                              # thousandths of a core, pinned hosts
+GROWTH_BLOCK_CORES_LIMIT=3000                              # thousandths of a core, 4-thread block
+GROWTH_CPUSET_THREAD_LIMIT=750                             # thousandths of a core per thread, whole-core groups
 GROWTH_MEMORY_PRESSURE_FULL_LIMIT=500                      # hundredths of a percent (5%)
 GROWTH_MEMORY_PRESSURE_SOME_LIMIT=2000                     # hundredths of a percent (20%)
 
@@ -223,7 +232,7 @@ growth_gate_record() {
 # pass. <label> names the slot in the log.
 growth_gate_admit() {
   local pool="$1" idx="$2" label="${3:-slot $2}" floor ceiling reserve runner need avail cpu metrics numbers
-  local cpus choice block block_use measured
+  local cpus choice block block_use measured block_limit block_word block_cpus
   growth_gate_enabled || return 0
   floor="$(growth_floor "$pool")" || return 0
   growth_uint "$floor" || floor=0
@@ -281,14 +290,23 @@ growth_gate_admit() {
     # Starts within a tick only add load, so a busy verdict holds for the tick.
     case " $GROWTH_BLOCK_BUSY " in
       *" $cpus "*)
-        growth_gate_record withheld:cpu-block "$label" "$numbers, CPU block busy (checked earlier in this tick)" "$pool"
+        growth_gate_record withheld:cpu-block "$label" "$numbers, CPU $(crf_cpu_pinning_whole_cores_enabled && echo group || echo block) busy (checked earlier in this tick)" "$pool"
         return 1 ;;
     esac
     if choice="$(crf_cpu_pinning_choose "$cpus" "$label" 2>/dev/null)"; then
       read -r block block_use measured <<< "$choice"
+      block_limit="$GROWTH_BLOCK_CORES_LIMIT"; block_word=block
+      if crf_cpu_pinning_whole_cores_enabled && block_cpus="$(crf_cpu_list_expand "$block")"; then
+        block_cpus="$(wc -w <<< "$block_cpus" | tr -d ' ')"
+        block_word=group
+        # Never below the block limit, so small runners (one core) are not
+        # held back by the load of larger runners placed on the same core.
+        [ $(( block_cpus * GROWTH_CPUSET_THREAD_LIMIT )) -le "$block_limit" ] \
+          || block_limit=$(( block_cpus * GROWTH_CPUSET_THREAD_LIMIT ))
+      fi
       if [ "$measured" = 1 ] && growth_uint "$block_use"; then
-        numbers+=", CPU block $block in use $(growth_cores "$block_use") cores (limit $(growth_cores "$GROWTH_BLOCK_CORES_LIMIT"))"
-        if [ "$block_use" -ge "$GROWTH_BLOCK_CORES_LIMIT" ]; then
+        numbers+=", CPU $block_word $block in use $(growth_cores "$block_use") cores (limit $(growth_cores "$block_limit"))"
+        if [ "$block_use" -ge "$block_limit" ]; then
           GROWTH_BLOCK_BUSY+=" $cpus"
           growth_gate_record withheld:cpu-block "$label" "$numbers" "$pool"
           return 1
