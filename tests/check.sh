@@ -75,6 +75,7 @@ bash tests/job-cache-pressure.sh
 bash tests/job-docker-prune.sh
 bash tests/job-workspace-pressure.sh
 bash tests/pnpm-cache.sh
+bash tests/pnpm-recovery.sh
 bash tests/blob-cache.sh
 bash tests/playwright-cache.sh
 bash tests/lease-selfheal.sh

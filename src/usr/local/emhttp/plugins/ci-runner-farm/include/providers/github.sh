@@ -108,7 +108,7 @@ github_confgen() {
   # drain lifecycle. Farms without a pnpm-store mount keep their fingerprint.
   for cache_spec in $CACHE_MOUNTS; do
     case "$cache_spec" in
-      pnpm-store:*) runtime_salt="${runtime_salt}-pnpm-store-v1"; break ;;
+      pnpm-store:*) runtime_salt="${runtime_salt}-pnpm-store-recovery-v1"; break ;;
     esac
   done
   # Exporting the shared blob cache location also drains existing slots;
@@ -987,7 +987,7 @@ github_build_args() {
       # pnpm otherwise chooses a store on the project's filesystem, which is
       # workspace RAM when WORK_TMPFS_SIZE is set. Configure the admitted bind
       # before any job or setup-node cache restore; support pnpm 11 and 10.
-      ARGS+=( -e "PNPM_CONFIG_STORE_DIR=$pnpm_store_dest" -e "npm_config_store_dir=$pnpm_store_dest" )
+      ARGS+=( -e "PNPM_CONFIG_STORE_DIR=$pnpm_store_dest" -e "npm_config_store_dir=$pnpm_store_dest" -e "CI_PNPM_RECOVERY_DIR=$pnpm_store_dest" )
     elif [ "${m%%:*}" = blob-cache ]; then
       # Jobs find the shared content-addressed cache here. Readers verify every
       # object on their own copy, so the directory's content is untrusted.
