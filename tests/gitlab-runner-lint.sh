@@ -104,7 +104,8 @@ PY
 
 docker image inspect "$GITLAB_RUNNER_IMAGE" >/dev/null 2>&1 \
   || docker pull "$GITLAB_RUNNER_IMAGE" >/dev/null
-if docker run --rm "$GITLAB_RUNNER_IMAGE" --help 2>&1 | grep -qE '(^|[[:space:]])lint([[:space:]]|$)'; then
+if runner_help="$(docker run --rm "$GITLAB_RUNNER_IMAGE" --help 2>&1)" \
+   && grep -qE '(^|[[:space:]])lint([[:space:]]|$)' <<< "$runner_help"; then
   docker run --rm -v "$config_dir:/etc/gitlab-runner:ro" "$GITLAB_RUNNER_IMAGE" \
     lint --config /etc/gitlab-runner/config.toml
   echo "gitlab-runner-lint: generated config accepted by $GITLAB_RUNNER_IMAGE"

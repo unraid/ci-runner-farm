@@ -33,9 +33,9 @@ pool_activate qa-vm || fail 'GitHub pool activation failed'
 [ "$(effective_image)" = ghcr.io/unraid/qa-vm-client:latest ] || fail 'pool image is wrong'
 github_build_args 1 ci-runner-qa-vm-1 || fail 'GitHub pool argv failed'
 args="$(printf '%s\n' "${ARGS[@]}")"
-printf '%s\n' "$args" | grep -qx 'net.unraid.ci-runner-farm.pool=qa-vm' || fail 'GitHub pool label missing'
-printf '%s\n' "$args" | grep -qx 'LABELS=qa-vm-client,linux,x64' || fail 'GitHub routing labels missing'
-printf '%s\n' "$args" | grep -qx 'NO_DEFAULT_LABELS=true' \
+grep -qx 'net.unraid.ci-runner-farm.pool=qa-vm' <<< "$args" || fail 'GitHub pool label missing'
+grep -qx 'LABELS=qa-vm-client,linux,x64' <<< "$args" || fail 'GitHub routing labels missing'
+grep -qx 'NO_DEFAULT_LABELS=true' <<< "$args" \
   || fail 'pool without self-hosted kept GitHub default labels'
 # An existing pool that omits self-hosted must drain onto the exact labels.
 exact_generation="$(github_confgen)"
@@ -44,11 +44,11 @@ github_pool_labels_exact() { return 1; }
 unset -f github_pool_labels_exact
 # shellcheck source=/dev/null
 source src/usr/local/emhttp/plugins/ci-runner-farm/include/providers/github.sh
-printf '%s\n' "$args" | grep -qx 'host.docker.internal:host-gateway' \
+grep -qx 'host.docker.internal:host-gateway' <<< "$args" \
   || fail 'GitHub runner does not expose its local farm host gateway'
-printf '%s\n' "$args" | grep -qx 'runner-farm.host:192.0.2.10' \
+grep -qx 'runner-farm.host:192.0.2.10' <<< "$args" \
   || fail 'GitHub runner does not expose its local farm service address'
-printf '%s\n' "$args" | grep -qx 'ghcr.io/unraid/qa-vm-client:latest' || fail 'GitHub pool image missing'
+grep -qx 'ghcr.io/unraid/qa-vm-client:latest' <<< "$args" || fail 'GitHub pool image missing'
 
 # A pool that lists self-hosted, and every single-layout runner, keep the defaults.
 RUNNER_POOLS='v3|build|ci-build|self-hosted,linux,x64|2|0|2|0|2|8g|builtin'

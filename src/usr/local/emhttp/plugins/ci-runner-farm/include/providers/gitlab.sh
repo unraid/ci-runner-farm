@@ -292,7 +292,7 @@ gitlab_runner_state() {
   st="$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)"
   [ "$st" = "running" ] || { case "$st" in created|restarting) echo starting ;; *) echo error ;; esac; return; }
   metrics="$(docker exec "$c" sh -c 'wget -qO- http://127.0.0.1:9252/metrics 2>/dev/null || true' 2>/dev/null)"
-  printf '%s\n' "$metrics" | grep -Eq '^gitlab_runner_jobs(\{[^}]*\})?[[:space:]]+[1-9]' && { echo busy; return; }
+  grep -Eq '^gitlab_runner_jobs(\{[^}]*\})?[[:space:]]+[1-9]' <<< "$metrics" && { echo busy; return; }
   last="$(docker logs --tail 30 "$c" 2>&1 | grep -iE 'Checking for jobs|Starting multi-runner|received job|job (succeeded|failed)|ERROR|FATAL' | tail -1 \
     | tr '[:upper:]' '[:lower:]')"
   case "$last" in
@@ -1341,7 +1341,7 @@ gitlab_start_one() {
         err "retaining $name and its protected identity because it may have contacted GitLab before exiting"
       fi
     elif names="$(docker ps -a --format '{{.Names}}' 2>/dev/null)"; then
-      if printf '%s\n' "$names" | grep -qxF "$name"; then
+      if grep -qxF "$name" <<< "$names"; then
         err "retaining $name and its protected identity because Docker listed the name but its identity could not be inspected"
       else
         # A successful full-container enumeration is the only safe proof that
@@ -1642,7 +1642,7 @@ gitlab_usage_stat_target() {
 
 gitlab_status_resources() {
   local c="$1" inspraw="$2" side_row side_state side_cpus side_mem
-  side_row="$(printf '%s\n' "$inspraw" | grep -m1 -E "^/?$(gitlab_sidecar_name "$c")\|")"
+  side_row="$(grep -m1 -E "^/?$(gitlab_sidecar_name "$c")\|" <<< "$inspraw")"
   if [ -n "$side_row" ]; then
     IFS='|' read -r _ side_state side_cpus side_mem _ _ <<< "$side_row"
     cpus="$side_cpus"; mem="$side_mem"
@@ -1711,7 +1711,7 @@ gitlab_validate() {
   else
     provision_preflight || return 1
   fi
-  local suffix name idx=99 dir sock image side manager_ca=() job_args=() slot_ca validation_cfgroot
+  local suffix name idx=99 dir sock image side manager_ca=() job_args=() slot_ca validation_cfgroot runner_help
   local share_spec share_rest share_source share_dest share_mode share_check_script share_check_args=()
   local -a share_specs=()
   read -r -a share_specs <<< "$USER_SHARE_MOUNTS"
@@ -1755,7 +1755,8 @@ gitlab_validate() {
   dir="$(gitlab_slot_config_dir "$name")"
   slot_ca="$dir/certs/gitlab-ca.crt"
   [ -f "$slot_ca" ] && manager_ca=( -v "$slot_ca:/etc/gitlab-runner/certs/gitlab-ca.crt:ro" )
-  if docker run --rm "$GITLAB_RUNNER_IMAGE" --help 2>&1 | grep -qE '(^|[[:space:]])lint([[:space:]]|$)'; then
+  if runner_help="$(docker run --rm "$GITLAB_RUNNER_IMAGE" --help 2>&1)" \
+     && grep -qE '(^|[[:space:]])lint([[:space:]]|$)' <<< "$runner_help"; then
     if ! docker run --rm -v "$dir:/etc/gitlab-runner" ${manager_ca[@]+"${manager_ca[@]}"} "$GITLAB_RUNNER_IMAGE" \
         lint --config /etc/gitlab-runner/config.toml >/dev/null 2>&1; then
       err "validate: gitlab-runner lint rejected the generated config.toml"

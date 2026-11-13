@@ -32,8 +32,8 @@ github_fingerprint_input() {
 for mounts in '' 'npm:/home/runner/.npm' 'playwright:/home/runner/.cache/ms-playwright'; do
   CACHE_MOUNTS="$mounts"
   github_build_args 1 test-runner || fail "configuration rejected: '$mounts'"
-  if argv | grep -qFx -- "$gc_off"; then fail "runner without an ms-playwright mount got $gc_off: '$mounts'"; fi
-  if github_fingerprint_input | grep -qF -- "$salt"; then fail "unrelated slots received the drain salt: '$mounts'"; fi
+  if grep -qFx -- "$gc_off" <<< "$(argv)"; then fail "runner without an ms-playwright mount got $gc_off: '$mounts'"; fi
+  if grep -qF -- "$salt" <<< "$(github_fingerprint_input)"; then fail "unrelated slots received the drain salt: '$mounts'"; fi
 done
 
 for mounts in 'ms-playwright:/home/runner/.cache/ms-playwright' \
@@ -44,7 +44,7 @@ for mounts in 'ms-playwright:/home/runner/.cache/ms-playwright' \
   [ "$(argv | grep -cFx -- "$gc_off")" = 1 ] || fail "missing or duplicate $gc_off: '$mounts'"
   # A host that already had the mount must still drain onto the variable, so
   # the fingerprint needs an explicit salt, not only the mount list.
-  github_fingerprint_input | grep -qF -- "$salt" || fail "ms-playwright slots carry no drain salt: '$mounts'"
+  grep -qF -- "$salt" <<< "$(github_fingerprint_input)" || fail "ms-playwright slots carry no drain salt: '$mounts'"
 done
 
 # The other cache variables still coexist with the new one.
@@ -80,13 +80,13 @@ gitlab_fingerprint_input() {
 CACHE_MOUNTS='npm:/home/runner/.npm'
 gitlab_write_config 1 ci-runner-1 || fail 'GitLab TOML without the browser cache failed'
 [ "$(gitlab_environment)" = FF_NETWORK_PER_BUILD=1 ] || fail 'GitLab job environment changed without an ms-playwright mount'
-if gitlab_fingerprint_input | grep -qF -- "$salt"; then fail 'unrelated GitLab managers received the drain salt'; fi
+if grep -qF -- "$salt" <<< "$(gitlab_fingerprint_input)"; then fail 'unrelated GitLab managers received the drain salt'; fi
 before="$(gitlab_confgen)"
 
 CACHE_MOUNTS='npm:/home/runner/.npm ms-playwright:/home/runner/.cache/ms-playwright'
 gitlab_write_config 1 ci-runner-1 || fail 'GitLab TOML with the browser cache failed'
 [ "$(gitlab_environment)" = "FF_NETWORK_PER_BUILD=1"$'\n'"$gc_off" ] || fail "GitLab jobs did not receive $gc_off"
-gitlab_fingerprint_input | grep -qF -- "$salt" || fail 'GitLab managers carry no drain salt'
+grep -qF -- "$salt" <<< "$(gitlab_fingerprint_input)" || fail 'GitLab managers carry no drain salt'
 [ "$(gitlab_confgen)" != "$before" ] || fail 'existing GitLab managers would not recreate'
 
 printf 'playwright cache contracts passed.\n'

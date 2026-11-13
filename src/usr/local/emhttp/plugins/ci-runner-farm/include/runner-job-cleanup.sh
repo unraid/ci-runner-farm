@@ -162,7 +162,7 @@ daemon="$(local_docker info --format '{{.ID}}')" || exit 1
 [[ "$daemon" =~ ^[A-Za-z0-9:-]{8,128}$ ]] || exit 1
 for builder in "${builder_names[@]}"; do
   name="buildx_buildkit_${builder}0_state"
-  printf '%s\n' "$volumes" | grep -Fxq -- "$name" || continue
+  grep -Fxq -- "$name" <<< "$volumes" || continue
   metadata="$(local_docker volume inspect --format '{{.Name}}|{{.Driver}}|{{.Scope}}|{{json .Options}}|{{json .Labels}}|{{.Mountpoint}}' "$name")" || exit 1
   case "$metadata" in
     "$name|local|local|null|null|/var/lib/docker/volumes/$name/_data"|\

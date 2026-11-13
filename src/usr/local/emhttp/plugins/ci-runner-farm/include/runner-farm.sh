@@ -536,12 +536,13 @@ expected_runner_confgen() {
 # settings, so it is retired instead (retire_runner). Any lookup failure,
 # including an invalid layout, returns 1: it is an error, not a retirement.
 runner_pool_retired() {
-  local pool records
+  local pool records pools
   pool_mode_enabled || return 1
   pool="$(runner_pool "$1")" || return 1
   [ "$pool" != default ] || return 1
   records="$(pool_records 2>/dev/null)" || return 1
-  ! printf '%s\n' "$records" | cut -d'|' -f2 | grep -Fxq -- "$pool"
+  pools="$(cut -d'|' -f2 <<< "$records")"
+  ! grep -Fxq -- "$pool" <<< "$pools"
 }
 
 # Per-container log-once markers for conditions that every tick re-checks.
@@ -801,7 +802,7 @@ reap_dead_runners() {
         side="$(gitlab_sidecar_name "$c")"
         sidecars="$(docker ps --format '{{.Names}}')" \
           || { err "autoscale: could not enumerate GitLab sidecars for owned runner $c"; failed=1; continue; }
-        if ! printf '%s\n' "$sidecars" | grep -qx "$side" \
+        if ! grep -qx "$side" <<< "$sidecars" \
            || ! docker --host "unix://$sock" info >/dev/null 2>&1; then
           # A single nested-daemon probe can fail during dockerd GC or host I/O.
           # Require two consecutive fleet evaluations before destructive repair;
@@ -971,7 +972,7 @@ layer_integrity_images() {
       else
         chain="sha256:$(printf '%s %s' "$chain" "$d" | sha256sum | cut -c1-64)"
       fi
-      if printf '%s\n' "$bad" | grep -qxF -- "${chain#sha256:}"; then
+      if grep -qxF -- "${chain#sha256:}" <<< "$bad"; then
         printf 'sha256:%s\n' "$image"
         break
       fi
@@ -996,7 +997,7 @@ layer_integrity_scan() {
   bad="$(printf '%s\n' "$out" | awk '$1 == "BAD" && $2 ~ /^[0-9a-f]+$/ && length($2) == 64 { print $2 }' | sort -u)"
   if [ -z "$bad" ]; then
     # A partial scan may not have reached a previously flagged layer.
-    if [ -f "$flag" ] && ! printf '%s\n' "$out" | grep -q '^SUMMARY .* partial'; then
+    if [ -f "$flag" ] && ! grep -q '^SUMMARY .* partial' <<< "$out"; then
       rm -f "$flag"
       layer_log "$c no longer holds corrupt layers; cleared its pending eviction"
     fi
@@ -1008,7 +1009,7 @@ layer_integrity_scan() {
   } > "$flag.tmp" 2>/dev/null && mv -f "$flag.tmp" "$flag" \
     || { rm -f "$flag.tmp"; layer_log "could not record corrupt layers for $c"; return 0; }
   layer_log "$c holds $(printf '%s\n' "$bad" | grep -c .) cached layer(s) that cannot be exported, used by $(printf '%s\n' "$images" | grep -c .) image(s); eviction pending until the slot is idle"
-  printf '%s\n' "$out" | awk '$1 == "BAD" { print substr($2, 1, 12), $3, $4 }' | head -n 10 \
+  awk '$1 == "BAD" { print substr($2, 1, 12), $3, $4; if (++n == 10) exit }' <<< "$out" \
     | while read -r chain reason path; do
         case "$reason" in missing) reason="missing or unreadable file" ;; *) reason="$reason mismatch" ;; esac
         layer_log "$c   layer $chain: $reason: $path"
@@ -1483,7 +1484,7 @@ replenish_fixed_github_capacity() {
     [ "$wanted" -ge 1 ] && [ "$wanted" -le 64 ] || return 1
     for ((idx=1; idx<=wanted; idx++)); do
       name="$NAME_PREFIX-$idx"
-      printf '%s\n' "$names" | grep -Fxq -- "$name" && continue
+      grep -Fxq -- "$name" <<< "$names" && continue
       validate_runner_mode && provider_token_ready && provider_validate_settings && provision_base || return 1
       start_one "$idx" || return 1
     done
@@ -1776,7 +1777,7 @@ drain_and_recreate() {
   # runner the operator just removed.
   all_names="$(docker ps -a --format '{{.Names}}')" \
     || { err "image-update: could not enumerate Docker containers after reacquiring the fleet lock"; return 1; }
-  printf '%s\n' "$all_names" | grep -qx "$c" \
+  grep -qx "$c" <<< "$all_names" \
     || { log "image-update: $c no longer present — skipping recreate"; return 0; }
   # A single-use runner exits when its job ends, and the lifecycle daemon can
   # replace it while this drain sleeps. The replacement is already on the
@@ -2157,7 +2158,7 @@ clear_dangling_endpoint() {
   [ "$NETWORK_ISOLATION" != off ] || return 0
   names="$(docker ps -a --format '{{.Names}}')" \
     || { err "could not enumerate containers before creating $name"; return 1; }
-  printf '%s\n' "$names" | tr ',' '\n' | grep -Fxq -- "$name" && return 0
+  grep -Fxq -- "$name" <<< "${names//,/$'\n'}" && return 0
   endpoints="$(docker network inspect -f '{{range $key, $endpoint := .Containers}}{{$key}}|{{$endpoint.Name}}{{println}}{{end}}' "$RUNNER_NETWORK")" \
     || { err "could not inspect $RUNNER_NETWORK endpoints before creating $name"; return 1; }
   while IFS='|' read -r key endpoint; do
@@ -2214,7 +2215,7 @@ mirror_legacy_owned_id() {
   [ "$name" = "/$MIRROR_NAME" ] \
     && [ "$image" = registry:2 ] \
     && [ "$source" = "$expected" ] \
-    && printf '%s\n' "$env" | grep -qx 'REGISTRY_PROXY_REMOTEURL=https://registry-1.docker.io'
+    && grep -qx 'REGISTRY_PROXY_REMOTEURL=https://registry-1.docker.io' <<< "$env"
 }
 
 mirror_owned_id() {
@@ -2286,7 +2287,7 @@ ensure_mirror() {
       # Pre-flight: a wildcard 0.0.0.0:PORT held by ANY other container/process blocks
       # the publish on every interface (Docker's allocator treats the port as globally
       # taken), so give an actionable error up front instead of a doomed docker run.
-      if command -v ss >/dev/null 2>&1 && ss -ltnH 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${MIRROR_PORT}$"; then
+      if command -v ss >/dev/null 2>&1 && ss -ltnH 2>/dev/null | awk -v port="$MIRROR_PORT" '$4 ~ ("[:.]" port "$") { found = 1 } END { exit !found }'; then
         err "shared image cache: host port ${MIRROR_PORT} is already in use by another service — set MIRROR_PORT to a free port in /boot/config/plugins/ci-runner-farm/ci-runner-farm.cfg, then Restart the fleet"
         return 1
       fi
@@ -2420,7 +2421,7 @@ firewall_ensure_forward_hooks() {
       NF==10 && $2=="FORWARD" && $3=="-s" && $5=="-m" && $6=="comment" &&
         $7=="--comment" && $8==tag && $9=="-j" && $10=="DOCKER-USER" {print $4; next}
       {exit}')"
-    if printf '%s\n' "$leading" | grep -Fxq -- "$subnet" &&
+    if grep -Fxq -- "$subnet" <<< "$leading" &&
        iptables -w -C FORWARD -s "$subnet" -m comment --comment "$FW_TAG:forward" \
          -j DOCKER-USER >/dev/null 2>&1; then
       continue
@@ -2486,7 +2487,7 @@ validate_artifact_endpoint() {
   [ "$NETWORK_ISOLATION" = strict ] && [ -n "$ARTIFACT_ENDPOINT" ] || return 0
   local endpoints
   endpoints="$(configured_strict_endpoints)"
-  if ! printf '%s\n' "$endpoints" | grep -q ' artifact$'; then
+  if ! grep -q ' artifact$' <<< "$endpoints"; then
     err "artifact endpoint must resolve to IPv4 and use an HTTP(S) origin with a valid TCP port"
     return 1
   fi
@@ -2569,7 +2570,7 @@ firewall_prepare_replacement() {
     err "strict isolation: could not inspect DOCKER-USER before replacement"
     return 1
   fi
-  if ! printf '%s' "$rules" | grep -qF "$FW_TAG"; then
+  if ! grep -qF "$FW_TAG" <<< "$rules"; then
     log "strict isolation: installing initial firewall policy"
     firewall_apply
   else
@@ -3703,7 +3704,7 @@ cmd_scale() {
       name="${NAME_PREFIX}-${i}"
       all_names="$(docker ps -a --format '{{.Names}}')" \
         || { err "could not enumerate Docker containers while selecting a free runner slot"; return 1; }
-      if ! printf '%s\n' "$all_names" | grep -qx "$name"; then
+      if ! grep -qx "$name" <<< "$all_names"; then
         if ! start_one "$i"; then failed=1; break; fi
       fi
       i=$((i+1))
@@ -4478,7 +4479,7 @@ cmd_usage_refresh() {
     targetrow="$(grep -m1 -- "^${c} " "$RUNDIR/usage.targets.tmp")"
     read -r _ provider stat_target <<< "$targetrow"
     if [ "$stat_target" != _ ]; then
-      srow="$(printf '%s\n' "$statsraw" | grep -m1 -- "^${stat_target}|")"
+      srow="$(grep -m1 -- "^${stat_target}|" <<< "$statsraw")"
       cpu="$(printf '%s' "$srow" | cut -d'|' -f2 | tr -d '%' | grep -oE '^[0-9]+(\.[0-9]+)?' | head -1)"; cpu="${cpu:--1}"
       [ -n "$srow" ] && mem_mib="$(to_mib "$(printf '%s' "$srow" | cut -d'|' -f3 | awk -F' / ' '{print $1}')")"
     fi
@@ -4538,7 +4539,7 @@ cmd_status_json() {
     local irow st cpus mem cgen row_provider row_pool expected_gen stale=false
     # {{.Name}} carries a leading '/', so field 1 is "/name"; split the pipe-delimited
     # inspect row with one read builtin instead of three cut subshells per runner.
-    irow="$(printf '%s\n' "$inspraw" | grep -m1 -E "^/?${c}\|")"
+    irow="$(grep -m1 -E "^/?${c}\|" <<< "$inspraw")"
     IFS='|' read -r _ st cpus mem cgen row_provider row_pool <<< "$irow"
     [ "$row_provider" = gitlab ] || row_provider=github
     [ "$row_pool" = '<no value>' ] && row_pool=""
@@ -4557,7 +4558,7 @@ cmd_status_json() {
     local urow live_provider="$row_provider" phase="starting" cpu_pct=-1 mem_used_mib=-1
     local job="" jstarted="" project="" job_id="" job_url="" ref="" ref_url=""
     local jrepo="" jpr="" jbranch="" jrun=""
-    urow="$(printf '%s\n' "$usage" | grep -m1 -- "^${c} ")"
+    urow="$(grep -m1 -- "^${c} " <<< "$usage")"
     if [ -n "$urow" ]; then
       # shellcheck disable=SC2086  # deliberate positional split of the fixed cache line
       set -- $urow
@@ -4649,10 +4650,10 @@ cmd_dashboard_json() {
   [ -n "$names" ] && inspraw="$(docker inspect -f '{{.Name}}|{{.State.Status}}' $names 2>/dev/null)"
   for c in $names; do
     [ -n "$c" ] || continue
-    st="$(printf '%s\n' "$inspraw" | grep -m1 -E "^/?${c}\|" | cut -d'|' -f2)"
+    st="$(grep -m1 -E "^/?${c}\|" <<< "$inspraw" | cut -d'|' -f2)"
     [ "$st" = running ] || continue
     up=$((up+1))
-    ph="$(printf '%s\n' "$usage" | grep -m1 -- "^${c} " | awk '{print $4}')"
+    ph="$(grep -m1 -- "^${c} " <<< "$usage" | awk '{print $4}')"
     case "$ph" in busy) busy=$((busy+1)) ;; idle) idle=$((idle+1)) ;; esac
   done
   printf '{"count":%s,"up":%s,"busy":%s,"idle":%s}\n' "$(printf '%s\n' "$names" | grep -c .)" "$up" "$busy" "$idle"

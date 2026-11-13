@@ -194,7 +194,7 @@ all_container_names="$(docker ps -a --format '{{.Names}}' 2>/dev/null)" || {
 }
 owned_legacy_mirrors=""
 if [ -z "$owned_mirrors" ] \
-   && printf '%s\n' "$all_container_names" | grep -qxF 'ci-runner-mirror'; then
+   && grep -qxF 'ci-runner-mirror' <<< "$all_container_names"; then
   legacy_cache_root="/mnt/cache/github-runner"
   cfg="$cfgdir/ci-runner-farm.cfg"
   if [ -e "$cfg" ]; then
@@ -224,7 +224,7 @@ if [ -z "$owned_mirrors" ] \
   if [ "$legacy_name" = /ci-runner-mirror ] \
      && [ "$legacy_image" = registry:2 ] \
      && [ "$legacy_source" = "$legacy_cache_root/registry-mirror" ] \
-     && printf '%s\n' "$legacy_env" | grep -qx 'REGISTRY_PROXY_REMOTEURL=https://registry-1.docker.io'; then
+     && grep -qx 'REGISTRY_PROXY_REMOTEURL=https://registry-1.docker.io' <<< "$legacy_env"; then
     owned_legacy_mirrors=ci-runner-mirror
   fi
 fi

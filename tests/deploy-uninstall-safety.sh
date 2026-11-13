@@ -66,8 +66,8 @@ do
   grep -qF "$label" "$DEPLOY" || fail "deploy ownership scan is missing $label"
 done
 mirror_block="$(sed -n '/^owned_mirrors="$(docker ps -a/,/^}/p' "$DEPLOY")"
-printf '%s\n' "$mirror_block" | grep -qF "'label=net.unraid.ci-runner-farm.resource=true'" \
-  && printf '%s\n' "$mirror_block" | grep -qF "'label=net.unraid.ci-runner-farm.role=mirror'" \
+grep -qF "'label=net.unraid.ci-runner-farm.resource=true'" <<< "$mirror_block" \
+  && grep -qF "'label=net.unraid.ci-runner-farm.role=mirror'" <<< "$mirror_block" \
   || fail "deploy mirror scan does not require the complete owned resource/role contract"
 github_validation_block="$(sed -n '/^owned_github_validations="$(docker ps -a/,/^}/p' "$DEPLOY")"
 for label in \
@@ -75,7 +75,7 @@ for label in \
   "'label=net.unraid.ci-runner-farm.provider=github'" \
   "'label=net.unraid.ci-runner-farm.role=validate'"
 do
-  printf '%s\n' "$github_validation_block" | grep -qF "$label" \
+  grep -qF "$label" <<< "$github_validation_block" \
     || fail "deploy GitHub validation scan is missing exact contract label $label"
 done
 gitlab_validation_block="$(sed -n '/^owned_gitlab_validations="$(docker ps -a/,/^}/p' "$DEPLOY")"
@@ -84,7 +84,7 @@ for label in \
   "'label=net.unraid.ci-runner-farm.role=validate-job'" \
   "'label=net.unraid.ci-runner-farm.slot'"
 do
-  printf '%s\n' "$gitlab_validation_block" | grep -qF "$label" \
+  grep -qF "$label" <<< "$gitlab_validation_block" \
     || fail "deploy GitLab validation scan is missing exact contract label $label"
 done
 for owned in owned_mirrors owned_legacy_mirrors owned_github_validations owned_gitlab_validations; do
@@ -100,7 +100,7 @@ do
   grep -qF "$provenance" "$DEPLOY" \
     || fail "deploy legacy mirror recognition is missing provenance check: $provenance"
 done
-grep -qF "printf '%s\\n' \"\$all_container_names\" | grep -qxF 'ci-runner-mirror'" "$DEPLOY" \
+grep -qF "grep -qxF 'ci-runner-mirror' <<< \"\$all_container_names\"" "$DEPLOY" \
   || fail "deploy does not distinguish an absent mirror from an inspect failure"
 for failure in \
   'Docker CLI is unavailable; cannot prove the fleet is inactive' \
@@ -123,9 +123,9 @@ remove_block="$(awk '
   emit && /<\/FILE>/ { exit }
 ' "$BUILD")"
 [ -n "$remove_block" ] || fail "could not locate generated plugin remove action"
-printf '%s\n' "$remove_block" | grep -qF 'set -euo pipefail' \
+grep -qF 'set -euo pipefail' <<< "$remove_block" \
   || fail "plugin remove action lacks strict shell error handling"
-printf '%s\n' "$remove_block" | grep -qF 'if ! "\$PLGDIR/include/runner-farm.sh" stop' \
+grep -qF 'if ! "\$PLGDIR/include/runner-farm.sh" stop' <<< "$remove_block" \
   || fail "plugin remove action does not surface fleet stop failures"
 for fallback_contract in \
   'cleanup engine is missing and Docker is unavailable' \
@@ -136,12 +136,12 @@ for fallback_contract in \
   'label=net.unraid.ci-runner-farm.provider=gitlab' \
   'cleanup engine is missing while plugin-owned Docker resources still exist'
 do
-  printf '%s\n' "$remove_block" | grep -qF "$fallback_contract" \
+  grep -qF "$fallback_contract" <<< "$remove_block" \
     || fail "plugin remove action lacks missing-engine safety contract: $fallback_contract"
 done
-printf '%s\n' "$remove_block" | grep -qF 'if ! rm -rf -- "\$PLGDIR" || [ -e "\$PLGDIR" ]; then' \
+grep -qF 'if ! rm -rf -- "\$PLGDIR" || [ -e "\$PLGDIR" ]; then' <<< "$remove_block" \
   || fail "plugin remove action does not fail on incomplete runtime deletion"
-printf '%s\n' "$remove_block" | grep -qF 'if ! rm -f -- "\$CFGDIR"/${NAME}-*.tgz; then' \
+grep -qF 'if ! rm -f -- "\$CFGDIR"/${NAME}-*.tgz; then' <<< "$remove_block" \
   || fail "plugin remove action does not fail on cached-package deletion"
 
 runtime_delete_line="$(printf '%s\n' "$remove_block" | grep -nF 'if ! rm -rf -- "\$PLGDIR"' | head -1 | cut -d: -f1 || true)"
