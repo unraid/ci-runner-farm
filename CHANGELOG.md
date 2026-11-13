@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.6.1](https://github.com/unraid/ci-runner-farm/compare/v3.6.0...v3.6.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **cache:** recover corrupt pnpm stores through guarded fleet drain ([#241](https://github.com/unraid/ci-runner-farm/issues/241)) ([ca584d1](https://github.com/unraid/ci-runner-farm/commit/ca584d1fea7022c435b9d65b4f2cee7e804b395c))
+* stop early-exit greps from failing pipelines under pipefail ([#239](https://github.com/unraid/ci-runner-farm/issues/239)) ([35945ff](https://github.com/unraid/ci-runner-farm/commit/35945ffbdcad033923609502e2031300809bef79))
+
 ## [3.6.0](https://github.com/unraid/ci-runner-farm/compare/v3.5.1...v3.6.0) (2026-11-12)
 
 
