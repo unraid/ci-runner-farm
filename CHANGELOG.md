@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.7.1](https://github.com/unraid/ci-runner-farm/compare/v3.7.0...v3.7.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **github:** read every page of the runner list ([#244](https://github.com/unraid/ci-runner-farm/issues/244)) ([a17adef](https://github.com/unraid/ci-runner-farm/commit/a17adefbc95ed6dbea9c4ccd4714bdf83f5321fe))
+
 ## [3.7.0](https://github.com/unraid/ci-runner-farm/compare/v3.6.1...v3.7.0) (2026-11-13)
 
 
