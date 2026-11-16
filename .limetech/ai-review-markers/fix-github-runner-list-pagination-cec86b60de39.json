@@ -1,25 +1,8 @@
 {
   "disposition": "PATCH",
-  "expected_structural_delta": "One new helper (gh_api_pages) and one small wrapper (github_list_runners) in providers/github.sh. One opt-out flag in gh_api for one-off GETs. No new files, owners, or dependencies.",
-  "minimum_design": "One shared pager for GitHub list endpoints (page count from total_count, fail on any failed page). The liveness inventory and the poison-scan job list use it. Deregistration looks up its own registration with GitHub's exact name filter and takes earlier starts from the paged inventory.",
-  "outcome": "The farm deletes dead GitHub runner registrations for every host, also when the organization lists more than 100 runners and a host's names sort past the first page. Recorded after the code was written (disclosed in the PR).",
-  "reuse_decisions": [
-    {
-      "decision": "reuse",
-      "name": "gh_api with its ETag cache and rate gate",
-      "rationale": "Every page goes through gh_api, so ETags, rate recording and the background reserve apply unchanged."
-    },
-    {
-      "decision": "reuse",
-      "name": "github_reap_stale_registrations",
-      "rationale": "It already deletes offline, idle, unowned registrations; it only needed a complete inventory."
-    },
-    {
-      "decision": "not applicable",
-      "name": "github_fetch_all",
-      "rationale": "It fans out one request per repository, not pages of one list."
-    }
-  ],
+  "forecast_commit": "8c69f870f15b24cf7786b3479fb62bc0070ab14a",
+  "reviewed_sha": "22b3a4417a8887a08d224b4fc5b69cdf7bd3f11f",
   "schema": "limetech.ai-review-marker.v2",
-  "stage": "forecast"
+  "stage": "final",
+  "unresolved_proportionality_findings": []
 }
