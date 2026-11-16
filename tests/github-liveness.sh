@@ -100,4 +100,78 @@ if github_runner_liveness_refresh; then
   exit 1
 fi
 
+# GitHub pages the runner list (at most 100 per page, sorted by name). A host
+# whose names sort after the first page must still be seen.
+full_page='{"total_count":101,"runners":['
+for i in $(seq 1 100); do
+  [ "$i" = 1 ] || full_page="$full_page,"
+  full_page="$full_page{\"id\":$((1000 + i)),\"name\":\"aaahost-ci-runner-$i\",\"os\":\"Linux\",\"status\":\"online\",\"busy\":false,\"labels\":[{\"id\":7,\"name\":\"self-hosted\",\"type\":\"read-only\"}]}"
+done
+full_page="$full_page]}"
+second_page='{"total_count":101,"runners":[{"id":9,"name":"mockhost-ci-runner-9","os":"Linux","status":"offline","busy":false,"labels":[]}]}'
+page_two_fails=false
+: > "$api_log"
+gh_api() {
+  printf '%s %s\n' "$1" "$2" >> "$api_log"
+  case "$1 $2" in
+    'GET /orgs/example-owner/actions/runners?per_page=100') printf '%s\n' "$full_page" ;;
+    'GET /orgs/example-owner/actions/runners?per_page=100&page=2')
+      [ "$page_two_fails" = false ] || return 1
+      printf '%s\n' "$second_page" ;;
+    *) return 1 ;;
+  esac
+}
+github_runner_liveness_refresh || { echo 'github-liveness: paged refresh failed' >&2; exit 1; }
+[ "$(wc -l < "$api_log" | tr -d ' ')" = 2 ] || { echo "github-liveness: expected two page requests: $(cat "$api_log")" >&2; exit 1; }
+[ "$(github_runner_liveness_status ci-runner-9)" = offline ] || { echo 'github-liveness: runner on page 2 was not read' >&2; exit 1; }
+[ "$(tail -n +2 "$GITHUB_LIVENESS_CACHE" | wc -l | tr -d ' ')" = 101 ] || { echo 'github-liveness: paged inventory lost or repeated runners' >&2; exit 1; }
+
+# A failed later page must not publish the first page as the whole inventory.
+cp "$GITHUB_LIVENESS_CACHE" "$tmp/paged.cache"
+now="$(date +%s)"
+{ printf '%s %s\n' "$((now - GITHUB_LIVENESS_TTL - 1))" "$cache_key"; tail -n +2 "$tmp/paged.cache"; } > "$GITHUB_LIVENESS_CACHE"
+page_two_fails=true
+if github_runner_liveness_refresh; then
+  echo 'github-liveness: published a partial paged inventory' >&2
+  exit 1
+fi
+[ "$(github_runner_liveness_status ci-runner-9)" = offline ] || { echo 'github-liveness: failed page replaced the previous inventory' >&2; exit 1; }
+
+# An exactly full last page stops on total_count, without an empty request.
+full_only="${full_page/\"total_count\":101/\"total_count\":100}"
+gh_api() {
+  printf '%s %s\n' "$1" "$2" >> "$api_log"
+  case "$1 $2" in
+    'GET /orgs/example-owner/actions/runners?per_page=100') printf '%s\n' "$full_only" ;;
+    *) return 1 ;;
+  esac
+}
+rm -f "$GITHUB_LIVENESS_CACHE"; : > "$api_log"
+github_runner_liveness_refresh || { echo 'github-liveness: full single page failed' >&2; exit 1; }
+[ "$(wc -l < "$api_log" | tr -d ' ')" = 1 ] || { echo 'github-liveness: requested a page after total_count was reached' >&2; exit 1; }
+
+# A runner read twice (it moved between pages) keeps its later reading, once.
+moved_page='{"total_count":101,"runners":[{"id":1001,"name":"aaahost-ci-runner-1","os":"Linux","status":"offline","busy":false,"labels":[]},{"id":9,"name":"mockhost-ci-runner-9","os":"Linux","status":"offline","busy":false,"labels":[]}]}'
+second_key_missing=false
+gh_api() {
+  printf '%s %s\n' "$1" "$2" >> "$api_log"
+  case "$1 $2" in
+    'GET /orgs/example-owner/actions/runners?per_page=100') printf '%s\n' "$full_page" ;;
+    'GET /orgs/example-owner/actions/runners?per_page=100&page=2')
+      if [ "$second_key_missing" = true ]; then printf '%s\n' '{"message":"unexpected"}'; else printf '%s\n' "$moved_page"; fi ;;
+    *) return 1 ;;
+  esac
+}
+rm -f "$GITHUB_LIVENESS_CACHE"
+github_runner_liveness_refresh || { echo 'github-liveness: refresh with a moved runner failed' >&2; exit 1; }
+[ "$(tail -n +2 "$GITHUB_LIVENESS_CACHE" | wc -l | tr -d ' ')" = 101 ] || { echo 'github-liveness: a moved runner was not deduplicated' >&2; exit 1; }
+[ "$(awk -F'|' '$3 == 1001 { print $2 }' "$GITHUB_LIVENESS_CACHE")" = offline ] || { echo 'github-liveness: dedupe kept the older reading' >&2; exit 1; }
+
+# A later page without the list key is not a valid page.
+rm -f "$GITHUB_LIVENESS_CACHE"; second_key_missing=true
+if github_runner_liveness_refresh; then
+  echo 'github-liveness: accepted a page without a runners list' >&2
+  exit 1
+fi
+
 echo 'github-liveness: PASS'

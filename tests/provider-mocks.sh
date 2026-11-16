@@ -75,7 +75,7 @@ gh_api() {
   printf '%s %s\n' "$1" "$2" >> "$GH_API_LOG"
   case "$1 $2" in
     POST*) printf '%s\n' '{"token":"short-registration-token"}' ;;
-    GET*)  printf '%s\n' '{' '"id": 77,' '"name": "mockhost-ci-runner-1",' '"os": "linux"' '}' ;;
+    GET*)  printf '%s\n' '{"total_count": 1, "runners": [{' '"id": 77,' '"name": "mockhost-ci-runner-1",' '"os": "linux",' '"status": "offline",' '"busy": false' '}]}' ;;
     DELETE*) return 0 ;;
   esac
 }
@@ -202,7 +202,7 @@ grep -qx "$CACHE_ROOT/work/ci-runner-1:/_work" <<< "$github_args" \
 provider_stop_remove_container() { printf 'STOP %s\n' "$1" >> "$GH_API_LOG"; }
 github_remove_runner ci-runner-1 false || fail "GitHub non-purge recycle removal failed"
 [ "$(sed -n '1p' "$GH_API_LOG")" = 'STOP ci-runner-1' ] || fail "GitHub deregistration ran before container stop"
-grep -qF 'GET /repos/example/one/actions/runners?per_page=100' "$GH_API_LOG" \
+grep -qF 'GET /repos/example/one/actions/runners?per_page=100&name=mockhost-ci-runner-1' "$GH_API_LOG" \
   || fail "GitHub runner discovery endpoint changed"
 grep -qF 'DELETE /repos/example/one/actions/runners/77' "$GH_API_LOG" \
   || fail "GitHub runner deletion endpoint changed"
