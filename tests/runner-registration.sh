@@ -103,18 +103,46 @@ slot_inventory='{"runners":[
 {"id":25,"name":"mockhost-ci-runner-build-12","os":"Linux","status":"offline","busy":false,"labels":[]},
 {"id":26,"name":"mockhost-ci-runner-build-1-r444444","os":"Linux","status":"offline","busy":false,"labels":[]},
 {"id":27,"name":"otherhost-ci-runner-build-12-r555555","os":"Linux","status":"offline","busy":false,"labels":[]}]}'
+# GitHub's name filter returns only the runner with that exact name.
+runner_by_name() {
+  local rows
+  rows="$(grep -F "\"name\":\"$1\"" <<< "$current_inventory" | sed -E 's/^\{"runners":\[//; s/\]\}$//; s/,$//')" || rows=""
+  printf '{"total_count":%s,"runners":[%s]}\n' "$(grep -c . <<< "$rows" || true)" "$rows"
+}
 gh_api() {
   printf '%s %s\n' "$1" "$2" >> "$api_log"
   case "$1 $2" in
-    'GET /orgs/example/actions/runners?per_page=100') printf '%s\n' "$current_inventory" ;;
+    'GET /orgs/example/actions/runners?per_page=100&name='*)
+      [ "${lookup_fails:-false}" = false ] || return 1
+      runner_by_name "${2##*&name=}" ;;
     DELETE*) [ "${delete_fails:-false}" = false ] ;;
     *) return 1 ;;
   esac
 }
-current_inventory="$slot_inventory"; : > "$api_log"
+seed_inventory() {
+  printf '%s %s\n%s\n' "$(date +%s)" key "$(github_parse_runner_statuses /orgs/example <<< "$1")" > "$GITHUB_LIVENESS_CACHE"
+}
+deleted() { sed -n 's|^DELETE /orgs/example/actions/runners/||p' "$api_log" | sort | tr '\n' ' '; }
+current_inventory="$slot_inventory"; seed_inventory "$slot_inventory"; : > "$api_log"
 github_deregister_runner_api ci-runner-build-12 mockhost-ci-runner-build-12-r0a1b2c >/dev/null
-deleted="$(sed -n 's|^DELETE /orgs/example/actions/runners/||p' "$api_log" | sort | tr '\n' ' ')"
-[ "$deleted" = "21 22 25 " ] || fail "removal deleted the wrong registrations: $deleted"
+[ "$(deleted)" = "21 22 25 " ] || fail "removal deleted the wrong registrations: $(deleted)"
+# One exact-name lookup, never the whole runner list: a large organization
+# must not cost one request per 100 runners on every removal.
+[ "$(grep -c '^GET' "$api_log")" = 1 ] && grep -qx 'GET /orgs/example/actions/runners?per_page=100&name=mockhost-ci-runner-build-12-r0a1b2c' "$api_log" \
+  || fail "removal did not use one exact-name lookup: $(cat "$api_log")"
+
+# Earlier starts come only from the inventory: without one, only the own
+# registration is deleted and the stale-registration pass handles the rest.
+rm -f "$GITHUB_LIVENESS_CACHE"; : > "$api_log"
+github_deregister_runner_api ci-runner-build-12 mockhost-ci-runner-build-12-r0a1b2c >/dev/null
+[ "$(deleted)" = "21 " ] || fail "removal without an inventory deleted: $(deleted)"
+
+# A failed lookup still deletes earlier starts from the inventory, and says so.
+seed_inventory "$slot_inventory"; : > "$api_log"; lookup_fails=true
+lookup_out="$(github_deregister_runner_api ci-runner-build-12 mockhost-ci-runner-build-12-r0a1b2c)"
+lookup_fails=false
+[ "$(deleted)" = "22 25 " ] || fail "removal after a failed lookup deleted: $(deleted)"
+grep -q 'could not look up mockhost-ci-runner-build-12-r0a1b2c' <<< "$lookup_out" || fail 'failed lookup was not logged'
 
 # Removal reads the label before the container is gone.
 label_value="mockhost-ci-runner-build-12-r0a1b2c"

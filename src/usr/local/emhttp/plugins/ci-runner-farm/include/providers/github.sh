@@ -261,6 +261,55 @@ github_parse_runner_statuses() {
     }'
 }
 
+# Print the body of every page of the GitHub list at path $1, whose query sets
+# per_page (GitHub serves at most 100 per page). $2 is the list's key
+# ("runners", "jobs"); every page must carry it. The first page's total_count
+# sets the page count (one page without it). Fails when any page fails, so no
+# caller acts on a list that stops partway. A list longer than
+# GITHUB_LIST_PAGE_LIMIT pages is cut there with a logged warning: the rows
+# past the cut are unknown, which callers treat as "do nothing". Page 1 keeps
+# its plain path and its ETag entry.
+GITHUB_LIST_PAGE_LIMIT=20
+gh_api_pages() {
+  local path="$1" key="$2" per_page total body page=1 pages=1 url
+  case "$path" in *'?'*) ;; *) err "gh_api_pages: $path has no query"; return 1 ;; esac
+  per_page="$(grep -oE '[?&]per_page=[0-9]+' <<< "$path" | grep -oE '[0-9]+$')" || per_page=30
+  [ "$per_page" -ge 1 ] || per_page=30
+  [ "$per_page" -le 100 ] || per_page=100
+  while [ "$page" -le "$pages" ]; do
+    url="$path"
+    [ "$page" = 1 ] || url="${path}&page=${page}"
+    body="$(gh_api GET "$url")" || return 1
+    case "$body" in *"\"$key\""*) ;; *) return 1 ;; esac
+    printf '%s\n' "$body"
+    if [ "$page" = 1 ]; then
+      total="$(grep -m1 -oE '"total_count"[[:space:]]*:[[:space:]]*[0-9]+' <<< "$body" | grep -oE '[0-9]+$')" || total=0
+      pages=$(( (total + per_page - 1) / per_page ))
+      [ "$pages" -ge 1 ] || pages=1
+      if [ "$pages" -gt "$GITHUB_LIST_PAGE_LIMIT" ]; then
+        log "warning: ${path%%\?*} lists $total items; reading only the first $GITHUB_LIST_PAGE_LIMIT pages" >&2
+        pages="$GITHUB_LIST_PAGE_LIMIT"
+      fi
+    fi
+    page=$((page + 1))
+  done
+}
+
+# Print the parsed registrations (see github_parse_runner_statuses) of API base
+# $1 from every page of its runner list, once per id. GitHub returns at most
+# 100 runners per page, sorted by name, so reading only the first page hides
+# the registrations of hosts whose names sort last: they are never
+# deregistered or reaped. A runner can move between pages while they are read;
+# its later (newer) reading is kept.
+github_list_runners() {
+  local base="$1" bodies
+  bodies="$(gh_api_pages "${base}/actions/runners?per_page=100" runners)" || return 1
+  github_parse_runner_statuses "$base" <<< "$bodies" | awk -F'|' '
+    !($3 in row) { order[++n] = $3 }
+    { row[$3] = $0 }
+    END { for (i = 1; i <= n; i++) print row[order[i]] }'
+}
+
 # Each start registers under its own name, <host>-<slot>-r<6 hex>. Reusing one
 # fixed name per slot let a quickly recreated ephemeral runner collide with the
 # previous runner's still-open session; GitHub then deleted the registration
@@ -299,7 +348,7 @@ github_runner_registration_name() {
 }
 
 github_runner_liveness_refresh() {
-  local now expected_key cached_at cached_key age tmp body valid=0 repo url
+  local now expected_key cached_at cached_key age tmp valid=0 repo
   now="$(date +%s)"
   expected_key="$(printf '%s\0' "$GH_SCOPE" "$GH_OWNER" "$GH_REPOS" | sha256sum | cut -c1-12)"
   if [ -f "$GITHUB_LIVENESS_CACHE" ]; then
@@ -313,17 +362,13 @@ github_runner_liveness_refresh() {
   fi
   tmp="$(mktemp "$RUNDIR/github-liveness.XXXXXX" 2>/dev/null)" || return 1
   if [ "$GH_SCOPE" = org ]; then
-    url="/orgs/${GH_OWNER}/actions/runners?per_page=100"
-    body="$(gh_api GET "$url")" || { rm -f "$tmp"; return 1; }
-    case "$body" in *'"runners"'*) valid=1 ;; esac
-    printf '%s' "$body" | github_parse_runner_statuses "/orgs/${GH_OWNER}" >> "$tmp"
+    github_list_runners "/orgs/${GH_OWNER}" >> "$tmp" || { rm -f "$tmp"; return 1; }
+    valid=1
   else
     for repo in $GH_REPOS; do
       [ -n "$repo" ] || continue
-      url="/repos/${repo}/actions/runners?per_page=100"
-      body="$(gh_api GET "$url")" || { rm -f "$tmp"; return 1; }
-      case "$body" in *'"runners"'*) valid=1 ;; esac
-      printf '%s' "$body" | github_parse_runner_statuses "/repos/${repo}" >> "$tmp"
+      github_list_runners "/repos/${repo}" >> "$tmp" || { rm -f "$tmp"; return 1; }
+      valid=1
     done
   fi
   [ "$valid" = 1 ] || { rm -f "$tmp"; return 1; }
@@ -548,7 +593,9 @@ gh_api() {
   local method="$1" path="$2" work cache="" etag="" code rc=0
   local conditional=()
   work="$(mktemp -d "${TMPDIR:-/tmp}/crf-gh.XXXXXX" 2>/dev/null)" || return 1
-  if [ "$method" = GET ]; then
+  # GH_API_NO_CACHE=1 marks a one-off GET (for example a lookup by a unique
+  # runner name) whose ETag entry would never be read again.
+  if [ "$method" = GET ] && [ "${GH_API_NO_CACHE:-0}" != 1 ]; then
     cache="$(gh_etag_file "$path")"
     # Snapshot the entry so a concurrent refresh cannot pair this ETag with
     # another body.
@@ -607,8 +654,12 @@ github_replacement_preflight() {
 
 # Delete the slot's registration $2 (default: the legacy fixed name), plus any
 # other offline, idle registrations of the same slot left by earlier starts.
+# The own registration is looked up by exact name (GitHub's name filter), one
+# request however many runners the scope has. Earlier starts come from the
+# paged liveness inventory, so a removal never reads the whole runner list;
+# github_reap_stale_registrations deletes any that inventory has not seen yet.
 github_deregister_runner_api() {
-  local c="$1" rname="${2:-}" idx repo base body own listed id name
+  local c="$1" rname="${2:-}" idx repo base runners own listed id name
   [ -n "$ACCESS_TOKEN" ] && [ -n "$c" ] || return 0
   [ -n "$rname" ] || rname="$(host)-${c}"
   if [ "$GH_SCOPE" = "org" ]; then
@@ -618,19 +669,20 @@ github_deregister_runner_api() {
     [ -n "$repo" ] || return 0
     base="/repos/${repo}"
   fi
-  body="$(gh_api GET "${base}/actions/runners?per_page=100")" || return 0
   # The slot's own registration is matched by exact name alone and always
   # attempted (GitHub refuses an online or busy runner).
-  own="$(printf '%s\n' "$body" | tr ',' '\n' | awk -v want="$rname" '
-      /"id"[[:space:]]*:/   { if (match($0, /[0-9]+/)) cur = substr($0, RSTART, RLENGTH) }
-      /"name"[[:space:]]*:/ { s=$0; sub(/^[^:]*:[[:space:]]*"/, "", s); sub(/".*/, "", s); nm=s }
-      /"os"[[:space:]]*:/   { if (nm == want) { print cur; exit } }
-    ')"
+  if runners="$(GH_API_NO_CACHE=1 gh_api_pages "${base}/actions/runners?per_page=100&name=$(urlencode "$rname")" runners)"; then
+    own="$(github_parse_runner_statuses "$base" <<< "$runners" | awk -F'|' -v want="$rname" '$1 == want && !found { print $3; found = 1 }')"
+  else
+    own=""
+    log "warning: could not look up $rname on GitHub; the stale-registration pass deletes it once it is offline"
+  fi
   # Earlier starts of the same slot are deleted only when offline and idle.
-  listed="$(printf '%s' "$body" | github_parse_runner_statuses "$base" | while IFS='|' read -r name status id busy _; do
-      [ "$name" != "$rname" ] && [ "$status" = offline ] && [ "$busy" = false ] || continue
+  listed="$(while IFS='|' read -r name status id busy owner; do
+      [ -n "$name" ] && [ "$name" != "$rname" ] && [ "$owner" = "$base" ] || continue
+      [ "$status" = offline ] && [ "$busy" = false ] || continue
       if github_registration_of_slot "$c" "$name"; then printf '%s|%s\n' "$id" "$name"; fi
-    done)"
+    done < <(tail -n +2 "$GITHUB_LIVENESS_CACHE" 2>/dev/null))"
   [ -z "$own" ] || listed="$own|$rname"$'\n'"$listed"
   while IFS='|' read -r id name; do
     case "$id" in ''|*[!0-9]*) continue ;; esac
@@ -723,7 +775,7 @@ github_recent_failed_runs() {
 # their own "conclusion" but never an anchored "id"), then "runner_name".
 github_failed_local_jobs() {
   local repo="$1" run_id="$2" body
-  body="$(gh_api GET "/repos/${repo}/actions/runs/${run_id}/jobs?per_page=50")" || return 1
+  body="$(gh_api_pages "/repos/${repo}/actions/runs/${run_id}/jobs?per_page=50" jobs)" || return 1
   printf '%s\n' "$body" | awk -v host="$(host)-" -v prefix="${NAME_PREFIX}-" '
     /^[[:space:]]*"id":/ { if (match($0, /[0-9]+/)) { jid = substr($0, RSTART, RLENGTH); conc = "" } }
     /^[[:space:]]*"conclusion":/ {

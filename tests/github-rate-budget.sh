@@ -84,6 +84,8 @@ STATUS=201 gh_api POST '/orgs/example/actions/runners/registration-token' >/dev/
 [ ! -e "$(gh_etag_file '/orgs/example/actions/runners/registration-token')" ] || fail "POST was cached"
 NO_ETAG=1 gh_api GET '/repos/example/no-etag' >/dev/null || fail "GET without ETag failed"
 [ ! -e "$(gh_etag_file '/repos/example/no-etag')" ] || fail "response without ETag was cached"
+GH_API_NO_CACHE=1 gh_api GET '/orgs/example/actions/runners?per_page=100&name=one-off' >/dev/null || fail "one-off GET failed"
+[ ! -e "$(gh_etag_file '/orgs/example/actions/runners?per_page=100&name=one-off')" ] || fail "one-off GET was cached"
 
 # Rate-limit observations gate background readers until the reset.
 read -r seen_remaining seen_reset < "$CRF_RUNDIR/gh-ratelimit"

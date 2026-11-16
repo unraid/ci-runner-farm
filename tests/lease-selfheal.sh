@@ -228,4 +228,23 @@ stops_after="$(grep -c 'docker stop' "$DOCKER_LOG" || true)"
 [ "$stops_before" = "$stops_after" ] || fail "healer stopped a container whose flag no longer matches it"
 [ ! -e "$CRF_RUNDIR/poison-pending.ci-runner-3" ] || fail "stale flag for a replaced container survived"
 
+# ── A run with more jobs than one page still yields this host's jobs ─────────
+gh_api() {
+  printf '%s %s\n' "$1" "$2" >> "$GH_API_LOG"
+  case "$2" in
+    '/repos/example/one/actions/runs/900002/jobs?per_page=50')
+      printf '{\n  "total_count": 51,\n  "jobs": [\n'
+      for i in $(seq 1 50); do
+        printf '    {\n      "id": %s,\n      "conclusion": "failure",\n      "runner_name": "GitHub Actions %s"\n    },\n' "$((800000 + i))" "$i"
+      done
+      printf '  ]\n}\n' ;;
+    '/repos/example/one/actions/runs/900002/jobs?per_page=50&page=2')
+      printf '%s\n' '{' '  "total_count": 51,' '  "jobs": [' '    {' '      "id": 800200,' \
+        '      "conclusion": "failure",' '      "runner_name": "mockhost-ci-runner-2-r0a1b2c"' '    }' '  ]' '}' ;;
+    *) return 1 ;;
+  esac
+}
+paged_jobs="$(github_failed_local_jobs example/one 900002)" || fail "paged job list failed"
+[ "$paged_jobs" = "800200|ci-runner-2" ] || fail "a failed local job on page 2 was missed: '$paged_jobs'"
+
 echo "lease-selfheal checks passed"
