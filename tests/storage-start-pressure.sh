@@ -3,7 +3,7 @@
 # shellcheck disable=SC2034,SC2329
 set -euo pipefail
 cd "$(dirname "$0")/.."
-tmp="$(mktemp -d)"
+tmp="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
 export CRF_SOURCE_ONLY=1 CRF_CFGDIR="$tmp/config" CRF_RUNDIR="$tmp/run"
 mkdir -p "$CRF_CFGDIR" "$CRF_RUNDIR" "$tmp/cache" "$tmp/docker-root"

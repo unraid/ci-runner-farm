@@ -62,6 +62,9 @@ ELASTIC_POOLS="false"                 # retired setting; true requires configura
 DOCKER_CACHE_MIN_FREE_PERCENT="15"     # reclaim completed DinD stores below this free-space threshold; 0 disables
 DOCKER_CACHE_BUILDERS=""              # optional comma-separated reusable Buildx builder names eligible for pressure eviction
 PODMAN_POOL_STORAGE="false"           # qualified ephemeral GitHub DinD: private Podman stores on the pool
+STORAGE_START_GUARD="false"           # GitHub start/pull admission; independent from cache cleanup
+STORAGE_START_MIN_BYTES="0"           # enabled policy requires explicit positive byte and inode floors
+STORAGE_START_MIN_INODES="0"
 DOCKER_JOB_PRUNE="false"              # persistent DinD: prune job Docker state and, under pressure, unused images and other checkouts after each job
 RUNNER_CPUS=""                        # per-runner CPU cap; empty = uncapped (CFS time-shares fairly)
 CPU_PINNING="false"                   # true => GitHub runners with a whole-number CPU cap also get a cpuset of that
@@ -184,7 +187,7 @@ HISTORY_FILE="${CRF_HISTORY_FILE:-${CFGDIR}/recommendations.history}"
 # Allowlist of keys the settings page may set. load_cfg only ever assigns these.
 CFG_KEYS="CI_PROVIDER GH_SCOPE GH_OWNER GH_REPOS RUNNER_GROUP GH_APP_ID GH_APP_INSTALLATION_ID GITLAB_URL GITLAB_RUNNER_IMAGE GITLAB_PROJECTS GITLAB_SHUTDOWN_TIMEOUT \
 GITLAB_ALLOWED_IMAGES GITLAB_ALLOWED_SERVICES GITLAB_PULL_POLICY GITLAB_SHM_SIZE \
-RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS QUEUED_POOLS DOCKER_CACHE_MIN_FREE_PERCENT DOCKER_CACHE_BUILDERS DOCKER_JOB_PRUNE PODMAN_POOL_STORAGE \
+RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS QUEUED_POOLS DOCKER_CACHE_MIN_FREE_PERCENT DOCKER_CACHE_BUILDERS DOCKER_JOB_PRUNE PODMAN_POOL_STORAGE STORAGE_START_GUARD STORAGE_START_MIN_BYTES STORAGE_START_MIN_INODES \
 RUNNER_CPUS CPU_PINNING CPU_PINNING_WHOLE_CORES RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE USER_SHARE_MOUNTS IMAGE_SOURCE IMAGE EPHEMERAL \
 RUN_AS_ROOT REGISTRY_SERVER REGISTRY_USERNAME CACHE_MOUNTS SHARE_DOCKER_SOCK DIND \
 SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK RUNNER_DNS ARTIFACT_ENDPOINT MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
@@ -199,7 +202,7 @@ DASHBOARD_WIDGET_ENABLE"
 # would run. Shape-check these at parse time so nothing else has to. Keys whose
 # values are legitimately non-integer stay off this list: RUNNER_CPUS (decimal),
 # RUNNER_MEMORY and WORK_TMPFS_SIZE (unit-suffixed).
-CFG_NUMERIC_KEYS="RUNNER_COUNT MIRROR_PORT AUTOSCALE_MIN AUTOSCALE_MAX AUTOSCALE_MIN_IDLE \
+CFG_NUMERIC_KEYS="STORAGE_START_MIN_BYTES STORAGE_START_MIN_INODES RUNNER_COUNT MIRROR_PORT AUTOSCALE_MIN AUTOSCALE_MAX AUTOSCALE_MIN_IDLE \
 AUTOSCALE_STEP AUTOSCALE_INTERVAL AUTOSCALE_IDLE_GRACE IMAGE_AUTOUPDATE_INTERVAL \
 IMAGE_DRAIN_TIMEOUT GITLAB_SHUTDOWN_TIMEOUT GITLAB_SHM_SIZE DOCKER_CACHE_MIN_FREE_PERCENT GROWTH_CPU_CEILING"
 
@@ -212,6 +215,9 @@ load_cfg() {
   DOCKER_CACHE_BUILDERS=""
   DOCKER_JOB_PRUNE="false"
   PODMAN_POOL_STORAGE="false"
+  STORAGE_START_GUARD="false"
+  STORAGE_START_MIN_BYTES="0"
+  STORAGE_START_MIN_INODES="0"
   RUNNER_DNS=""
   GROWTH_BACKPRESSURE="false"
   CPU_PINNING_WHOLE_CORES="false"
@@ -266,9 +272,59 @@ crf_podman_pool_settings_valid() {
   done
 }
 
+# Explicit start policy, separate from best-effort completed-cache reclamation.
+crf_storage_start_settings_valid() {
+  case "${STORAGE_START_GUARD:-false}" in
+    false) return 0 ;; true) ;; *) err "STORAGE_START_GUARD must be true or false"; return 1 ;;
+  esac
+  [ "$CI_PROVIDER" = github ] || { err "Storage start admission supports GitHub only"; return 1; }
+  [[ "${STORAGE_START_MIN_BYTES:-0}" =~ ^[1-9][0-9]{0,17}$ ]] \
+    && [[ "${STORAGE_START_MIN_INODES:-0}" =~ ^[1-9][0-9]{0,17}$ ]] \
+    || { err "Storage start admission requires positive byte/inode floors below 10^18"; return 1; }
+}
+
+# A fresh observation is not a reservation for future job writes. The existing
+# fleet owner serializes these boundaries; pressure never stops existing jobs.
+crf_storage_start_admit() {
+  crf_storage_start_settings_valid || return 1
+  [ "${STORAGE_START_GUARD:-false}" = true ] || return 0
+  local workspace docker_root path metric sample value extra header floor
+  local -a rows=()
+  workspace="$(crf_safe_cache_root)" && [ -d "$workspace" ] \
+    && [ "$(realpath -e -- "$workspace")" = "$workspace" ] \
+    || { err "storage-start: workspace backing path is unknown"; return 1; }
+  docker_root="$(LC_ALL=C timeout 5 docker info --format '{{.DockerRootDir}}' 2>/dev/null)" \
+    || { err "storage-start: Docker root is unavailable"; return 1; }
+  [[ "$docker_root" = /* && "$docker_root" != / && "$docker_root" != *$'\n'* && "$docker_root" != *$'\r'* ]] \
+    && [ -d "$docker_root" ] \
+    || { err "storage-start: Docker root is unknown"; return 1; }
+  for path in "$docker_root" "$workspace"; do
+    for metric in bytes inodes; do
+      if [ "$metric" = bytes ]; then
+        sample="$(LC_ALL=C timeout 5 df --block-size=1 --output=avail -- "$path" 2>/dev/null)" \
+          || { err "storage-start: free bytes unavailable"; return 1; }
+        header=Avail; floor="$STORAGE_START_MIN_BYTES"
+      else
+        sample="$(LC_ALL=C timeout 5 df -i --output=iavail -- "$path" 2>/dev/null)" \
+          || { err "storage-start: free inodes unavailable"; return 1; }
+        header=IFree; floor="$STORAGE_START_MIN_INODES"
+      fi
+      mapfile -t rows <<< "$sample"
+      [ "${#rows[@]}" -eq 2 ] && [ "${rows[0]//[[:space:]]/}" = "$header" ] \
+        || { err "storage-start: malformed filesystem observation"; return 1; }
+      read -r value extra <<< "${rows[1]}"
+      [[ "$value" =~ ^[0-9]{1,18}$ ]] && [ -z "$extra" ] \
+        || { err "storage-start: unknown filesystem headroom"; return 1; }
+      [ "$((10#$value))" -ge "$floor" ] \
+        || { err "storage-start: $metric below configured floor; preserving existing capacity"; return 1; }
+    done
+  done
+}
+
 # A removed allocator's saved state is not proof of unused host capacity.
 # Migration belongs to deployment; runner starts never delete or reinterpret it.
 runner_starts_allowed() {
+  crf_storage_start_settings_valid || return 1
   crf_podman_pool_settings_valid || return 1
   if pnpm_recovery_pending; then
     err "Shared pnpm recovery is pending; new runner starts are fenced."
@@ -289,11 +345,13 @@ runner_starts_allowed() {
 
 start_owned_container() {
   runner_starts_allowed || return 1
+  crf_storage_start_admit || return 1
   docker start "$2"
 }
 
 run_owned_github_container() {
   runner_starts_allowed || return 1
+  crf_storage_start_admit || return 1
   clear_dangling_endpoint "${NAME_PREFIX}-$1" || return 1
   docker run "${ARGS[@]}"
 }
@@ -4296,6 +4354,7 @@ cmd_recommendations_json() {
 
 cmd_recycle() {
   runner_starts_allowed || return 1
+  crf_storage_start_admit || { echo '{"ok":false,"error":"storage admission withheld; existing runner preserved"}'; return 1; }
   # Replace one slot without purging its Docker/cache roots. The old provider
   # owns removal ordering; the selected provider owns replacement startup.
   local name="$1" idx old_provider old_gen cur_gen image pool
@@ -4392,6 +4451,8 @@ cmd_recycle() {
     return 1
   fi
 
+  # Preparation may be slow; recheck before retiring the verified old owner.
+  crf_storage_start_admit || { echo '{"ok":false,"error":"storage admission changed; existing runner preserved"}'; return 1; }
   if ! remove_runner "$name" false "$target_id" "$old_provider"; then
     echo '{"ok":false,"error":"remove or provider cleanup failed; replacement was not started"}'
     return 1

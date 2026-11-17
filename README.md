@@ -1056,3 +1056,32 @@ prune preserve work layouts when a container reference, mounted descendant or
 unavailable reference inventory is observed. Non-purging replacements and
 legacy workspaces retain their existing behavior. These are observation fences;
 they do not exclude unrelated clients from changing references after a snapshot.
+
+### GitHub runner storage start policy
+
+`STORAGE_START_GUARD="true"` enables a separate, default-disabled admission
+policy for GitHub runner creation, restart, replacement and runner-image pulls.
+Set both `STORAGE_START_MIN_BYTES` and `STORAGE_START_MIN_INODES` to explicit
+positive integer floors below 10^18. The default zero values do not select a
+safe production budget. GitLab with this opt-in is rejected before starts;
+GitLab managers, sidecars and executors are not partly migrated to this policy.
+
+The existing serialized owner reads actual DockerRootDir and the canonical
+workspace filesystem before these operations. Both free bytes and free inodes
+must meet the configured floors. Read errors, malformed or unavailable metrics,
+and observation timeouts withhold admission. Each individual observation is
+bounded to five seconds; the snapshot is not atomic. A cached immutable image
+lookup remains read-only. Replacement rechecks after preparation, before retiring
+the existing owner, and creation checks again before Docker runs the replacement.
+
+This policy applies to fixed fleets and minimum refills too. The farm can
+therefore remain below its configured minimum while storage is low. It neither
+stops active jobs nor disables read-only status, cleanup or recovery commands.
+Cleanup thresholds and ownership fences remain separate. It does not cover
+unrelated writers, mirror maintenance or manual image builds.
+
+Headroom observations reserve no future writes. Already-online runners can
+accept jobs, and active or unbounded jobs can still exhaust a filesystem.
+Choose production floors and a concurrent-build envelope from measured builds,
+then qualify pressure/recovery and repeated builds on the native filesystem.
+Do not treat one free-space snapshot or an admission pass as capacity proof.
