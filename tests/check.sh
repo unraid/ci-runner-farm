@@ -76,6 +76,7 @@ bash tests/job-docker-cache.sh
 bash tests/job-cache-pressure.sh
 bash tests/job-docker-prune.sh
 bash tests/docker-store-budget.sh
+bash tests/retired-slot-cleanup.sh
 bash tests/job-workspace-pressure.sh
 bash tests/pnpm-cache.sh
 bash tests/pnpm-recovery.sh
