@@ -289,7 +289,7 @@ crf_storage_start_settings_valid() {
 crf_storage_start_admit() {
   crf_storage_start_settings_valid || return 1
   [ "${STORAGE_START_GUARD:-false}" = true ] || return 0
-  local workspace docker_root path metric sample value extra header floor slot="${1:-}" old duplicate
+  local workspace docker_root path metric sample value total extra header floor slot="${1:-}" old duplicate
   local -a rows=() targets=() seen=()
   workspace="$(crf_safe_cache_root)" && [ -d "$workspace" ] \
     && [ "$(realpath -e -- "$workspace")" = "$workspace" ] \
@@ -329,16 +329,25 @@ crf_storage_start_admit() {
           || { err "storage-start: free bytes unavailable"; return 1; }
         header=Avail; floor="$STORAGE_START_MIN_BYTES"
       else
-        sample="$(LC_ALL=C timeout --kill-after=1 5 df --output=iavail -- "$path" 2>/dev/null)" \
+        sample="$(LC_ALL=C timeout --kill-after=1 5 df --output=itotal,iavail -- "$path" 2>/dev/null)" \
           || { err "storage-start: free inodes unavailable"; return 1; }
-        header=IFree; floor="$STORAGE_START_MIN_INODES"
+        header=InodesIFree; floor="$STORAGE_START_MIN_INODES"
       fi
       mapfile -t rows <<< "$sample"
       [ "${#rows[@]}" -eq 2 ] && [ "${rows[0]//[[:space:]]/}" = "$header" ] \
         || { err "storage-start: malformed filesystem observation"; return 1; }
-      read -r value extra <<< "${rows[1]}"
+      total=0
+      if [ "$metric" = bytes ]; then
+        read -r value extra <<< "${rows[1]}"
+      else
+        read -r total value extra <<< "${rows[1]}"
+        [[ "$total" =~ ^[0-9]{1,18}$ ]] || { err "storage-start: unknown filesystem headroom"; return 1; }
+      fi
       [[ "$value" =~ ^[0-9]{1,18}$ ]] && [ -z "$extra" ] \
         || { err "storage-start: unknown filesystem headroom"; return 1; }
+      # A filesystem without a fixed inode table (btrfs, overlay) reports zero
+      # total and free inodes. It has no inode limit; its byte floor still applies.
+      [ "$metric" != inodes ] || [ "$((10#$total))" -ne 0 ] || [ "$((10#$value))" -ne 0 ] || continue
       [ "$((10#$value))" -ge "$floor" ] \
         || { err "storage-start: $metric below configured floor; preserving existing capacity"; return 1; }
     done
