@@ -1041,6 +1041,17 @@ background, never under the fleet lock. It never follows a symlink or enters a s
 handles two slots per pass and runs at most every ten minutes. GitHub farms
 only.
 
+Each runner image pin moves the fleet to a new image and leaves the old one in
+the host Docker store. Set the engine-only `RUNNER_IMAGE_PRUNE="true"` to remove
+superseded runner images (GitHub farms only). At most once an hour, the
+lifecycle tick removes up to three images of the configured runner image
+repositories that no container uses. The configured image of every pool and the
+newest previous image of each repository (for a rollback) always stay. Only
+references in those repositories are removed; an image that also carries a
+reference elsewhere keeps that reference and stays. Removal is never forced. A
+configured image that is not local yet (for example, still being pulled) skips
+the pass.
+
 For an explicit cleanup run, use
 `include/runner-farm.sh prune-completed-docker --dry-run`, then
 `include/runner-farm.sh prune-completed-docker --apply`. Both commands acquire

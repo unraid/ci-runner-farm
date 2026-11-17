@@ -68,6 +68,7 @@ STORAGE_START_MIN_INODES="0"
 DOCKER_JOB_PRUNE="false"              # persistent DinD: prune job Docker state and, under pressure, unused images and other checkouts after each job
 DOCKER_STORE_BUDGET_GIB="0"           # GitHub DinD: per-slot inner Docker store budget, enforced after each job; 0 disables
 RETIRED_STORE_CLEANUP="false"         # GitHub: reclaim storage of slots that no longer exist (pool removed or above its maximum)
+RUNNER_IMAGE_PRUNE="false"            # remove superseded runner images from the host Docker store; keeps one previous image
 RUNNER_CPUS=""                        # per-runner CPU cap; empty = uncapped (CFS time-shares fairly)
 CPU_PINNING="false"                   # true => GitHub runners with a whole-number CPU cap also get a cpuset of that
                                       # size, so tools see the right CPU count; the --cpus cap and accounting stay.
@@ -189,7 +190,7 @@ HISTORY_FILE="${CRF_HISTORY_FILE:-${CFGDIR}/recommendations.history}"
 # Allowlist of keys the settings page may set. load_cfg only ever assigns these.
 CFG_KEYS="CI_PROVIDER GH_SCOPE GH_OWNER GH_REPOS RUNNER_GROUP GH_APP_ID GH_APP_INSTALLATION_ID GITLAB_URL GITLAB_RUNNER_IMAGE GITLAB_PROJECTS GITLAB_SHUTDOWN_TIMEOUT \
 GITLAB_ALLOWED_IMAGES GITLAB_ALLOWED_SERVICES GITLAB_PULL_POLICY GITLAB_SHM_SIZE \
-RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS QUEUED_POOLS DOCKER_CACHE_MIN_FREE_PERCENT DOCKER_CACHE_BUILDERS DOCKER_JOB_PRUNE DOCKER_STORE_BUDGET_GIB RETIRED_STORE_CLEANUP PODMAN_POOL_STORAGE STORAGE_START_GUARD STORAGE_START_MIN_BYTES STORAGE_START_MIN_INODES \
+RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS QUEUED_POOLS DOCKER_CACHE_MIN_FREE_PERCENT DOCKER_CACHE_BUILDERS DOCKER_JOB_PRUNE DOCKER_STORE_BUDGET_GIB RETIRED_STORE_CLEANUP RUNNER_IMAGE_PRUNE PODMAN_POOL_STORAGE STORAGE_START_GUARD STORAGE_START_MIN_BYTES STORAGE_START_MIN_INODES \
 RUNNER_CPUS CPU_PINNING CPU_PINNING_WHOLE_CORES RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE USER_SHARE_MOUNTS IMAGE_SOURCE IMAGE EPHEMERAL \
 RUN_AS_ROOT REGISTRY_SERVER REGISTRY_USERNAME CACHE_MOUNTS SHARE_DOCKER_SOCK DIND \
 SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK RUNNER_DNS ARTIFACT_ENDPOINT MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
@@ -218,6 +219,7 @@ load_cfg() {
   DOCKER_JOB_PRUNE="false"
   DOCKER_STORE_BUDGET_GIB="0"
   RETIRED_STORE_CLEANUP="false"
+  RUNNER_IMAGE_PRUNE="false"
   PODMAN_POOL_STORAGE="false"
   STORAGE_START_GUARD="false"
   STORAGE_START_MIN_BYTES="0"
@@ -1540,6 +1542,7 @@ lifecycle_tick() {
   [ "${CPU_PINNING:-false}" != true ] || crf_cpu_usage_refresh >/dev/null 2>&1 || true
   crf_storage_pressure_cleanup
   crf_retired_slot_cleanup
+  crf_runner_image_prune
   replenish_fixed_github_capacity || return 1
   local candidates candidate failed=0 yield=false
   candidates="$(provider_call lifecycle_candidates)" \
@@ -5140,6 +5143,94 @@ crf_retired_slot_cleanup() {
   # Larger trees go to the background reapers, never under the fleet lock.
   [ ! -d "$root/docker-evicted" ] || layer_integrity_reap_evicted "$root/docker-evicted"
   github_work_trash_sweep_async || true
+}
+
+# Repository part of an image reference: no digest, no tag. A registry port
+# (host:5000/name) is not a tag because a tag never contains a slash.
+crf_image_repository() {
+  local repo="${1%@*}"
+  [[ "${repo##*/}" != *:* ]] || repo="${repo%:*}"
+  printf '%s\n' "$repo"
+}
+
+# Every runner-image pin moves the fleet to a new image, and the old one stays
+# in the host Docker store. With the opt-in, the lifecycle tick (under the fleet
+# lock, like every pull) removes unused images of the configured runner image
+# repositories, at most hourly. The configured image of every pool and the
+# newest previous image (for a rollback) always stay. Removal goes reference by
+# reference and is never forced, so Docker keeps any image a container uses.
+# Any doubt, such as a configured image that is not local yet, skips the pass.
+crf_runner_image_prune() {
+  # GitLab's configured image is a job image (often a public one) whose other
+  # tags jobs use; only GitHub runner images are fleet-owned.
+  [ "${RUNNER_IMAGE_PRUNE:-false}" = true ] && [ "$CI_PROVIDER" = github ] || return 0
+  local stamp="$RUNDIR/runner-image-prune.last" now records rec pool ref configured="" repos="" keep="" used ids
+  local candidates order id created refs r repo match ok removed=0 format kept_repos="" mine left
+  format='{{.Id}}|{{.Created}}|{{join .RepoTags " "}} {{join .RepoDigests " "}}'
+  now="$(date +%s)"
+  if [ -f "$stamp" ]; then
+    [ $((now - $(stat -c %Y -- "$stamp" 2>/dev/null || echo 0))) -ge 3600 ] || return 0
+  fi
+  : > "$stamp" 2>/dev/null || return 0
+  if pool_mode_enabled; then
+    records="$(pool_records)" && [ -n "$records" ] || return 0
+    while IFS= read -r rec; do
+      pool="$(cut -d'|' -f2 <<< "$rec")"
+      ref="$(pool_activate "$pool" >/dev/null 2>&1 && effective_image)" && [ -n "$ref" ] || return 0
+      configured+="$ref"$'\n'
+    done <<< "$records"
+  else
+    ref="$(effective_image)" && [ -n "$ref" ] || return 0
+    configured="$ref"$'\n'
+  fi
+  while IFS= read -r ref; do
+    [ -n "$ref" ] || continue
+    rec="$(docker image inspect --format "$format" "$ref" 2>/dev/null)" \
+      || { log "runner image prune: configured image $ref is not local yet; skipping"; return 0; }
+    keep+="${rec%%|*}"$'\n'
+    repos+="$(crf_image_repository "$ref")"$'\n'
+  done <<< "$configured"
+  used="$(docker ps -aq --no-trunc)" || return 0
+  if [ -n "$used" ]; then
+    # shellcheck disable=SC2086  # container IDs, one argument each
+    used="$(docker inspect --format '{{.Image}}' $used)" || return 0
+  fi
+  ids="$(docker image ls -q --no-trunc | sort -u)" || return 0
+  [ -n "$ids" ] || return 0
+  # shellcheck disable=SC2086
+  candidates="$(docker image inspect --format "$format" $ids)" || return 0
+  order="$(while IFS='|' read -r id created refs; do
+      [ -n "$id" ] || continue
+      grep -Fxq -- "$id" <<< "$keep" && continue
+      grep -Fxq -- "$id" <<< "$used" && continue
+      match=""
+      for r in $refs; do
+        repo="$(crf_image_repository "$r")"
+        grep -Fxq -- "$repo" <<< "$repos" && { match="$repo"; break; }
+      done
+      [ -n "$match" ] && printf '%s|%s|%s|%s\n' "$created" "$id" "$match" "$refs"
+    done <<< "$candidates" | LC_ALL=C sort -r)"
+  while IFS='|' read -r created id repo refs; do
+    [ -n "$id" ] || continue
+    # The newest unused previous image of each repository stays for a rollback.
+    if ! grep -Fxq -- "$repo" <<< "$kept_repos"; then kept_repos+="$repo"$'\n'; continue; fi
+    # A large image takes a while to delete; keep the fleet lock short.
+    [ "$removed" -lt 3 ] || break
+    ok=true left=false
+    for r in $refs; do
+      mine="$(crf_image_repository "$r")"
+      if grep -Fxq -- "$mine" <<< "$repos"; then
+        docker image rm "$r" >/dev/null 2>&1 || { ok=false; break; }
+      else
+        left=true   # a reference outside the runner repositories keeps the image
+      fi
+    done
+    if [ "$ok" = true ] && [ "$left" = false ] && docker image inspect "$id" >/dev/null 2>&1; then
+      docker image rm "$id" >/dev/null 2>&1 || ok=false
+    fi
+    [ "$ok" = false ] || [ "$left" = true ] || removed=$((removed + 1))
+  done <<< "$order"
+  [ "$removed" -eq 0 ] || log "removed $removed superseded runner image(s); kept the configured images and the newest previous one"
 }
 
 crf_storage_pressure_cleanup() {
