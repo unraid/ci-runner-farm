@@ -1362,10 +1362,18 @@ github_cleanup_validation_storage() {
 # registration, network pull, or host-wide engine cleanup is involved.
 github_validate_pooled_podman() {
   local id="$1" user home expected probe_user rc
-  if docker exec "$id" sh -ec '
+  if docker exec --user 0:0 "$id" sh -ec '
     [ "$(id -u runner)" = 1001 ]
     [ "$(id -g runner)" = 121 ]
     [ "$(getent passwd runner | cut -d: -f6)" = /home/runner ]
+    # Docker creates the parent of a nested cache bind as root. Normal image
+    # startup repairs XDG parents; this inert validator bypasses that startup.
+    # Change only this parent, never recurse into mounted cache contents.
+    [ ! -L /home/runner/.config ]
+    if [ -e /home/runner/.config ]; then
+      [ -d /home/runner/.config ]
+      chown 1001:121 /home/runner/.config
+    fi
   '; then :; else
     rc=$?
     printf 'pooled-podman result user=image step=identity exit=%s store=unobserved\n' "$rc"

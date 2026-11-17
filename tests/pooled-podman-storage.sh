@@ -210,6 +210,9 @@ SH
 case "$1 $2" in
   'info --format')
     [ "${PROBE_INFO_EXIT:-0}" = 0 ] || exit "$PROBE_INFO_EXIT"
+    if [ "${PROBE_REQUIRE_CONFIG_PARENT:-false}" = true ] && [ "$PROBE_EXPECTED" = /home/runner/.local/share/containers/storage ]; then
+      [ -f "$PROBE_CONFIG_PARENT/runner-owned" ] || exit 72
+    fi
     graphroot="${PROBE_GRAPHROOT:-$PROBE_EXPECTED}"
     if [ "$PROBE_EXPECTED" = /home/runner/.local/share/containers/storage ]; then
       graphroot="${PROBE_RUNNER_GRAPHROOT:-$graphroot}"
@@ -228,7 +231,16 @@ SH
 #!/bin/sh
 exit "${PROBE_DF_EXIT:-0}"
 SH
+  cat > "$tmp/probe-bin/chown" <<'SH'
+#!/bin/sh
+# Execute the ownership boundary without requiring root or touching host home.
+[ "$#" = 2 ] && [ "$1" = 1001:121 ] && [ "$2" = "$PROBE_CONFIG_PARENT" ] || exit 73
+[ "${PROBE_CHOWN_EXIT:-0}" = 0 ] || exit "$PROBE_CHOWN_EXIT"
+touch "$PROBE_CONFIG_PARENT/runner-owned"
+SH
   chmod +x "$tmp/probe-bin/"*
+  export PROBE_CONFIG_PARENT="$tmp/config-parent"
+  mkdir "$PROBE_CONFIG_PARENT"
   docker() {
     local previous='' argument script='' expected=''
     for argument in "$@"; do
@@ -236,11 +248,31 @@ SH
       previous="$argument"; expected="$argument"
     done
     [ -n "$script" ] || return 94
+    # Redirect only the config-parent boundary into this private fixture.
+    script="${script//\/home\/runner\/.config/$PROBE_CONFIG_PARENT}"
     PATH="$tmp/probe-bin:$PATH" PROBE_EXPECTED="$expected" /bin/sh -ec "$script" sh "$expected"
   }
   github_validate_pooled_podman immutable-validation-id > "$tmp/probe-log" 2>&1 || fail 'valid executed probe rejected'
   grep -qx 'pooled-podman result user=root step=complete exit=0 store=root_store' "$tmp/probe-log" || fail 'root completion was not recorded'
   grep -qx 'pooled-podman result user=runner step=complete exit=0 store=runner_store' "$tmp/probe-log" || fail 'runner completion was not recorded'
+  rm -f "$PROBE_CONFIG_PARENT/runner-owned"
+  PROBE_REQUIRE_CONFIG_PARENT=true github_validate_pooled_podman immutable-validation-id > "$tmp/probe-log" 2>&1 \
+    || fail 'Docker-created cache parent was not prepared before the runner Podman probe'
+  (
+    export PROBE_CHOWN_EXIT=74
+    if github_validate_pooled_podman immutable-validation-id > "$tmp/probe-log" 2>&1; then
+      fail 'ownership preparation failure was accepted'
+    fi
+    grep -qx 'pooled-podman result user=image step=identity exit=74 store=unobserved' "$tmp/probe-log" \
+      || fail 'ownership failure lost its closed identity result'
+  )
+  mv "$PROBE_CONFIG_PARENT" "$tmp/config-parent-target"
+  ln -s "$tmp/config-parent-target" "$PROBE_CONFIG_PARENT"
+  if github_validate_pooled_podman immutable-validation-id > "$tmp/probe-log" 2>&1; then
+    fail 'symlinked config parent was accepted'
+  fi
+  rm "$PROBE_CONFIG_PARENT"
+  mv "$tmp/config-parent-target" "$PROBE_CONFIG_PARENT"
   for invalid in uid gid home graphroot runner-graphroot info df build inspect; do
     (
       expected_user=image; expected_step=identity; expected_exit=1; expected_store=unobserved
