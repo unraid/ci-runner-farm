@@ -1,0 +1,8 @@
+{
+  "disposition": "PATCH",
+  "forecast_commit": "287fd619928197cc467ab8e937305136047d8ae7",
+  "reviewed_sha": "23884c397f9a87989a925168a83cf7e2bb5df2cd",
+  "schema": "limetech.ai-review-marker.v2",
+  "stage": "final",
+  "unresolved_proportionality_findings": []
+}
