@@ -212,8 +212,7 @@ case "$1 $2" in
     [ "${PROBE_INFO_EXIT:-0}" = 0 ] || exit "$PROBE_INFO_EXIT"
     graphroot="${PROBE_GRAPHROOT:-$PROBE_EXPECTED}"
     if [ "$PROBE_EXPECTED" = /home/runner/.local/share/containers/storage ]; then
-      grep -qx '1001:121 /home/runner /home/runner/.config /home/runner/.cache /home/runner/.local /home/runner/.local/share' \
-        "$PROBE_REPAIR_LOG" 2>/dev/null || {
+      grep -qx -- '-h 1001:121 /home/runner/.config' "$PROBE_REPAIR_LOG" 2>/dev/null || {
         echo 'path "/home/runner/.config" exists and it is not owned by the current user' >&2
         exit 125
       }
@@ -234,7 +233,11 @@ SH
   cat > "$tmp/probe-bin/chown" <<'SH'
 #!/bin/sh
 [ "${PROBE_CHOWN_EXIT:-0}" = 0 ] || exit "$PROBE_CHOWN_EXIT"
-printf '%s\n' "$*" > "$PROBE_REPAIR_LOG"
+printf '%s\n' "$*" >> "$PROBE_REPAIR_LOG"
+SH
+  cat > "$tmp/probe-bin/mountpoint" <<'SH'
+#!/bin/sh
+[ "$1" = -q ] && [ "$2" = "${PROBE_MOUNTPOINT:-none}" ]
 SH
   cat > "$tmp/probe-bin/mkdir" <<'SH'
 #!/bin/sh
@@ -256,6 +259,13 @@ SH
   }
   export PROBE_REPAIR_LOG="$tmp/home-repair"
   github_validate_pooled_podman immutable-validation-id > "$tmp/probe-log" 2>&1 || fail 'valid executed probe rejected'
+  # A cache mounted at a home parent is host data and keeps its owner.
+  (
+    rm -f "$PROBE_REPAIR_LOG"; export PROBE_MOUNTPOINT=/home/runner/.cache
+    github_validate_pooled_podman immutable-validation-id > "$tmp/probe-log" 2>&1 || fail 'probe with a mounted home parent rejected'
+    ! grep -q ' /home/runner/.cache$' "$PROBE_REPAIR_LOG" || fail 'validation re-owned a mounted cache folder'
+    grep -qx -- '-h 1001:121 /home/runner/.local/share' "$PROBE_REPAIR_LOG" || fail 'unmounted home parent was not re-owned'
+  )
   grep -qx 'pooled-podman result user=root step=complete exit=0 store=root_store' "$tmp/probe-log" || fail 'root completion was not recorded'
   grep -qx 'pooled-podman result user=runner step=complete exit=0 store=runner_store' "$tmp/probe-log" || fail 'runner completion was not recorded'
   for invalid in uid gid home home-owner graphroot runner-graphroot info df build inspect; do

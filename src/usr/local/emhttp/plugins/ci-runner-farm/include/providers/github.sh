@@ -1373,11 +1373,14 @@ github_validate_pooled_podman() {
   fi
   # Docker creates the missing parents of nested cache mounts (for example
   # ~/.config) as root, and rootless Podman refuses a home it does not own.
-  # A real runner re-owns these parents in its start hook, which this inert
-  # container skips. Apply the same non-recursive step; mounted contents stay.
+  # A real runner image re-owns these parents in its start hook, which this
+  # inert container skips. Apply the same non-recursive step. A mount point is
+  # host data, never re-owned here; -h never follows a symlink.
   if docker exec --user 0:0 "$id" sh -ec '
     mkdir -p /home/runner/.config /home/runner/.cache /home/runner/.local/share
-    chown 1001:121 /home/runner /home/runner/.config /home/runner/.cache /home/runner/.local /home/runner/.local/share
+    for directory in /home/runner /home/runner/.config /home/runner/.cache /home/runner/.local /home/runner/.local/share; do
+      mountpoint -q "$directory" || chown -h 1001:121 "$directory"
+    done
   '; then :; else
     rc=$?
     printf 'pooled-podman result user=image step=home exit=%s store=unobserved\n' "$rc"
