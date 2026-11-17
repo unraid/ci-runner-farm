@@ -1411,7 +1411,9 @@ github_validate() {
   snapshot="$(owned_container_snapshot "$name" 99 github-validate)" \
     || { err "validate: created container failed its ownership check; leaving it untouched"; return 1; }
   validation_id="${snapshot%%|*}"
-  validation_work_bind="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/_work"}}{{println .Source}}{{end}}{{end}}' "$validation_id")" || share_access_ok=0
+  if [ "${PODMAN_POOL_STORAGE:-false}" = true ]; then
+    validation_work_bind="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/_work"}}{{println .Source}}{{end}}{{end}}' "$validation_id")" || share_access_ok=0
+  fi
   echo "--- resource limits ---"
   docker inspect -f 'cpus={{.HostConfig.NanoCpus}} mem={{.HostConfig.Memory}} pids={{.HostConfig.PidsLimit}}' "$validation_id"
   echo "--- mounts ---"
