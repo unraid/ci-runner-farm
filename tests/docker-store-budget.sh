@@ -101,10 +101,13 @@ grep -q 'removed 2 unused image' "$tmp/output" || fail 'eviction not reported in
 
 # An image a container used recently is evicted after images unused for longer,
 # even when its tag time is older: pulls do not update the tag time.
-reset_store 8; printf '%s 2026-11-17T00:00:00\n' "$a" > "$tmp/record/last-used"; run
+gone=sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+reset_store 8; printf '%s 2026-11-17T00:00:00\n%s 2026-11-17T00:00:00\n' "$a" "$gone" > "$tmp/record/last-used"; run
+! grep -q "^$gone " "$tmp/record/last-used" || fail 'an image no longer present stayed in the last-used file'
 [ "$(grep -o 'image rm [^ ]*' "$BUDGET_LOG" | tr '\n' ' ')" = "image rm mid:1 image rm mid:2 image rm new:1 " ] \
   || fail "recent use did not delay eviction: $(tr '\n' ' ' < "$BUDGET_LOG")"
 grep -q "^$u " "$tmp/record/last-used" || fail 'the image of an existing container was not noted as used'
+! grep -q "^$b " "$tmp/record/last-used" || fail 'a removed image stayed in the last-used file'
 rm -f "$tmp/record/last-used"
 
 # Totals accumulate across ephemeral generations of the same slot.
@@ -121,7 +124,7 @@ grep -q 'budget pass incomplete' "$tmp/output" || fail 'over-budget result not v
 # pass did not complete.
 reset_store 8; rm -f "$tmp/record/state.json"; BUDGET_MODE=df-error run || true
 ! grep -q 'image rm\|builder prune' "$BUDGET_LOG" || fail 'eviction ran without a size reading'
-[[ "$(cat "$tmp/record/state.json")" == *'"complete":false'* ]] || fail 'failed pass left no incomplete record'
+[[ "$(cat "$tmp/record/state.json")" == *'"over_budget":false,"complete":false'* ]] || fail 'failed pass left no incomplete record, or claimed over budget'
 
 # Without a budget the hook keeps its previous behavior.
 reset_store 8; unset CRF_DOCKER_STORE_BUDGET_BYTES; run

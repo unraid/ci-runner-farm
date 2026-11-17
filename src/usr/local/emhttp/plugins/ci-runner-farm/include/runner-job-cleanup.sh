@@ -143,7 +143,8 @@ if [ "$1" = --budget ]; then
   state=/var/log/dind/store-budget
   record_ok=false
   [ -d "$state" ] && [ ! -L "$state" ] && [ -w "$state" ] && record_ok=true
-  before=0 size=0 other=0 evicted=0 skipped=0 cache_pruned=false over=true complete=false
+  # over_budget reports a measured result only; complete says whether one exists.
+  before=0 size=0 other=0 evicted=0 skipped=0 cache_pruned=false over=false complete=false
   write_record() {
     [ "$record_ok" = true ] || return 0
     local previous=0 total
@@ -186,10 +187,13 @@ if [ "$1" = --budget ]; then
     # shellcheck disable=SC2086  # validated hex IDs, one argument each
     referenced="$(local_docker inspect --format '{{.Image}}' $all_containers)" || exit 1
   fi
+  present="$(local_docker image ls -q --no-trunc)" || exit 1
   if [ "$record_ok" = true ]; then
+    # Keep only images still present, so the file stays as small as the store.
     { [ -f "$state/last-used" ] && [ ! -L "$state/last-used" ] && dd if="$state/last-used" bs=1M count=1 iflag=nofollow,nonblock 2>/dev/null
       while read -r id; do [[ "$id" =~ ^sha256:[0-9a-f]{64}$ ]] && printf '%s %s\n' "$id" "$now"; done <<< "$referenced"
-    } | awk '$1 ~ /^sha256:[0-9a-f]{64}$/ && $2 ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}$/ { if ($2 > t[$1]) t[$1] = $2 }
+    } | awk -v present="$present" 'BEGIN { n = split(present, ids, "\n"); for (i = 1; i <= n; i++) keep[ids[i]] = 1 }
+             $1 in keep && $2 ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}$/ { if ($2 > t[$1]) t[$1] = $2 }
              END { for (k in t) print k, t[k] }' > "$state/.last-used.$$" && mv -f -- "$state/.last-used.$$" "$state/last-used"
   fi
   # Disposable job state: stopped job containers (warm builders kept),
@@ -228,7 +232,7 @@ if [ "$1" = --budget ]; then
       candidates="$(run_docker image inspect --format '{{.Id}}|{{.Metadata.LastTagTime}}|{{.Created}}|{{.Size}}|{{join .RepoTags " "}}' $ids)" || exit 1
     fi
     last_used=""
-    [ "$record_ok" != true ] || last_used="$(cat -- "$state/last-used" 2>/dev/null)"
+    [ "$record_ok" != true ] || last_used="$(dd if="$state/last-used" bs=1M count=1 iflag=nofollow,nonblock 2>/dev/null)"
     order="$(while IFS='|' read -r id tagged created bytes tags; do
         [[ "$id" =~ ^sha256:[0-9a-f]{64}$ ]] && [[ "$bytes" =~ ^[0-9]{1,16}$ ]] || continue
         grep -Fxq -- "$id" <<< "$in_use" && continue
@@ -238,10 +242,10 @@ if [ "$1" = --budget ]; then
         [ -z "$seen" ] || [[ ! "$seen" > "$when" ]] || when="$seen"
         printf '%s|%s|%s|%s\n' "$when" "$id" "$bytes" "$tags"
       done <<< "$candidates" | LC_ALL=C sort)"
-    estimate="$size"
+    estimate="$size" capped=false
     while IFS='|' read -r _ id bytes tags; do
       [ -n "$id" ] || continue
-      [ "$evicted" -lt 40 ] || break
+      [ "$evicted" -lt 40 ] || { capped=true; break; }
       ok=true
       for tag in $tags; do
         [ "$tag" = '<none>:<none>' ] && continue
@@ -267,7 +271,8 @@ if [ "$1" = --budget ]; then
     remeasure || exit 1
   fi
   over=false; [ "$size" -le "$budget" ] || over=true
-  complete=true
+  # Hitting the per-pass image cap leaves work for the next job.
+  [ "${capped:-false}" = true ] || complete=true
   [ "$evicted" -eq 0 ] || printf '[ci-runner-farm] Docker store budget: removed %s unused image(s); images and build cache %s -> %s bytes (budget %s)\n' "$evicted" "$before" "$size" "$budget"
   [ "$over" = false ]
   exit
