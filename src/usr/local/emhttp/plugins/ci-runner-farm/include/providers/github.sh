@@ -1349,31 +1349,60 @@ github_cleanup_validation_storage() {
 # The existing owned validation container proves real engine placement. No
 # registration, network pull, or host-wide engine cleanup is involved.
 github_validate_pooled_podman() {
-  local id="$1" user home expected
-  docker exec "$id" sh -ec '
+  local id="$1" user home expected probe_user rc
+  if docker exec "$id" sh -ec '
     [ "$(id -u runner)" = 1001 ]
     [ "$(id -g runner)" = 121 ]
     [ "$(getent passwd runner | cut -d: -f6)" = /home/runner ]
-  ' || return 1
+  '; then :; else
+    rc=$?
+    printf 'pooled-podman result user=image step=identity exit=%s store=unobserved\n' "$rc"
+    return 1
+  fi
   for user in 0:0 1001:121; do
-    home=/root; expected=/var/lib/containers/storage
-    [ "$user" = 0:0 ] || { home=/home/runner; expected=/home/runner/.local/share/containers/storage; }
-    docker exec --user "$user" --env "HOME=$home" "$id" sh -ec '
-      context="$(mktemp -d)"; runtime="$(mktemp -d)"
-      cleanup() { rm -rf -- "$context" "$runtime"; }
+    home=/root; expected=/var/lib/containers/storage; probe_user=root
+    [ "$user" = 0:0 ] || { home=/home/runner; expected=/home/runner/.local/share/containers/storage; probe_user=runner; }
+    if docker exec --user "$user" --env "HOME=$home" "$id" sh -ec '
+      context= runtime= step=setup store=unobserved
+      case "$1" in
+        /var/lib/containers/storage) probe_user=root ;;
+        /home/runner/.local/share/containers/storage) probe_user=runner ;;
+        *) exit 1 ;;
+      esac
+      cleanup() {
+        result=$?
+        printf "pooled-podman result user=%s step=%s exit=%s store=%s\n" "$probe_user" "$step" "$result" "$store"
+        [ -z "$context" ] || rm -rf -- "$context"
+        [ -z "$runtime" ] || rm -rf -- "$runtime"
+      }
       trap cleanup EXIT
+      step=context; context="$(mktemp -d)"
+      step=runtime; runtime="$(mktemp -d)"
       export XDG_RUNTIME_DIR="$runtime"
-      actual="$(timeout 20 podman info --format "{{.Store.GraphRoot}}")"
-      [ "$actual" = "$1" ]
+      step=info; actual="$(timeout 20 podman info --format "{{.Store.GraphRoot}}")"
+      case "$actual" in
+        /var/lib/containers/storage) store=root_store ;;
+        /home/runner/.local/share/containers/storage) store=runner_store ;;
+        /_work|/_work/*) store=workspace ;;
+        *) store=other ;;
+      esac
+      step=graphroot_check; [ "$actual" = "$1" ]
       printf "pooled-podman graphroot=%s uid=%s\n" "$actual" "$(id -u)"
-      df -Pk -- "$actual"
+      step=df; df -Pk -- "$actual"
+      step=recipe
       printf "FROM scratch\nCOPY payload /payload\n" > "$context/Containerfile"
       printf "native-storage-probe\n" > "$context/payload"
       # chroot supports only the outer network namespace. This fixed scratch/COPY
       # recipe has no RUN; never pull an image or use a remote context.
+      step=build
       timeout 30 podman build --isolation=chroot --network=host --pull=never --tag localhost/farm-storage-probe "$context"
-      timeout 10 podman image inspect localhost/farm-storage-probe --format "{{.Id}}"
-    ' sh "$expected" || return 1
+      step=inspect; timeout 10 podman image inspect localhost/farm-storage-probe --format "{{.Id}}"
+      step=complete
+    ' sh "$expected"; then :; else
+      rc=$?
+      printf 'pooled-podman result user=%s step=exec exit=%s store=unobserved\n' "$probe_user" "$rc"
+      return 1
+    fi
   done
 }
 

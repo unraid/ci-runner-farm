@@ -1041,3 +1041,11 @@ This placement option does not reserve future job disk growth. Disk headroom
 and minimum-capacity admission policy remain separate; observing free space
 once is not a capacity guarantee. Persistent GitHub, tmpfs workspaces, GitLab
 and unqualified custom images are outside this option.
+
+The opt-in pooled Podman validator records each probe as
+`pooled-podman result user=<image|root|runner> step=<fixed step> exit=<status> store=<closed class>`.
+Store classes are unobserved, root_store, runner_store, workspace or other.
+These closed records identify command failures, including a rejected graphroot,
+without exporting arbitrary paths or command output. A zero exit record alone
+is not placement acceptance; the existing identity, build, count and cleanup
+checks still decide validation. A failed probe stops that pool as before.
