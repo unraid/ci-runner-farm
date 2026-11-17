@@ -1,0 +1,35 @@
+{
+  "disposition": "PATCH",
+  "expected_structural_delta": "One opt-in setting, two functions and one call in runner-farm.sh, one test file, README; zero new daemons, stores or dependencies",
+  "minimum_design": "An opt-in lifecycle-tick step moves retired slot docker, work and dind-logs folders into the existing trash folders after name, container, reference-fence and age checks; the existing background reapers delete them",
+  "outcome": "Storage left behind by slots that no longer exist (pool removed or index above its maximum, no container) is reclaimed automatically when opted in",
+  "reuse_decisions": [
+    {
+      "decision": "reuse",
+      "name": "crf_docker_storage_references fence",
+      "rationale": "Same consumer and mount checks as every other store deletion"
+    },
+    {
+      "decision": "reuse",
+      "name": "docker-evicted trash and layer_integrity_reap_evicted",
+      "rationale": "Existing same-filesystem move and idle-priority background delete"
+    },
+    {
+      "decision": "reuse",
+      "name": "work/.trash and github_work_trash_sweep",
+      "rationale": "Existing workspace trash path"
+    },
+    {
+      "decision": "reuse",
+      "name": "pool_records, pool_max, pool_fixed",
+      "rationale": "Configured slot names derive from the saved pool layout"
+    },
+    {
+      "decision": "extend",
+      "name": "lifecycle_tick under the fleet lock",
+      "rationale": "Serialized with every slot creation"
+    }
+  ],
+  "schema": "limetech.ai-review-marker.v2",
+  "stage": "forecast"
+}
