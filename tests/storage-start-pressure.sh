@@ -42,10 +42,13 @@ df() {
   [ "$DF_MODE" != failed ] || return 1
   case "$*" in
     *--output=avail*) header=Avail; number="$WB"; [ "$path" != "$CACHE_ROOT" ] || number="$CB"; [ "$path" != "$tmp/docker-root" ] || number="$DB" ;;
-    *--output=iavail*) header=IFree; number="$WI"; [ "$path" != "$CACHE_ROOT" ] || number="$CACHE_INODES"; [ "$path" != "$tmp/docker-root" ] || number="$DI" ;;
+    *--output=itotal,iavail*) header="Inodes IFree"; number="$WI"; [ "$path" != "$CACHE_ROOT" ] || number="$CACHE_INODES"; [ "$path" != "$tmp/docker-root" ] || number="$DI"
+      number="${ITOTAL:-1000000} $number" ;;
     *) fail 'storage observation changed df contract' ;;
   esac
-  [ "$path" != "${LOW_PATH:-}" ] || number=0
+  if [ "$path" = "${LOW_PATH:-}" ]; then
+    case "$header" in Avail) number=0 ;; *) number="${ITOTAL:-1000000} 0" ;; esac
+  fi
   case "$DF_MODE" in
     malformed) number=unknown ;; negative) number=-1 ;; overflow) number=9999999999999999999 ;;
   esac
@@ -66,6 +69,22 @@ for metric in docker_bytes workspace_bytes cache_bytes docker_inodes workspace_i
     [ ! -s "$effects" ] || fail 'pressure reached Docker mutation'
   )
 done
+# A filesystem without a fixed inode table (btrfs, overlay) reports zero total
+# and zero free inodes. That is no inode limit, not exhausted inodes; bytes
+# still decide admission there.
+(
+  ITOTAL=0; DI=0; WI=0; CACHE_INODES=0; : > "$effects"
+  run_owned_github_container 1 > "$tmp/output" 2>&1 || fail 'zero-inode-table filesystem was read as low'
+  grep -qx run "$effects" || fail 'zero-inode-table admission skipped creation'
+  DB=999; : > "$effects"
+  if run_owned_github_container 1 > "$tmp/output" 2>&1; then fail 'zero-inode-table filesystem skipped the byte floor'; fi
+  [ ! -s "$effects" ] || fail 'low bytes reached creation on a zero-inode-table filesystem'
+)
+(
+  ITOTAL=1000; WI=0; : > "$effects"
+  if run_owned_github_container 1 > "$tmp/output" 2>&1; then fail 'exhausted inode table was admitted'; fi
+  [ ! -s "$effects" ] || fail 'exhausted inodes reached creation'
+)
 # Existing child datasets can differ from both CACHE_ROOT and the work parent.
 for child in slot workspace podman-root podman-runner dind dindlogs; do
   (

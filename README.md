@@ -1071,7 +1071,11 @@ cache and workspace backing filesystems before these operations, including DinD
 data/logs and existing work,
 slot and Podman-store child datasets. New paths use their nearest existing
 ancestor rather than assuming that the cache root owns their quota. Both free bytes and free inodes
-must meet the configured floors. Read errors, malformed or unavailable metrics,
+must meet the configured floors. A filesystem without a fixed inode table
+(for example btrfs) reports zero total and zero free inodes; it has no inode
+limit, so only its byte floor applies. The floors cannot see btrfs metadata
+exhaustion. ZFS reports free inodes from free space (about one per 512 bytes),
+so keep the inode floor below the byte floor divided by 512 there. Read errors, malformed or unavailable metrics,
 and observation timeouts withhold admission. Docker/df observations use a five-second deadline and one-second kill grace;
 local path checks and the non-atomic snapshot are not a hard real-time guarantee. A cached immutable image
 lookup remains read-only. Explicit recycle rechecks after preparation, and stopped-owner recovery checks
