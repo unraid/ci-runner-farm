@@ -1067,7 +1067,8 @@ safe production budget. GitLab or a RAM workspace with this opt-in is rejected b
 GitLab managers, sidecars and executors are not partly migrated to this policy.
 
 The existing serialized owner reads actual DockerRootDir and the canonical
-workspace backing filesystems before these operations, including existing work,
+cache and workspace backing filesystems before these operations, including DinD
+data/logs and existing work,
 slot and Podman-store child datasets. New paths use their nearest existing
 ancestor rather than assuming that the cache root owns their quota. Both free bytes and free inodes
 must meet the configured floors. Read errors, malformed or unavailable metrics,

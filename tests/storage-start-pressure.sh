@@ -12,7 +12,7 @@ source src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-farm.sh
 fail() { printf 'STORAGE START FAIL: %s\n' "$*" >&2; exit 1; }
 CI_PROVIDER=github; WORK_TMPFS_SIZE=""; CACHE_ROOT="$tmp/cache"; ARGS=(fixture-image)
 STORAGE_START_GUARD=true; STORAGE_START_MIN_BYTES=1000; STORAGE_START_MIN_INODES=10
-DB=2000; WB=2000; DI=20; WI=20; DF_MODE=valid; INFO_MODE=valid
+DB=2000; WB=2000; CB=2000; DI=20; WI=20; CI=20; DF_MODE=valid; INFO_MODE=valid
 calls="$tmp/calls"; effects="$tmp/effects"; : > "$calls"; : > "$effects"
 crf_safe_cache_root() { printf '%s\n' "$CACHE_ROOT"; }
 clear_dangling_endpoint() { return 0; }
@@ -32,8 +32,8 @@ df() {
   printf 'df %s\n' "$*" >> "$calls"
   [ "$DF_MODE" != failed ] || return 1
   case "$*" in
-    *--output=avail*) header=Avail; number="$WB"; [ "$path" != "$CACHE_ROOT" ] || number=2000; [ "$path" != "$tmp/docker-root" ] || number="$DB" ;;
-    *--output=iavail*) header=IFree; number="$WI"; [ "$path" != "$CACHE_ROOT" ] || number=20; [ "$path" != "$tmp/docker-root" ] || number="$DI" ;;
+    *--output=avail*) header=Avail; number="$WB"; [ "$path" != "$CACHE_ROOT" ] || number="$CB"; [ "$path" != "$tmp/docker-root" ] || number="$DB" ;;
+    *--output=iavail*) header=IFree; number="$WI"; [ "$path" != "$CACHE_ROOT" ] || number="$CI"; [ "$path" != "$tmp/docker-root" ] || number="$DI" ;;
     *) fail 'storage observation changed df contract' ;;
   esac
   [ "$path" != "${LOW_PATH:-}" ] || number=0
@@ -48,9 +48,9 @@ DB=999
 if run_owned_github_container 1 > "$tmp/output" 2>&1; then fail 'runner started below Docker byte floor'; fi
 [ ! -s "$effects" ] || fail 'low Docker capacity reached a creation effect'
 DB=2000
-for metric in docker_bytes workspace_bytes docker_inodes workspace_inodes; do
+for metric in docker_bytes workspace_bytes cache_bytes docker_inodes workspace_inodes cache_inodes; do
   (
-    case "$metric" in docker_bytes) DB=999 ;; workspace_bytes) WB=999 ;; docker_inodes) DI=9 ;; workspace_inodes) WI=9 ;; esac
+    case "$metric" in docker_bytes) DB=999 ;; workspace_bytes) WB=999 ;; cache_bytes) CB=999 ;; cache_inodes) CI=9 ;; docker_inodes) DI=9 ;; workspace_inodes) WI=9 ;; esac
     : > "$effects"
     if run_owned_github_container 1 > "$tmp/output" 2>&1; then fail "creation admitted low $metric"; fi
     if start_owned_container fixture fixture-id > "$tmp/output" 2>&1; then fail "restart admitted low $metric"; fi
@@ -58,12 +58,17 @@ for metric in docker_bytes workspace_bytes docker_inodes workspace_inodes; do
   )
 done
 # Existing child datasets can differ from both CACHE_ROOT and the work parent.
-for child in slot workspace podman-root podman-runner; do
+for child in slot workspace podman-root podman-runner dind dindlogs; do
   (
     DIND=true; EPHEMERAL=true; PODMAN_POOL_STORAGE=true; CACHE_MOUNTS=''; USER_SHARE_MOUNTS=''
     slot="$CACHE_ROOT/work/$NAME_PREFIX-1"
     mkdir -p "$slot/workspace" "$slot/podman-root" "$slot/podman-runner"
-    LOW_PATH="$slot"; [ "$child" = slot ] || LOW_PATH="$slot/$child"
+    case "$child" in
+      slot) LOW_PATH="$slot" ;;
+      dind) LOW_PATH="$CACHE_ROOT/docker/$NAME_PREFIX-1"; mkdir -p "$LOW_PATH" ;;
+      dindlogs) LOW_PATH="$CACHE_ROOT/dind-logs/$NAME_PREFIX-1"; mkdir -p "$LOW_PATH" ;;
+      *) LOW_PATH="$slot/$child" ;;
+    esac
     if run_owned_github_container 1 > "$tmp/output" 2>&1; then fail "low child backing filesystem admitted: $child"; fi
   )
 done

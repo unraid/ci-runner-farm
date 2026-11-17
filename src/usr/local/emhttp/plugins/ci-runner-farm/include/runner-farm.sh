@@ -299,10 +299,12 @@ crf_storage_start_admit() {
   [[ "$docker_root" = /* && "$docker_root" != / && "$docker_root" != *$'\n'* && "$docker_root" != *$'\r'* ]] \
     && [ -d "$docker_root" ] \
     || { err "storage-start: Docker root is unknown"; return 1; }
-  targets=( "$docker_root" "$workspace/work" )
+  targets=( "$docker_root" "$workspace" "$workspace/work" )
+  [ "$DIND" != true ] || targets+=( "$workspace/docker" "$workspace/dind-logs" )
   if [ -n "$slot" ]; then
     case "$slot" in .*|*[!A-Za-z0-9._-]*) err "storage-start: invalid slot name"; return 1 ;; esac
     targets+=( "$workspace/work/$slot" )
+    [ "$DIND" != true ] || targets+=( "$workspace/docker/$slot" "$workspace/dind-logs/$slot" )
     if [ "${PODMAN_POOL_STORAGE:-false}" = true ]; then
       targets+=( "$workspace/work/$slot/workspace" "$workspace/work/$slot/podman-root" "$workspace/work/$slot/podman-runner" )
     fi
