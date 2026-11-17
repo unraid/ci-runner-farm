@@ -70,7 +70,7 @@ fail() { printf 'NUMERIC CONFIG FAIL: %s\n' "$*" >&2; exit 1; }
     expected=sentinel
     # These opt-in floors reset on each reload so an omitted/rejected policy
     # cannot retain a previous admission budget. Other numeric defaults persist.
-    case "$key" in STORAGE_START_MIN_BYTES|STORAGE_START_MIN_INODES) expected=0 ;; esac
+    case "$key" in STORAGE_START_MIN_BYTES|STORAGE_START_MIN_INODES|DOCKER_STORE_BUDGET_GIB) expected=0 ;; esac
     [ "${!key}" = "$expected" ] || fail "$key accepted a non-numeric value: '${!key}'"
     grep -qx "load_cfg: ignoring non-numeric $key" "$tmp/numeric-diagnostic" \
       || fail "$key did not report its rejected numeric value"

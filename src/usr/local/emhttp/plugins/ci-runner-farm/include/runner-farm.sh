@@ -66,6 +66,7 @@ STORAGE_START_GUARD="false"           # GitHub start/pull admission; independent
 STORAGE_START_MIN_BYTES="0"           # enabled policy requires explicit positive byte and inode floors
 STORAGE_START_MIN_INODES="0"
 DOCKER_JOB_PRUNE="false"              # persistent DinD: prune job Docker state and, under pressure, unused images and other checkouts after each job
+DOCKER_STORE_BUDGET_GIB="0"           # GitHub DinD: per-slot inner Docker store budget, enforced after each job; 0 disables
 RUNNER_CPUS=""                        # per-runner CPU cap; empty = uncapped (CFS time-shares fairly)
 CPU_PINNING="false"                   # true => GitHub runners with a whole-number CPU cap also get a cpuset of that
                                       # size, so tools see the right CPU count; the --cpus cap and accounting stay.
@@ -187,7 +188,7 @@ HISTORY_FILE="${CRF_HISTORY_FILE:-${CFGDIR}/recommendations.history}"
 # Allowlist of keys the settings page may set. load_cfg only ever assigns these.
 CFG_KEYS="CI_PROVIDER GH_SCOPE GH_OWNER GH_REPOS RUNNER_GROUP GH_APP_ID GH_APP_INSTALLATION_ID GITLAB_URL GITLAB_RUNNER_IMAGE GITLAB_PROJECTS GITLAB_SHUTDOWN_TIMEOUT \
 GITLAB_ALLOWED_IMAGES GITLAB_ALLOWED_SERVICES GITLAB_PULL_POLICY GITLAB_SHM_SIZE \
-RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS QUEUED_POOLS DOCKER_CACHE_MIN_FREE_PERCENT DOCKER_CACHE_BUILDERS DOCKER_JOB_PRUNE PODMAN_POOL_STORAGE STORAGE_START_GUARD STORAGE_START_MIN_BYTES STORAGE_START_MIN_INODES \
+RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS QUEUED_POOLS DOCKER_CACHE_MIN_FREE_PERCENT DOCKER_CACHE_BUILDERS DOCKER_JOB_PRUNE DOCKER_STORE_BUDGET_GIB PODMAN_POOL_STORAGE STORAGE_START_GUARD STORAGE_START_MIN_BYTES STORAGE_START_MIN_INODES \
 RUNNER_CPUS CPU_PINNING CPU_PINNING_WHOLE_CORES RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE USER_SHARE_MOUNTS IMAGE_SOURCE IMAGE EPHEMERAL \
 RUN_AS_ROOT REGISTRY_SERVER REGISTRY_USERNAME CACHE_MOUNTS SHARE_DOCKER_SOCK DIND \
 SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK RUNNER_DNS ARTIFACT_ENDPOINT MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
@@ -204,7 +205,7 @@ DASHBOARD_WIDGET_ENABLE"
 # RUNNER_MEMORY and WORK_TMPFS_SIZE (unit-suffixed).
 CFG_NUMERIC_KEYS="STORAGE_START_MIN_BYTES STORAGE_START_MIN_INODES RUNNER_COUNT MIRROR_PORT AUTOSCALE_MIN AUTOSCALE_MAX AUTOSCALE_MIN_IDLE \
 AUTOSCALE_STEP AUTOSCALE_INTERVAL AUTOSCALE_IDLE_GRACE IMAGE_AUTOUPDATE_INTERVAL \
-IMAGE_DRAIN_TIMEOUT GITLAB_SHUTDOWN_TIMEOUT GITLAB_SHM_SIZE DOCKER_CACHE_MIN_FREE_PERCENT GROWTH_CPU_CEILING"
+IMAGE_DRAIN_TIMEOUT GITLAB_SHUTDOWN_TIMEOUT GITLAB_SHM_SIZE DOCKER_CACHE_MIN_FREE_PERCENT DOCKER_STORE_BUDGET_GIB GROWTH_CPU_CEILING"
 
 # Read ci-runner-farm.cfg WITHOUT sourcing it (the file is written by the web form, so
 # sourcing would execute anything a crafted value smuggled in). Parse KEY="value"
@@ -214,6 +215,7 @@ load_cfg() {
   # Omitting an optional policy is an explicit opt-out on daemon reload.
   DOCKER_CACHE_BUILDERS=""
   DOCKER_JOB_PRUNE="false"
+  DOCKER_STORE_BUDGET_GIB="0"
   PODMAN_POOL_STORAGE="false"
   STORAGE_START_GUARD="false"
   STORAGE_START_MIN_BYTES="0"
@@ -4640,6 +4642,34 @@ cmd_usage_refresh() {
   rm -f "$RUNDIR/usage.targets.tmp"
 }
 
+# The job-completed hook writes one fixed-shape record per slot into the slot's
+# host-visible log folder. A job can write there too, so only an exact shape is
+# reported; anything else counts as an unreadable record.
+CRF_STORE_BUDGET_RECORD='^\{"schema":1,"at":[0-9]{1,12},"budget_bytes":[0-9]{1,16},"before_bytes":[0-9]{1,16},"after_bytes":[0-9]{1,16},"other_bytes":[0-9]{1,16},"evicted_images":[0-9]{1,6},"evicted_images_total":[0-9]{1,9},"skipped_in_use":[0-9]{1,6},"build_cache_pruned":(true|false),"over_budget":(true|false),"complete":(true|false)\}$'
+crf_store_budget_status_json() {
+  local names="$1" c record slots=0 reporting=0 over=0 unreadable=0 evicted=0 total=0 runners="" first=1 value
+  local budget="${DOCKER_STORE_BUDGET_GIB:-0}"
+  case "$budget" in ''|*[!0-9]*) budget=0 ;; esac
+  for c in $names; do
+    [ -n "$c" ] || continue
+    case "$c" in .*|*[!A-Za-z0-9._-]*) continue ;; esac
+    slots=$((slots + 1))
+    record="$CACHE_ROOT/dind-logs/$c/store-budget/state.json"
+    [ -f "$record" ] && [ ! -L "$record" ] || continue
+    # A job could swap in a FIFO or device; never follow or block on it.
+    value="$(dd if="$record" bs=1024 count=1 iflag=nofollow,nonblock 2>/dev/null | head -n 1)"
+    if ! [[ "$value" =~ $CRF_STORE_BUDGET_RECORD ]]; then unreadable=$((unreadable + 1)); continue; fi
+    reporting=$((reporting + 1))
+    [[ "$value" == *'"over_budget":true'* ]] && over=$((over + 1))
+    [[ "$value" =~ \"evicted_images\":([0-9]+) ]] && evicted=$((evicted + 10#${BASH_REMATCH[1]}))
+    [[ "$value" =~ \"evicted_images_total\":([0-9]+) ]] && total=$((total + 10#${BASH_REMATCH[1]}))
+    [ "$first" -eq 1 ] || runners+=","
+    runners+="\"$c\":$value"; first=0
+  done
+  printf '{"budget_gib":%s,"slots":%s,"reporting":%s,"over_budget":%s,"unreadable":%s,"evicted_images_last":%s,"evicted_images_total":%s,"runners":{%s}}' \
+    "$((10#$budget))" "$slots" "$reporting" "$over" "$unreadable" "$evicted" "$total" "$runners"
+}
+
 cmd_status_json() {
   local names; names="$(managed_names)"
   # Per-runner cpu/mem/phase/job all come from a background-refreshed cache (see
@@ -4736,6 +4766,7 @@ cmd_status_json() {
     first=0
   done
   out+="]"
+  local store_budget; store_budget="$(crf_store_budget_status_json "$names")"
   local as="off"; [ "$AUTOSCALE" = "true" ] && as="$(autoscale_status)"
   local growth=""
   if [ "$AUTOSCALE" = true ] && growth_gate_enabled; then
@@ -4766,7 +4797,7 @@ cmd_status_json() {
   fi
   local recommendations; recommendations="$(cmd_recommendations_json 2>/dev/null)"
   [ -n "$recommendations" ] || recommendations='{"version":1,"source":"live-heuristic","confidence":"low","queue":{"count":-1,"age":999999},"usage_age":999999,"history":{"keys":0,"samples":0,"last_completed":0,"retention_days":90},"summary":"Recommendation data is temporarily unavailable.","recommendations":[],"jobs":[]}'
-  echo "{\"provider\":\"$CI_PROVIDER\",\"mode\":\"$RUNNER_MODE\",\"count\":$(echo "$names" | grep -c . ),\"configured\":${configured},\"token\":$(pool_tokens_ready 2>/dev/null && echo true || echo false),\"autoscale\":\"${as} [${AUTOSCALE_MIN}-${AUTOSCALE_MAX}, buffer ${AUTOSCALE_MIN_IDLE}]${growth}\",\"image_autoupdate\":\"$(echo "$iu" | json_escape)\",\"warning\":\"${warn}\",\"security\":\"${sec}\",\"stale\":${stalec},\"pools\":${pools},\"recommendations\":${recommendations},\"runners\":${out}}"
+  echo "{\"provider\":\"$CI_PROVIDER\",\"mode\":\"$RUNNER_MODE\",\"count\":$(echo "$names" | grep -c . ),\"configured\":${configured},\"token\":$(pool_tokens_ready 2>/dev/null && echo true || echo false),\"autoscale\":\"${as} [${AUTOSCALE_MIN}-${AUTOSCALE_MAX}, buffer ${AUTOSCALE_MIN_IDLE}]${growth}\",\"image_autoupdate\":\"$(echo "$iu" | json_escape)\",\"warning\":\"${warn}\",\"security\":\"${sec}\",\"stale\":${stalec},\"pools\":${pools},\"recommendations\":${recommendations},\"docker_store_budget\":${store_budget},\"runners\":${out}}"
 }
 
 # Aggregate-only status for the Main -> Dashboard nchan widget: {count,up,busy,idle}.
