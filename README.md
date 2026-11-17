@@ -1049,3 +1049,10 @@ These closed records identify command failures, including a rejected graphroot,
 without exporting arbitrary paths or command output. A zero exit record alone
 is not placement acceptance; the existing identity, build, count and cleanup
 checks still decide validation. A failed probe stops that pool as before.
+
+Pooled stores are retired during an ordinary purging slot removal, including
+when the option has since been disabled. Both that retirement and a full cache
+prune preserve work layouts when a container reference, mounted descendant or
+unavailable reference inventory is observed. Non-purging replacements and
+legacy workspaces retain their existing behavior. These are observation fences;
+they do not exclude unrelated clients from changing references after a snapshot.

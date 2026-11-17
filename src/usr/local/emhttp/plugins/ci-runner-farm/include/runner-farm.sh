@@ -4754,6 +4754,12 @@ cmd_prune_cache() {
   local root d m dirs removed=0
   crf_cache_mutation_idle || return 1
   root="$(crf_safe_cache_root)" || { err "refusing to prune-cache: CACHE_ROOT='$CACHE_ROOT' is unsafe (system dir, share/pool root, or unresolvable — point it at /mnt/<pool>/<subdir>)"; return 1; }
+  # The managed-fleet check cannot exclude an unrelated container using a
+  # retired pooled store. Reuse the full container/mount reference fence.
+  if [ -e "$root/work" ] || [ -L "$root/work" ]; then
+    [ ! -L "$root/work" ] && [ "$(realpath -e -- "$root/work")" = "$root/work" ] || return 1
+    github_pooled_slot_unreferenced "$root/work" || return 1
+  fi
   dirs="docker docker-evicted work dind-logs gitlab-cache gitlab-sockets registry-mirror $CACHE_PKG_DIRS"
   for m in $CACHE_MOUNTS; do dirs="$dirs ${m%%:*}"; done
   for d in $dirs; do

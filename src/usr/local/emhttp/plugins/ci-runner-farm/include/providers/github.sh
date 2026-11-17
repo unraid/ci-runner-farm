@@ -1238,7 +1238,7 @@ github_start_one() {
 }
 
 github_remove_runner() {
-  local c="$1" purge="${2:-true}" root failed=0
+  local c="$1" purge="${2:-true}" root directory failed=0
   # GitHub rejects DELETE for an online/busy runner. Stop/remove first so its
   # listener is offline, then delete the now-offline registration host-side.
   # A failed stop/remove can leave the listener accepting or executing work.
@@ -1249,6 +1249,16 @@ github_remove_runner() {
   github_deregister_runner_api "$c" "$rname" || failed=1
   if [ "$purge" = true ]; then
     root="$(crf_safe_cache_root)" || { err "refusing GitHub runner cleanup under unsafe CACHE_ROOT '$CACHE_ROOT'"; return 1; }
+    directory="$root/work/$c"
+    # Retire pooled stores even if the setting was disabled after allocation.
+    # Legacy workspaces keep their preexisting lifetime.
+    if [ -e "$directory/podman-root" ] || [ -L "$directory/podman-root" ] \
+      || [ -e "$directory/podman-runner" ] || [ -L "$directory/podman-runner" ]; then
+      case "$c" in ''|.*|*[!A-Za-z0-9._-]*) return 1 ;; esac
+      [ ! -L "$directory" ] && [ "$(realpath -e -- "$directory")" = "$directory" ] || return 1
+      github_pooled_slot_unreferenced "$directory" || return 1
+      rm -rf --one-file-system -- "$directory" || return 1
+    fi
     rm -rf "$root/docker/$c" 2>/dev/null || failed=1
   fi
   return "$failed"

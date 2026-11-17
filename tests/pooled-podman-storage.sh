@@ -124,6 +124,15 @@ github_build_args 4 ci-runner-4 || fail 'disabled old behavior rejected'
   provider_stop_remove_container() { [ "${STOP_FAIL:-false}" = false ]; }
   github_deregister_runner_api() { return 0; }
   github_runner_registration_name() { printf fixture; }
+  mkdir -p "$directory/podman-root"
+  echo retained > "$directory/podman-root/marker"
+  STOP_FAIL=true
+  if github_remove_runner "$name" true > "$tmp/reject" 2>&1; then fail 'failed stop allowed store removal'; fi
+  [ -f "$directory/podman-root/marker" ] || fail 'failed stop lost pooled stores'
+  STOP_FAIL=false
+  REFERENCES=unknown
+  github_remove_runner "$name" false || fail 'non-purging removal changed behavior'
+  [ -f "$directory/podman-root/marker" ] || fail 'non-purging removal lost pooled stores'
   for reference in "consumer|$directory/podman-root" "mount|$directory/podman-runner/merged" unknown ''; do
     mkdir -p "$directory/podman-root" "$directory/podman-runner" "$root/docker/$name"
     echo retained > "$directory/podman-root/marker"
@@ -136,6 +145,13 @@ github_build_args 4 ci-runner-4 || fail 'disabled old behavior rejected'
       [ ! -e "$directory" ] || fail 'retired pooled stores leaked after successful removal'
     fi
   done
+  # Existing workspaces without stores keep their legacy lifetime, even with
+  # unknown pooled-store references and a disabled option.
+  mkdir -p "$directory"
+  echo retained > "$directory/legacy"
+  PODMAN_POOL_STORAGE=false; REFERENCES=unknown
+  github_remove_runner "$name" true || fail 'legacy removal changed behavior'
+  [ -f "$directory/legacy" ] || fail 'legacy workspace was unexpectedly purged'
 )
 # Full cache prune must apply the same reference fence to work, including when
 # the opt-in has since been disabled. No unmanaged consumer is safe to erase.
