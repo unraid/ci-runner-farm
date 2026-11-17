@@ -66,8 +66,14 @@ fail() { printf 'NUMERIC CONFIG FAIL: %s\n' "$*" >&2; exit 1; }
   for key in $CFG_NUMERIC_KEYS; do
     printf -v "$key" '%s' sentinel
     write_cfg "$key=\"a[\$(id -u)]\""
-    load_cfg 2>/dev/null
-    [ "${!key}" = sentinel ] || fail "$key accepted a non-numeric value: '${!key}'"
+    load_cfg 2>"$tmp/numeric-diagnostic"
+    expected=sentinel
+    # These opt-in floors reset on each reload so an omitted/rejected policy
+    # cannot retain a previous admission budget. Other numeric defaults persist.
+    case "$key" in STORAGE_START_MIN_BYTES|STORAGE_START_MIN_INODES) expected=0 ;; esac
+    [ "${!key}" = "$expected" ] || fail "$key accepted a non-numeric value: '${!key}'"
+    grep -qx "load_cfg: ignoring non-numeric $key" "$tmp/numeric-diagnostic" \
+      || fail "$key did not report its rejected numeric value"
   done
 
   # Leading zeros are rejected (invalid in the generated GitLab TOML, and octal
