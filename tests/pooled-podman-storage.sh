@@ -153,19 +153,25 @@ SH
   cat > "$tmp/probe-bin/podman" <<'SH'
 #!/bin/sh
 case "$1 $2" in
-  'info --format') printf '%s\n' "${PROBE_GRAPHROOT:-$PROBE_EXPECTED}" ;;
+  'info --format')
+    [ "${PROBE_INFO_EXIT:-0}" = 0 ] || exit "$PROBE_INFO_EXIT"
+    graphroot="${PROBE_GRAPHROOT:-$PROBE_EXPECTED}"
+    if [ "$PROBE_EXPECTED" = /home/runner/.local/share/containers/storage ]; then
+      graphroot="${PROBE_RUNNER_GRAPHROOT:-$graphroot}"
+    fi
+    printf '%s\n' "$graphroot" ;;
   'build --isolation=chroot')
     [ "$3" = --network=host ] && [ "$4" = --pull=never ] || exit 96
     for context do :; done
     [ "$(cat "$context/Containerfile")" = "$(printf 'FROM scratch\nCOPY payload /payload\n')" ] || exit 97
     exit "${PROBE_BUILD_EXIT:-0}" ;;
-  'image inspect') echo 'sha256:probe-image' ;;
+  'image inspect') [ "${PROBE_INSPECT_EXIT:-0}" = 0 ] || exit "$PROBE_INSPECT_EXIT"; echo 'sha256:probe-image' ;;
   *) exit 95 ;;
 esac
 SH
   cat > "$tmp/probe-bin/df" <<'SH'
 #!/bin/sh
-exit 0
+exit "${PROBE_DF_EXIT:-0}"
 SH
   chmod +x "$tmp/probe-bin/"*
   docker() {
@@ -178,17 +184,40 @@ SH
     PATH="$tmp/probe-bin:$PATH" PROBE_EXPECTED="$expected" /bin/sh -ec "$script" sh "$expected"
   }
   github_validate_pooled_podman immutable-validation-id > "$tmp/probe-log" 2>&1 || fail 'valid executed probe rejected'
-  for invalid in uid gid home graphroot build; do
+  grep -qx 'pooled-podman result user=root step=complete exit=0 store=root_store' "$tmp/probe-log" || fail 'root completion was not recorded'
+  grep -qx 'pooled-podman result user=runner step=complete exit=0 store=runner_store' "$tmp/probe-log" || fail 'runner completion was not recorded'
+  for invalid in uid gid home graphroot runner-graphroot info df build inspect; do
     (
+      expected_user=image; expected_step=identity; expected_exit=1; expected_store=unobserved
       case "$invalid" in
         uid) export PROBE_UID=1002 ;; gid) export PROBE_GID=122 ;;
-        home) export PROBE_HOME=/wrong ;; graphroot) export PROBE_GRAPHROOT=/wrong ;;
-        build) export PROBE_BUILD_EXIT=23 ;;
+        home) export PROBE_HOME=/wrong ;;
+        graphroot) export PROBE_GRAPHROOT=/wrong; expected_user=root; expected_step=graphroot_check; expected_store=other ;;
+        runner-graphroot) export PROBE_RUNNER_GRAPHROOT=/private/SECRET-CANARY; expected_user=runner; expected_step=graphroot_check; expected_store=other ;;
+        info) export PROBE_INFO_EXIT=17; expected_user=root; expected_step=info; expected_exit=17 ;;
+        df) export PROBE_DF_EXIT=18; expected_user=root; expected_step=df; expected_exit=18; expected_store=root_store ;;
+        build) export PROBE_BUILD_EXIT=23; expected_user=root; expected_step=build; expected_exit=23; expected_store=root_store ;;
+        inspect) export PROBE_INSPECT_EXIT=19; expected_user=root; expected_step=inspect; expected_exit=19; expected_store=root_store ;;
       esac
       if github_validate_pooled_podman immutable-validation-id > "$tmp/probe-log" 2>&1; then
         fail "executed validator accepted wrong $invalid"
       fi
+      grep -qx "pooled-podman result user=$expected_user step=$expected_step exit=$expected_exit store=$expected_store" "$tmp/probe-log" \
+        || fail "failed $invalid probe lost its specific failure record"
+      if [ "$invalid" = runner-graphroot ]; then
+        grep -q '^pooled-podman graphroot=/var/lib/containers/storage uid=' "$tmp/probe-log" || fail 'runner test skipped root probe'
+        ! grep -q 'SECRET-CANARY' "$tmp/probe-log" || fail 'graphroot failure exposed an arbitrary path'
+        ! grep -q 'user=runner step=complete exit=0 store=runner_store' "$tmp/probe-log" || fail 'failed runner probe reported completion'
+      fi
     )
   done
+  (
+    export PROBE_GRAPHROOT=/wrong
+    if github_validate_pooled_podman immutable-validation-id > "$tmp/probe-log" 2>&1; then
+      fail 'graphroot mismatch unexpectedly passed'
+    fi
+    grep -qx 'pooled-podman result user=root step=graphroot_check exit=1 store=other' "$tmp/probe-log" \
+      || fail 'failed native probe did not identify its closed user/step/exit'
+  )
 )
 printf 'pooled Podman adapter contracts passed.\n'
