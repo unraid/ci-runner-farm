@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.8.0](https://github.com/unraid/ci-runner-farm/compare/v3.7.1...v3.8.0) (2026-11-17)
+
+
+### Features
+
+* **storage:** fence runner starts below storage floors ([#247](https://github.com/unraid/ci-runner-farm/issues/247)) ([75d802d](https://github.com/unraid/ci-runner-farm/commit/75d802d54c635cdf6127ae9f94bede8a32e5d4b6))
+* **storage:** isolate per-slot Podman stores ([#246](https://github.com/unraid/ci-runner-farm/issues/246)) ([5bbf287](https://github.com/unraid/ci-runner-farm/commit/5bbf2873256de0f6ec259cf4b7b643a935d88537))
+
 ## [3.7.1](https://github.com/unraid/ci-runner-farm/compare/v3.7.0...v3.7.1) (2026-11-16)
 
 
