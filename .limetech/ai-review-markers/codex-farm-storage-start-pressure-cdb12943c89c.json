@@ -1,25 +1,8 @@
 {
   "disposition": "PATCH",
-  "expected_structural_delta": "Three settings, two helpers, six existing GitHub lifecycle boundaries and unsupported GitLab preflight rejection. Focused tests plus existing check.sh/config form/docs. No module/process/timer/journal/store/dependency. No future-write reservation, drain, quota change or active-job stop.",
-  "minimum_design": "Extend existing GitHub owner boundaries with strict opt-in policy validation and bounded actual DockerRootDir plus workspace byte/inode observations. Check before pulls, creates, starts and old-owner retirement; preserve cleanup and read-only commands.",
-  "outcome": "Opted-in GitHub runner creation, restart, replacement and image preparation withhold work below explicit known storage floors, including minimum refills, while cleanup and existing jobs continue.",
-  "reuse_decisions": [
-    {
-      "decision": "extend",
-      "name": "Existing serialized provider lifecycle",
-      "rationale": "Owns start, restart, pull, replacement and validation; no second controller or reservation owner."
-    },
-    {
-      "decision": "reuse",
-      "name": "Existing cache cleanup",
-      "rationale": "Remain independently operable with existing ownership fences; cleanup percentage is not start policy."
-    },
-    {
-      "decision": "extend",
-      "name": "Existing config and logs",
-      "rationale": "Three default-disabled engine settings and existing errors; no new durable status store."
-    }
-  ],
+  "forecast_commit": "8fedc33f4a6373921a3914567fb969c851dca5dd",
+  "reviewed_sha": "793a6154fd12e13444fe198925b17f343e856fcf",
   "schema": "limetech.ai-review-marker.v2",
-  "stage": "forecast"
+  "stage": "final",
+  "unresolved_proportionality_findings": []
 }
