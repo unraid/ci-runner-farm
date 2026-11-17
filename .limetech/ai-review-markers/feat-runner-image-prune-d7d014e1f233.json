@@ -1,25 +1,8 @@
 {
   "disposition": "PATCH",
-  "expected_structural_delta": "One opt-in setting, one function and one call in runner-farm.sh, one test, README; zero new daemons or dependencies",
-  "minimum_design": "An opt-in hourly lifecycle-tick step removes unused images of the configured runner image repositories, keeping configured and one newest previous image, reference by reference without force",
-  "outcome": "Superseded runner images no longer accumulate in the host Docker store; the configured images and one previous image stay",
-  "reuse_decisions": [
-    {
-      "decision": "reuse",
-      "name": "pool_activate and effective_image",
-      "rationale": "The configured runner image of every pool"
-    },
-    {
-      "decision": "extend",
-      "name": "lifecycle_tick under the fleet lock",
-      "rationale": "Serialized with image pulls and slot creation"
-    },
-    {
-      "decision": "reuse",
-      "name": "non-forced reference-by-reference removal from the store budget hook",
-      "rationale": "Docker refuses to remove an image a container uses"
-    }
-  ],
+  "forecast_commit": "4894c8f84f6fda9ed1a0ef1e713d34cc164f4e13",
+  "reviewed_sha": "8fda311c594cb24d5dae08cfab30a97cb5caf3e1",
   "schema": "limetech.ai-review-marker.v2",
-  "stage": "forecast"
+  "stage": "final",
+  "unresolved_proportionality_findings": []
 }
