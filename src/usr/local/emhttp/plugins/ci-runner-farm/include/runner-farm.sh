@@ -5040,7 +5040,7 @@ crf_configured_slot_names() {
 crf_retired_slot_cleanup() {
   [ "${RETIRED_STORE_CLEANUP:-false}" = true ] && [ "$CI_PROVIDER" = github ] || return 0
   local stamp="$RUNDIR/retired-cleanup.last" now root configured refs name sub dir kind ref inspect_err
-  local moved=0 keep dest names did moves="" source target
+  local moved=0 keep dest names did moves="" source target staging
   now="$(date +%s)"
   if [ -f "$stamp" ]; then
     [ $((now - $(stat -c %Y -- "$stamp" 2>/dev/null || echo 0))) -ge 600 ] || return 0
@@ -5078,21 +5078,21 @@ crf_retired_slot_cleanup() {
       [ "$keep" = false ] || break
     done
     [ "$keep" = false ] || continue
+    # Stage first: no reaper reads the staging folder, so nothing is deleted
+    # before the second reference check below.
+    staging="$root/.retired-staging"
+    mkdir -p -- "$staging" && [ ! -L "$staging" ] && [ "$(realpath -e -- "$staging")" = "$staging" ] \
+      || { err "retired slot cleanup: no safe staging folder; keeping all slot storage"; return 0; }
     did=false
     for sub in docker work dind-logs; do
       dir="$root/$sub/$name"
       [ -d "$dir" ] || continue
-      case "$sub" in
-        docker) dest="$root/docker-evicted" ;;
-        work) dest="$root/work/.trash" ;;
-        dind-logs) dest="$root/dind-logs/.trash" ;;
-      esac
-      mkdir -p -- "$dest" && [ ! -L "$dest" ] && [ "$(realpath -e -- "$dest")" = "$dest" ] \
-        && [ "$(stat -c %d -- "$dest")" = "$(stat -c %d -- "$dir")" ] \
-        || { err "retired slot cleanup: no safe trash for $sub/$name; keeping it"; continue; }
-      mv -T -- "$dir" "$dest/$name.$now.$$" || { err "retired slot cleanup: could not move $sub/$name aside"; continue; }
+      [ "$(stat -c %d -- "$staging")" = "$(stat -c %d -- "$dir")" ] \
+        || { err "retired slot cleanup: $sub/$name is on another filesystem; keeping it"; continue; }
+      target="$staging/$sub.$name.$now.$$"
+      mv -T -- "$dir" "$target" || { err "retired slot cleanup: could not move $sub/$name aside"; continue; }
       did=true
-      moves+="$dir|$dest/$name.$now.$$"$'\n'
+      moves+="$sub|$name|$dir|$target"$'\n'
     done
     [ "$did" = true ] || continue
     log "retired slot storage moved aside: $name (its pool was removed or it is above the pool maximum)"
@@ -5101,13 +5101,13 @@ crf_retired_slot_cleanup() {
   done <<< "$names"
   [ "$moved" -eq 0 ] && return 0
   # A container started outside the fleet lock after the first inventory could
-  # have bound a folder before it moved. Look again before anything is deleted;
-  # a folder in use goes back to its place. Without an inventory, keep it all.
+  # have bound a folder before it moved. Look again while the folders are only
+  # staged; a folder in use goes back. Without an inventory, restore them all.
   if ! refs="$(crf_docker_storage_references)"; then
     err "retired slot cleanup: storage references unknown after the move; restoring moved folders"
     refs="unknown|/"
   fi
-  while IFS='|' read -r source target; do
+  while IFS='|' read -r sub name source target; do
     [ -n "$source" ] || continue
     keep=false
     while IFS='|' read -r kind ref; do
@@ -5118,19 +5118,26 @@ crf_retired_slot_cleanup() {
         *) keep=true; break ;;
       esac
     done <<< "$refs"
-    [ "$keep" = true ] || continue
-    if [ ! -e "$source" ] && mv -T -- "$target" "$source"; then
-      err "retired slot cleanup: ${source#"$root"/} came into use; restored it"
-    else
-      err "retired slot cleanup: ${source#"$root"/} came into use and could not be restored; kept at $target"
-      # Keep it out of every reaper's reach.
-      mv -T -- "$target" "$root/.retired-in-use.${target##*/}" 2>/dev/null || true
+    if [ "$keep" = true ]; then
+      if [ ! -e "$source" ] && mv -T -- "$target" "$source"; then
+        err "retired slot cleanup: $sub/$name came into use; restored it"
+      else
+        # It stays staged, where no reaper reads, for an operator to resolve.
+        err "retired slot cleanup: $sub/$name came into use and could not be restored; kept at $target"
+      fi
+      continue
     fi
+    case "$sub" in
+      docker) dest="$root/docker-evicted" ;;
+      work) dest="$root/work/.trash" ;;
+      dind-logs) rm -rf --one-file-system -- "$target" || true; continue ;;  # small; delete now
+    esac
+    mkdir -p -- "$dest" && [ ! -L "$dest" ] && [ "$(realpath -e -- "$dest")" = "$dest" ] \
+      && [ "$(stat -c %d -- "$dest")" = "$(stat -c %d -- "$target")" ] \
+      && mv -T -- "$target" "$dest/$name.$now.$$" \
+      || err "retired slot cleanup: could not queue $sub/$name for deletion; kept at $target"
   done <<< "$moves"
-  # Slot logs are small; delete them now. Larger trees go to the background
-  # reapers, never under the fleet lock.
-  find "$root/dind-logs/.trash" -mindepth 1 -maxdepth 1 -type d -name 'ci-runner-*' \
-    -exec rm -rf --one-file-system -- {} + 2>/dev/null || true
+  # Larger trees go to the background reapers, never under the fleet lock.
   [ ! -d "$root/docker-evicted" ] || layer_integrity_reap_evicted "$root/docker-evicted"
   github_work_trash_sweep_async || true
 }

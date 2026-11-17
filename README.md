@@ -1033,9 +1033,11 @@ the fleet lock like every slot creation, then moves the `docker/`, `work/` and
 deleted in the background at idle priority. It acts only when Docker reports
 that no container has the slot's name, the storage reference inventory finds
 no container or mount using the folders, and the top-level folders have not
-changed for an hour. After the move it checks the references again and puts
-back any folder that came into use. Deletion runs in the background, never
-under the fleet lock. It never follows a symlink or enters a separate mount. It
+changed for an hour. It first moves the folders into `.retired-staging`,
+which no cleanup reads, checks the references again, and puts back any folder
+that came into use. A folder that came into use but cannot go back stays in
+`.retired-staging` for an operator; the log names it. Deletion runs in the
+background, never under the fleet lock. It never follows a symlink or enters a separate mount. It
 handles two slots per pass and runs at most every ten minutes. GitHub farms
 only.
 
