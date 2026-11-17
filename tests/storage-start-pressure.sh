@@ -12,7 +12,7 @@ source src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-farm.sh
 fail() { printf 'STORAGE START FAIL: %s\n' "$*" >&2; exit 1; }
 CI_PROVIDER=github; WORK_TMPFS_SIZE=""; CACHE_ROOT="$tmp/cache"; ARGS=(fixture-image)
 STORAGE_START_GUARD=true; STORAGE_START_MIN_BYTES=1000; STORAGE_START_MIN_INODES=10
-DB=2000; WB=2000; CB=2000; DI=20; WI=20; CI=20; DF_MODE=valid; INFO_MODE=valid
+DB=2000; WB=2000; CB=2000; DI=20; WI=20; CACHE_INODES=20; DF_MODE=valid; INFO_MODE=valid
 calls="$tmp/calls"; effects="$tmp/effects"; : > "$calls"; : > "$effects"
 crf_safe_cache_root() { printf '%s\n' "$CACHE_ROOT"; }
 clear_dangling_endpoint() { return 0; }
@@ -33,7 +33,7 @@ df() {
   [ "$DF_MODE" != failed ] || return 1
   case "$*" in
     *--output=avail*) header=Avail; number="$WB"; [ "$path" != "$CACHE_ROOT" ] || number="$CB"; [ "$path" != "$tmp/docker-root" ] || number="$DB" ;;
-    *--output=iavail*) header=IFree; number="$WI"; [ "$path" != "$CACHE_ROOT" ] || number="$CI"; [ "$path" != "$tmp/docker-root" ] || number="$DI" ;;
+    *--output=iavail*) header=IFree; number="$WI"; [ "$path" != "$CACHE_ROOT" ] || number="$CACHE_INODES"; [ "$path" != "$tmp/docker-root" ] || number="$DI" ;;
     *) fail 'storage observation changed df contract' ;;
   esac
   [ "$path" != "${LOW_PATH:-}" ] || number=0
@@ -50,7 +50,7 @@ if run_owned_github_container 1 > "$tmp/output" 2>&1; then fail 'runner started 
 DB=2000
 for metric in docker_bytes workspace_bytes cache_bytes docker_inodes workspace_inodes cache_inodes; do
   (
-    case "$metric" in docker_bytes) DB=999 ;; workspace_bytes) WB=999 ;; cache_bytes) CB=999 ;; cache_inodes) CI=9 ;; docker_inodes) DI=9 ;; workspace_inodes) WI=9 ;; esac
+    case "$metric" in docker_bytes) DB=999 ;; workspace_bytes) WB=999 ;; cache_bytes) CB=999 ;; cache_inodes) CACHE_INODES=9 ;; docker_inodes) DI=9 ;; workspace_inodes) WI=9 ;; esac
     : > "$effects"
     if run_owned_github_container 1 > "$tmp/output" 2>&1; then fail "creation admitted low $metric"; fi
     if start_owned_container fixture fixture-id > "$tmp/output" 2>&1; then fail "restart admitted low $metric"; fi
