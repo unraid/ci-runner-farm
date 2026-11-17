@@ -5161,9 +5161,11 @@ crf_image_repository() {
 # reference and is never forced, so Docker keeps any image a container uses.
 # Any doubt, such as a configured image that is not local yet, skips the pass.
 crf_runner_image_prune() {
-  [ "${RUNNER_IMAGE_PRUNE:-false}" = true ] || return 0
+  # GitLab's configured image is a job image (often a public one) whose other
+  # tags jobs use; only GitHub runner images are fleet-owned.
+  [ "${RUNNER_IMAGE_PRUNE:-false}" = true ] && [ "$CI_PROVIDER" = github ] || return 0
   local stamp="$RUNDIR/runner-image-prune.last" now records rec pool ref configured="" repos="" keep="" used ids
-  local candidates order id created refs r repo match first=true ok removed=0 format
+  local candidates order id created refs r repo match ok removed=0 format kept_repos="" mine left
   format='{{.Id}}|{{.Created}}|{{join .RepoTags " "}} {{join .RepoDigests " "}}'
   now="$(date +%s)"
   if [ -f "$stamp" ]; then
@@ -5201,23 +5203,32 @@ crf_runner_image_prune() {
       [ -n "$id" ] || continue
       grep -Fxq -- "$id" <<< "$keep" && continue
       grep -Fxq -- "$id" <<< "$used" && continue
-      match=false
+      match=""
       for r in $refs; do
         repo="$(crf_image_repository "$r")"
-        grep -Fxq -- "$repo" <<< "$repos" && { match=true; break; }
+        grep -Fxq -- "$repo" <<< "$repos" && { match="$repo"; break; }
       done
-      [ "$match" = true ] && printf '%s|%s|%s\n' "$created" "$id" "$refs"
+      [ -n "$match" ] && printf '%s|%s|%s|%s\n' "$created" "$id" "$match" "$refs"
     done <<< "$candidates" | LC_ALL=C sort -r)"
-  while IFS='|' read -r created id refs; do
+  while IFS='|' read -r created id repo refs; do
     [ -n "$id" ] || continue
-    # The newest unused previous image stays for a rollback.
-    if [ "$first" = true ]; then first=false; continue; fi
-    ok=true
-    for r in $refs; do docker image rm "$r" >/dev/null 2>&1 || { ok=false; break; }; done
-    if [ "$ok" = true ] && docker image inspect "$id" >/dev/null 2>&1; then
+    # The newest unused previous image of each repository stays for a rollback.
+    if ! grep -Fxq -- "$repo" <<< "$kept_repos"; then kept_repos+="$repo"$'\n'; continue; fi
+    # A large image takes a while to delete; keep the fleet lock short.
+    [ "$removed" -lt 3 ] || break
+    ok=true left=false
+    for r in $refs; do
+      mine="$(crf_image_repository "$r")"
+      if grep -Fxq -- "$mine" <<< "$repos"; then
+        docker image rm "$r" >/dev/null 2>&1 || { ok=false; break; }
+      else
+        left=true   # a reference outside the runner repositories keeps the image
+      fi
+    done
+    if [ "$ok" = true ] && [ "$left" = false ] && docker image inspect "$id" >/dev/null 2>&1; then
       docker image rm "$id" >/dev/null 2>&1 || ok=false
     fi
-    [ "$ok" = false ] || removed=$((removed + 1))
+    [ "$ok" = false ] || [ "$left" = true ] || removed=$((removed + 1))
   done <<< "$order"
   [ "$removed" -eq 0 ] || log "removed $removed superseded runner image(s); kept the configured images and the newest previous one"
 }

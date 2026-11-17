@@ -23,6 +23,7 @@ reset() {
   img old1 "$(d 14)" 2026-11-10T00:00:00Z "$repo@$(d 4) $repo:sha-old1"
   img old2 "$(d 15)" 2026-11-01T00:00:00Z "$repo@$(d 5)"
   img used "$(d 16)" 2026-10-01T00:00:00Z "$repo@$(d 6)"
+  img shared "$(d 18)" 2026-09-01T00:00:00Z "$repo@$(d 8) localhost:5000/mine:keep"
   img other "$(d 17)" 2025-01-01T00:00:00Z "registry:2"
   : > "$tmp/calls"
 }
@@ -65,9 +66,20 @@ reset; crf_runner_image_prune
 RUNNER_IMAGE_PRUNE=true
 reset; crf_runner_image_prune > "$tmp/log" 2>&1 || fail "prune failed: $(cat "$tmp/log")"
 for gone in old1 old2; do [ ! -e "$IMAGES/$gone" ] || fail "superseded image $gone kept"; done
-for kept in cur evid prev used other; do [ -e "$IMAGES/$kept" ] || fail "image $kept removed"; done
+grep -q "removed 2 superseded runner image" "$tmp/log" || fail "removal not logged: $(cat "$tmp/log") calls: $(tr "\n" " " < "$tmp/calls")"
+for kept in cur evid prev used other shared; do [ -e "$IMAGES/$kept" ] || fail "image $kept removed"; done
+# A reference outside the runner repositories keeps its image and its tag.
+grep -q 'localhost:5000/mine:keep' "$IMAGES/shared" || fail 'a foreign tag was removed'
+# GitLab job images are not fleet-owned.
+touch -d '2 hours ago' "$CRF_RUNDIR/runner-image-prune.last"
+reset; CI_PROVIDER=gitlab crf_runner_image_prune > "$tmp/log" 2>&1
+[ ! -s "$tmp/calls" ] || fail 'pruned GitLab images'
+# At most three removals per pass.
+touch -d '2 hours ago' "$CRF_RUNDIR/runner-image-prune.last"
+reset; for n in 1 2 3 4 5; do img "extra$n" "$(d $((20 + n)))" "2026-08-0${n}T00:00:00Z" "$repo@$(d $((30 + n)))"; done
+crf_runner_image_prune > "$tmp/log" 2>&1
+[ "$(grep -c '^rm ' "$tmp/calls")" -le 6 ] && grep -q 'removed 3 superseded' "$tmp/log" || fail "pass not bounded: $(cat "$tmp/calls")"
 ! grep -q -- '--force\|-f ' "$tmp/calls" || fail 'forced removal'
-grep -q 'removed 2 superseded runner image' "$tmp/log" || fail 'removal not logged'
 # Hourly at most.
 reset; crf_runner_image_prune > "$tmp/log" 2>&1
 [ -e "$IMAGES/old1" ] || fail 'ran again inside the hour'
