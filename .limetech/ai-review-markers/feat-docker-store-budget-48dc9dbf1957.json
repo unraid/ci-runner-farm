@@ -1,0 +1,35 @@
+{
+  "disposition": "PATCH",
+  "expected_structural_delta": "One new setting, one new hook mode, small wiring and status-json additions, one new test file; zero new daemons, owners, stores or dependencies",
+  "minimum_design": "Extend the existing job-completed hook with a budget mode; install that hook for ephemeral DinD runners only when a budget is set; read its per-slot record from the existing dind-logs bind into status-json",
+  "outcome": "Each ephemeral DinD slot keeps its persistent inner Docker store under an opt-in size budget, evicting unused images and build cache oldest first between jobs, with budget and eviction counts in status-json",
+  "reuse_decisions": [
+    {
+      "decision": "extend",
+      "name": "runner-job-cleanup.sh job-completed hook",
+      "rationale": "Already runs after each job with the inner daemon live and no job running; add one budget mode"
+    },
+    {
+      "decision": "extend",
+      "name": "persistent-runner hook wiring in github_build_args",
+      "rationale": "Same mount and env, also enabled for ephemeral runners when a budget is set"
+    },
+    {
+      "decision": "reuse",
+      "name": "dind-logs per-slot bind",
+      "rationale": "Host-visible per-slot folder for the budget record"
+    },
+    {
+      "decision": "extend",
+      "name": "status-json per-runner rows",
+      "rationale": "Add one validated budget object per runner and a fleet summary"
+    },
+    {
+      "decision": "reuse",
+      "name": "job-docker-prune test harness",
+      "rationale": "Same fake docker binary pattern for the new mode"
+    }
+  ],
+  "schema": "limetech.ai-review-marker.v2",
+  "stage": "forecast"
+}
