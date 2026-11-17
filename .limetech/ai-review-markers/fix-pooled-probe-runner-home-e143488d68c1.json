@@ -1,0 +1,25 @@
+{
+  "disposition": "PATCH",
+  "expected_structural_delta": "One docker exec step in github_validate_pooled_podman and two fake commands in the existing test; zero new owners, settings or dependencies",
+  "minimum_design": "Before the rootless probe, re-own the runner home and XDG parents as root with the same non-recursive step the runner image start hook uses",
+  "outcome": "Native pooled Podman validation passes on hosts whose cache mounts sit under the runner home, as real runners already do",
+  "reuse_decisions": [
+    {
+      "decision": "extend",
+      "name": "existing pooled probe and failure records",
+      "rationale": "Add one root exec step with its own failure record"
+    },
+    {
+      "decision": "reuse",
+      "name": "runner image start hook ownership step",
+      "rationale": "Mirror its exact non-recursive directories so validation matches real runners"
+    },
+    {
+      "decision": "extend",
+      "name": "executed probe test harness",
+      "rationale": "Fake rootless refusal of a root-owned home proves the gap and the fix"
+    }
+  ],
+  "schema": "limetech.ai-review-marker.v2",
+  "stage": "forecast"
+}
