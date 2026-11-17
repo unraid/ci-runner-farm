@@ -992,6 +992,29 @@ stopped containers, anonymous volumes, dangling images and dangling build
 cache. Below the free-space threshold it also removes every unused image and
 the checkouts of other repositories. Enabling it replaces idle runners once.
 
+A slot's Docker store can also grow without a pool-wide shortage, because each
+slot keeps its store across ephemeral jobs. Set the engine-only
+`DOCKER_STORE_BUDGET_GIB` to a whole number of GiB (at least `4`) to bound each
+GitHub DinD slot's store. `0`, the default, disables it. After each job, while
+the slot's own Docker daemon still runs and before the slot takes another job,
+the job-completed hook:
+
+1. removes stopped job containers (warm Buildx builders stay), anonymous
+   volumes and dangling images;
+2. reads the store size from `docker system df`, not from a file walk;
+3. when the store is over budget, removes build cache older than a week, then
+   unused images, least recently pulled or tagged first, then the remaining
+   unused build cache.
+
+No removal is forced, so Docker keeps every image that a container uses. One
+pass removes at most 40 images and ends after four minutes; the next job
+continues. The pass writes one record to
+`<cache root>/dind-logs/<runner>/store-budget/state.json`. `status-json`
+reports these records under `docker_store_budget`, with the number of slots
+that report, are over budget or have an unreadable record, and the images
+removed. A job can write to that folder, so only records of the exact shape are
+reported. Enabling or changing the budget replaces idle runners once.
+
 For an explicit cleanup run, use
 `include/runner-farm.sh prune-completed-docker --dry-run`, then
 `include/runner-farm.sh prune-completed-docker --apply`. Both commands acquire

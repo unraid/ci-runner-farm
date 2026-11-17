@@ -20,12 +20,19 @@ fi
 [[ "${GITHUB_RUN_ID:-}" =~ ^[1-9][0-9]*$ ]] && [[ "${GITHUB_RUN_ATTEMPT:-}" =~ ^[1-9][0-9]*$ ]] || exit "$image_status"
 
 case "${1:-}" in
-  --cleanup|--prune|--workspace) ;;
+  --cleanup|--prune|--workspace|--budget) ;;
   *)
     # Hook failure must not fail a completed build. Bound both the whole pass
     # and each Docker call; unknown cleanup stays visible in the job log.
     if ! timeout -k 2 30 bash "$0" --cleanup; then
       echo '[ci-runner-farm] job cache cleanup incomplete; retained uncertain caches' >&2
+    fi
+    # An opt-in per-slot budget bounds the inner store between jobs. The slot
+    # takes no job until this hook returns, so the pass is time-bounded.
+    if [[ "${CRF_DOCKER_STORE_BUDGET_BYTES:-0}" =~ ^[1-9][0-9]{0,15}$ ]]; then
+      if ! timeout -k 2 240 bash "$0" --budget; then
+        echo '[ci-runner-farm] Docker store budget pass incomplete; retained remaining state' >&2
+      fi
     fi
     # Pruning removes state a later job could reuse, so it is opt-in.
     if [ "${CRF_JOB_PRUNE:-}" = 1 ]; then
@@ -124,6 +131,111 @@ if [ "$1" = --prune ]; then
     [ "$?" -eq 1 ] || exit 1
   fi
   exit "$incomplete"
+fi
+if [ "$1" = --budget ]; then
+  # Bound this slot's persistent store between jobs. Docker arbitrates every
+  # removal: nothing is forced, so an image a container still uses stays.
+  budget="${CRF_DOCKER_STORE_BUDGET_BYTES:-0}"
+  [[ "$budget" =~ ^[1-9][0-9]{0,15}$ ]] || exit 1
+  run_docker() { timeout -k 2 60 docker --host unix:///var/run/docker.sock "$@"; }
+  # docker system df reports decimal units from daemon metadata; no file walk.
+  store_bytes() {
+    local rows
+    rows="$(run_docker system df --format '{{.Type}}|{{.Size}}')" || return 1
+    awk -F'|' '
+      { if (NF != 2 || $2 !~ /^[0-9]+(\.[0-9]+)?(B|kB|MB|GB|TB|PB)$/) { bad = 1; exit }
+        n = $2; unit = $2; sub(/[kMGTP]?B$/, "", n); sub(/^[0-9.]+/, "", unit)
+        m = (unit == "kB") ? 1e3 : (unit == "MB") ? 1e6 : (unit == "GB") ? 1e9 : (unit == "TB") ? 1e12 : (unit == "PB") ? 1e15 : 1
+        total += n * m; rows++ }
+      END { if (bad || rows == 0) exit 1; printf "%.0f\n", total }' <<< "$rows"
+  }
+  before="$(store_bytes)" || exit 1
+  # Disposable job state first: stopped job containers (warm builders kept),
+  # anonymous volumes and dangling images.
+  stopped="$(local_docker ps -a --no-trunc --filter status=exited --filter status=created --filter status=dead --format '{{.ID}} {{.Names}}')" || exit 1
+  count=0
+  while read -r id name; do
+    [[ "$id" =~ ^[0-9a-f]{64}$ ]] || continue
+    case "$name" in buildx_buildkit_*) continue ;; esac
+    count=$((count + 1)); [ "$count" -le 64 ] || break
+    local_docker rm -v "$id" >/dev/null 2>&1 || true
+  done <<< "$stopped"
+  api="$(local_docker version --format '{{.Server.APIVersion}}')" || exit 1
+  [[ "$api" =~ ^1\.([1-9][0-9]{0,2})$ ]] || exit 1
+  [ "${BASH_REMATCH[1]}" -lt 42 ] || run_docker volume prune -f >/dev/null || exit 1
+  run_docker image prune -f >/dev/null || exit 1
+  size="$(store_bytes)" || exit 1
+  evicted=0 skipped=0 cache_pruned=false complete=true
+  if [ "$size" -gt "$budget" ]; then
+    # Build cache older than a week is the cheapest state to rebuild.
+    run_docker builder prune -f --filter until=168h >/dev/null || exit 1
+    cache_pruned=true
+    size="$(store_bytes)" || exit 1
+  fi
+  if [ "$size" -gt "$budget" ]; then
+    # Unused images, least recently pulled or tagged first.
+    used="$(local_docker ps -aq --no-trunc)" || exit 1
+    in_use=""
+    if [ -n "$used" ]; then
+      # shellcheck disable=SC2086  # IDs are validated hex, one argument each
+      in_use="$(local_docker inspect --format '{{.Image}}' $used)" || exit 1
+    fi
+    ids="$(local_docker image ls -q --no-trunc | sort -u)" || exit 1
+    candidates=""
+    if [ -n "$ids" ]; then
+      # shellcheck disable=SC2086
+      candidates="$(run_docker image inspect --format '{{.Id}}|{{.Metadata.LastTagTime}}|{{.Created}}|{{.Size}}|{{join .RepoTags " "}}' $ids)" || exit 1
+    fi
+    order="$(while IFS='|' read -r id tagged created bytes tags; do
+        [[ "$id" =~ ^sha256:[0-9a-f]{64}$ ]] && [[ "$bytes" =~ ^[0-9]{1,16}$ ]] || continue
+        grep -Fxq -- "$id" <<< "$in_use" && continue
+        when="$tagged"; case "$when" in 0001-01-01*|'') when="$created" ;; esac
+        printf '%s|%s|%s|%s\n' "$when" "$id" "$bytes" "$tags"
+      done <<< "$candidates" | LC_ALL=C sort)"
+    estimate="$size"
+    while IFS='|' read -r _ id bytes tags; do
+      [ -n "$id" ] || continue
+      [ "$evicted" -lt 40 ] || { complete=false; break; }
+      ok=true
+      for tag in $tags; do
+        [ "$tag" = '<none>:<none>' ] && continue
+        run_docker image rm "$tag" >/dev/null 2>&1 || { ok=false; break; }
+      done
+      if [ "$ok" = true ] && local_docker image inspect "$id" >/dev/null 2>&1; then
+        run_docker image rm "$id" >/dev/null 2>&1 || ok=false
+      fi
+      if [ "$ok" = true ]; then evicted=$((evicted + 1)); estimate=$((estimate - 10#$bytes)); else skipped=$((skipped + 1)); fi
+      # An image's size counts layers it shares, so the estimate falls faster
+      # than the store. Re-measure only once it says the budget is met.
+      if [ "$estimate" -le "$budget" ]; then
+        size="$(store_bytes)" || exit 1
+        [ "$size" -gt "$budget" ] || break
+        estimate="$size"
+      fi
+    done <<< "$order"
+    size="$(store_bytes)" || exit 1
+  fi
+  if [ "$size" -gt "$budget" ]; then
+    run_docker builder prune -a -f >/dev/null || exit 1
+    cache_pruned=true
+    size="$(store_bytes)" || exit 1
+  fi
+  over=false; [ "$size" -le "$budget" ] || over=true
+  state=/var/log/dind/store-budget
+  previous=0
+  if [ -f "$state/state.json" ] && [ ! -L "$state/state.json" ] \
+     && [[ "$(head -c 1024 "$state/state.json")" =~ \"evicted_images_total\":([0-9]{1,9})[,}] ]]; then
+    previous="${BASH_REMATCH[1]}"
+  fi
+  total=$((10#$previous + evicted)); [ "$total" -le 999999999 ] || total=999999999
+  if [ -d "$state" ] && [ ! -L "$state" ] && [ -w "$state" ]; then
+    printf '{"schema":1,"at":%s,"budget_bytes":%s,"before_bytes":%s,"after_bytes":%s,"evicted_images":%s,"evicted_images_total":%s,"skipped_in_use":%s,"build_cache_pruned":%s,"over_budget":%s,"complete":%s}\n' \
+      "$(date +%s)" "$budget" "$before" "$size" "$evicted" "$total" "$skipped" "$cache_pruned" "$over" "$complete" > "$state/.state.$$" \
+      && mv -f -- "$state/.state.$$" "$state/state.json"
+  fi
+  [ "$evicted" -eq 0 ] || printf '[ci-runner-farm] Docker store budget: removed %s unused image(s); store %s -> %s bytes (budget %s)\n' "$evicted" "$before" "$size" "$budget"
+  [ "$over" = false ]
+  exit
 fi
 volumes="$(local_docker volume ls --format '{{.Name}}')" || exit 1
 count=0

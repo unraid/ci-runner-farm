@@ -49,6 +49,13 @@ github_validate_docker_cache_policy() {
   [ "${#pressure_builders[@]}" -le 32 ] \
     || { err "too many Docker cache builder names"; return 1; }
 }
+# 0 disables the budget. Very small budgets would evict every warm image.
+github_validate_docker_store_budget() {
+  [[ "${DOCKER_STORE_BUDGET_GIB:-0}" =~ ^(0|[1-9][0-9]{0,5})$ ]] \
+    || { err "DOCKER_STORE_BUDGET_GIB must be 0 or a whole number of GiB"; return 1; }
+  [ "${DOCKER_STORE_BUDGET_GIB:-0}" -eq 0 ] || [ "${DOCKER_STORE_BUDGET_GIB}" -ge 4 ] \
+    || { err "DOCKER_STORE_BUDGET_GIB must be at least 4 when enabled"; return 1; }
+}
 github_strict_endpoint() { return 0; }
 github_imageupdate_pull() { return 1; }
 github_remote_image_host_pull_required() { return 0; }
@@ -94,8 +101,13 @@ github_confgen() {
   # an old container can remain online with the broken hierarchy.
   local runtime_salt='' kvm_gid cache_spec
   [ "$DIND" = true ] && runtime_salt='github-dind-cgroupns-v1'
-  if [ "$DIND" = true ] && [ "$EPHEMERAL" = false ]; then
+  # The job-completed hook runs on persistent slots, and on ephemeral slots
+  # with a store budget. Its settings reach the container, so they are part of
+  # the fingerprint wherever it runs; farms without it keep their fingerprint.
+  github_validate_docker_store_budget || return 1
+  if [ "$DIND" = true ] && { [ "$EPHEMERAL" = false ] || [ "${DOCKER_STORE_BUDGET_GIB:-0}" -gt 0 ]; }; then
     runtime_salt="${runtime_salt}-job-cache-cleanup-v3"
+    [ "${DOCKER_STORE_BUDGET_GIB:-0}" -eq 0 ] || runtime_salt="${runtime_salt}-store-budget-v1-${DOCKER_STORE_BUDGET_GIB}"
     # Opting in must replace existing slots; the default keeps the fingerprint.
     [ "${DOCKER_JOB_PRUNE:-false}" != true ] || runtime_salt="${runtime_salt}-job-prune-v1"
     # Existing slots must pick up a changed threshold. The default keeps the
@@ -1120,10 +1132,13 @@ github_build_args() {
     ARGS+=( -v "$CACHE_ROOT/docker/$name:/var/lib/docker" )
     ARGS+=( -v "$CACHE_ROOT/dind-daemon.json:/etc/docker/daemon.json:ro" )
     ARGS+=( -v "$CACHE_ROOT/dind-logs/$name:/var/log/dind" )
-    if [ "$EPHEMERAL" = false ]; then
+    # A persistent DinD store outlives every job. Ephemeral slots reuse theirs
+    # too, so a store budget also installs the job-completed hook for them.
+    github_validate_docker_store_budget || return 1
+    if [ "$EPHEMERAL" = false ] || [ "${DOCKER_STORE_BUDGET_GIB:-0}" -gt 0 ]; then
       local cleanup_script="$PROVIDER_DIR/../runner-job-cleanup.sh" cleanup_destination=/opt/ci-runner-farm/job-completed.sh
       [ -r "$cleanup_script" ] && [ -x "$cleanup_script" ] \
-        || { err "persistent DinD job cleanup hook is missing or not executable"; return 1; }
+        || { err "DinD job cleanup hook is missing or not executable"; return 1; }
       for cache_spec in $CACHE_MOUNTS; do
         if crf_mount_destinations_overlap "$cleanup_destination" "${cache_spec#*:}"; then
           err "cache mount overlaps the job cleanup hook"; return 1
@@ -1152,10 +1167,20 @@ github_build_args() {
       if [ -n "${DOCKER_CACHE_BUILDERS:-}" ]; then
         ARGS+=( -e "CRF_DOCKER_CACHE_BUILDERS=$DOCKER_CACHE_BUILDERS" )
       fi
-      if [ "${DOCKER_JOB_PRUNE:-false}" = true ]; then
+      # Workspace and pressure pruning are persistent-runner policy; an
+      # ephemeral slot starts from a fresh workspace.
+      if [ "$EPHEMERAL" = false ] && [ "${DOCKER_JOB_PRUNE:-false}" = true ]; then
         ARGS+=( -e CRF_JOB_PRUNE=1 )
       else
         ARGS+=( -e CRF_JOB_PRUNE=0 )
+      fi
+      if [ "${DOCKER_STORE_BUDGET_GIB:-0}" -gt 0 ]; then
+        # The hook runs as the runner user; only its record folder is runner-owned.
+        local budget_dir="$CACHE_ROOT/dind-logs/$name/store-budget"
+        [ ! -L "$budget_dir" ] || { err "Docker store budget folder is a symlink"; return 1; }
+        mkdir -p -- "$budget_dir" || return 1
+        if [ "$RUN_AS_ROOT" != true ]; then chown -h "$RUNNER_UID:$RUNNER_GID" -- "$budget_dir" || return 1; fi
+        ARGS+=( -e "CRF_DOCKER_STORE_BUDGET_BYTES=$(( DOCKER_STORE_BUDGET_GIB * 1024 * 1024 * 1024 ))" )
       fi
     fi
   elif [ "$SHARE_DOCKER_SOCK" = "true" ]; then
