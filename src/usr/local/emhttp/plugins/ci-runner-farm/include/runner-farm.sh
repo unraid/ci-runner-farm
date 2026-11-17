@@ -67,6 +67,7 @@ STORAGE_START_MIN_BYTES="0"           # enabled policy requires explicit positiv
 STORAGE_START_MIN_INODES="0"
 DOCKER_JOB_PRUNE="false"              # persistent DinD: prune job Docker state and, under pressure, unused images and other checkouts after each job
 DOCKER_STORE_BUDGET_GIB="0"           # GitHub DinD: per-slot inner Docker store budget, enforced after each job; 0 disables
+RETIRED_STORE_CLEANUP="false"         # GitHub: reclaim storage of slots that no longer exist (pool removed or above its maximum)
 RUNNER_CPUS=""                        # per-runner CPU cap; empty = uncapped (CFS time-shares fairly)
 CPU_PINNING="false"                   # true => GitHub runners with a whole-number CPU cap also get a cpuset of that
                                       # size, so tools see the right CPU count; the --cpus cap and accounting stay.
@@ -188,7 +189,7 @@ HISTORY_FILE="${CRF_HISTORY_FILE:-${CFGDIR}/recommendations.history}"
 # Allowlist of keys the settings page may set. load_cfg only ever assigns these.
 CFG_KEYS="CI_PROVIDER GH_SCOPE GH_OWNER GH_REPOS RUNNER_GROUP GH_APP_ID GH_APP_INSTALLATION_ID GITLAB_URL GITLAB_RUNNER_IMAGE GITLAB_PROJECTS GITLAB_SHUTDOWN_TIMEOUT \
 GITLAB_ALLOWED_IMAGES GITLAB_ALLOWED_SERVICES GITLAB_PULL_POLICY GITLAB_SHM_SIZE \
-RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS QUEUED_POOLS DOCKER_CACHE_MIN_FREE_PERCENT DOCKER_CACHE_BUILDERS DOCKER_JOB_PRUNE DOCKER_STORE_BUDGET_GIB PODMAN_POOL_STORAGE STORAGE_START_GUARD STORAGE_START_MIN_BYTES STORAGE_START_MIN_INODES \
+RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS QUEUED_POOLS DOCKER_CACHE_MIN_FREE_PERCENT DOCKER_CACHE_BUILDERS DOCKER_JOB_PRUNE DOCKER_STORE_BUDGET_GIB RETIRED_STORE_CLEANUP PODMAN_POOL_STORAGE STORAGE_START_GUARD STORAGE_START_MIN_BYTES STORAGE_START_MIN_INODES \
 RUNNER_CPUS CPU_PINNING CPU_PINNING_WHOLE_CORES RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE USER_SHARE_MOUNTS IMAGE_SOURCE IMAGE EPHEMERAL \
 RUN_AS_ROOT REGISTRY_SERVER REGISTRY_USERNAME CACHE_MOUNTS SHARE_DOCKER_SOCK DIND \
 SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK RUNNER_DNS ARTIFACT_ENDPOINT MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
@@ -216,6 +217,7 @@ load_cfg() {
   DOCKER_CACHE_BUILDERS=""
   DOCKER_JOB_PRUNE="false"
   DOCKER_STORE_BUDGET_GIB="0"
+  RETIRED_STORE_CLEANUP="false"
   PODMAN_POOL_STORAGE="false"
   STORAGE_START_GUARD="false"
   STORAGE_START_MIN_BYTES="0"
@@ -1537,6 +1539,7 @@ lifecycle_tick() {
   # Keep a recent CPU usage sample for load-aware placement.
   [ "${CPU_PINNING:-false}" != true ] || crf_cpu_usage_refresh >/dev/null 2>&1 || true
   crf_storage_pressure_cleanup
+  crf_retired_slot_cleanup
   replenish_fixed_github_capacity || return 1
   local candidates candidate failed=0 yield=false
   candidates="$(provider_call lifecycle_candidates)" \
@@ -4997,6 +5000,98 @@ crf_docker_storage_pressure() {
   IFS='|' read -r total available <<< "$usage"
   [ "$available" -le "$total" ] || { err "Docker cache free space inconsistent; skipping cleanup"; return 2; }
   [ "$((available * 100 / total))" -lt "$threshold" ]
+}
+
+# Every slot name the saved layout can create, one per line. A pool's slots
+# run from 1 to the larger of its fixed count and its maximum.
+crf_configured_slot_names() {
+  local rec pool fixed max n i
+  if pool_mode_enabled; then
+    pool_config_validate "$RUNNER_MODE" "$RUNNER_POOLS" "$GH_SCOPE" "$CI_PROVIDER" >/dev/null 2>&1 || return 1
+    while IFS= read -r rec; do
+      [ -n "$rec" ] || continue
+      pool="$(cut -d'|' -f2 <<< "$rec")"; fixed="$(cut -d'|' -f5 <<< "$rec")"; max="$(cut -d'|' -f7 <<< "$rec")"
+      [[ "$pool" =~ ^[a-z][a-z0-9-]{0,23}$ && "$fixed" =~ ^[0-9]{1,3}$ && "$max" =~ ^[0-9]{1,3}$ ]] || return 1
+      n=$((10#$fixed > 10#$max ? 10#$fixed : 10#$max))
+      for ((i = 1; i <= n; i++)); do printf 'ci-runner-%s-%s\n' "$pool" "$i"; done
+    done < <(pool_records) || return 1
+  else
+    n="${RUNNER_COUNT:-0}"
+    [ "${AUTOSCALE:-false}" != true ] || [ "${AUTOSCALE_MAX:-0}" -le "$n" ] || n="$AUTOSCALE_MAX"
+    [[ "$n" =~ ^[0-9]{1,3}$ ]] || return 1
+    for ((i = 1; i <= n; i++)); do printf 'ci-runner-%s\n' "$i"; done
+  fi
+}
+
+# Storage of a slot the layout can no longer create (its pool was removed or
+# its index is above the pool maximum) is never reused, and nothing else
+# deletes it once its container is gone. With the opt-in, the lifecycle tick
+# (which holds the fleet lock, like every slot creation) moves such folders into
+# the existing trash folders, two slots per pass, every ten minutes at most.
+# Any doubt (a container with the name, an unknown container state, a reference
+# or mount, a recent change, a symlink or separate mount) keeps the folder.
+crf_retired_slot_cleanup() {
+  [ "${RETIRED_STORE_CLEANUP:-false}" = true ] && [ "$CI_PROVIDER" = github ] || return 0
+  local stamp="$RUNDIR/retired-cleanup.last" now root configured refs name sub dir kind ref inspect_err
+  local moved=0 keep dest names
+  now="$(date +%s)"
+  if [ -f "$stamp" ]; then
+    [ $((now - $(stat -c %Y -- "$stamp" 2>/dev/null || echo 0))) -ge 600 ] || return 0
+  fi
+  : > "$stamp" 2>/dev/null || return 0
+  root="$(crf_safe_cache_root)" || return 0
+  configured="$(crf_configured_slot_names)" || { err "retired slot cleanup: unreadable pool layout; keeping all slot storage"; return 0; }
+  refs="$(crf_docker_storage_references)" || { err "retired slot cleanup: unknown storage references; keeping all slot storage"; return 0; }
+  names="$(for sub in docker work dind-logs; do
+      [ -d "$root/$sub" ] && [ ! -L "$root/$sub" ] || continue
+      find "$root/$sub" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null
+    done | grep -E '^ci-runner-([0-9]+|[a-z][a-z0-9-]{0,23}-[0-9]+)$' | sort -u)"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    grep -Fxq -- "$name" <<< "$configured" && continue
+    # Only a positive "No such container" proves that no container owns it.
+    if inspect_err="$(docker container inspect "$name" 2>&1 >/dev/null)"; then continue; fi
+    case "$inspect_err" in *"No such container"*|*"No such object"*) ;; *) continue ;; esac
+    keep=false
+    for sub in docker work dind-logs; do
+      dir="$root/$sub/$name"
+      [ -e "$dir" ] || [ -L "$dir" ] || continue
+      [ ! -L "$dir" ] && [ -d "$dir" ] && [ "$(realpath -e -- "$dir" 2>/dev/null)" = "$dir" ] || { keep=true; break; }
+      [ "$(stat -c %d -- "$dir")" = "$(stat -c %d -- "$root/$sub")" ] || { keep=true; break; }
+      [ $((now - $(stat -c %Y -- "$dir"))) -ge 3600 ] || { keep=true; break; }
+      while IFS='|' read -r kind ref; do
+        [ -n "$ref" ] || continue
+        case "$kind" in
+          consumer) crf_mount_destinations_overlap "$dir" "$ref" && { keep=true; break; } ;;
+          mount) case "$ref" in "$dir"|"$dir"/*) keep=true; break ;; esac ;;
+          *) keep=true; break ;;
+        esac
+      done <<< "$refs"
+      [ "$keep" = false ] || break
+    done
+    [ "$keep" = false ] || continue
+    for sub in docker work dind-logs; do
+      dir="$root/$sub/$name"
+      [ -d "$dir" ] || continue
+      case "$sub" in
+        docker) dest="$root/docker-evicted" ;;
+        work) dest="$root/work/.trash" ;;
+        dind-logs) dest="$root/dind-logs/.trash" ;;
+      esac
+      mkdir -p -- "$dest" && [ ! -L "$dest" ] && [ "$(realpath -e -- "$dest")" = "$dest" ] \
+        && [ "$(stat -c %d -- "$dest")" = "$(stat -c %d -- "$dir")" ] \
+        || { err "retired slot cleanup: no safe trash for $sub/$name; keeping it"; continue; }
+      mv -T -- "$dir" "$dest/$name.$now.$$" || { err "retired slot cleanup: could not move $sub/$name aside"; continue; }
+      # Slot logs are small; delete them now rather than queue for the reaper.
+      [ "$sub" != dind-logs ] || rm -rf --one-file-system -- "$dest/$name.$now.$$" || true
+    done
+    log "retired slot storage moved aside: $name (its pool was removed or it is above the pool maximum)"
+    moved=$((moved + 1))
+    [ "$moved" -lt 2 ] || break
+  done <<< "$names"
+  [ "$moved" -eq 0 ] && return 0
+  [ ! -d "$root/docker-evicted" ] || layer_integrity_reap_evicted "$root/docker-evicted"
+  github_work_trash_sweep || true
 }
 
 crf_storage_pressure_cleanup() {
