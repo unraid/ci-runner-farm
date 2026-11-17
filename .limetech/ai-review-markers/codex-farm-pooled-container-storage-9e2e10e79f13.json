@@ -1,25 +1,8 @@
 {
   "disposition": "PATCH",
-  "expected_structural_delta": "No new module, process owner, journal, dependency or durable store. Two runtime store bind mounts beneath the existing ephemeral slot root and one workspace subdirectory. Existing configuration types and lifecycle owners remain; tests cover isolation, failures, variants and native Podman use.",
-  "minimum_design": "Extend existing GitHub build_args and confgen only. Keep the existing fresh slot root as sole lifetime owner, place workspace and rootful/runner Podman stores in sibling directories, mount only the workspace child at /_work, and keep normal idle retirement and trash cleanup.",
-  "outcome": "Keep Podman build stores out of the constrained host Docker writable layer for disk-backed ephemeral GitHub runners, with separate per-slot stores and native idle migration.",
-  "reuse_decisions": [
-    {
-      "decision": "Extend its fresh slot layout with sibling workspace and Podman directories",
-      "name": "github_fresh_work_dir",
-      "rationale": "Existing absent-container fence and whole-slot retirement own their lifetime"
-    },
-    {
-      "decision": "Add a salt only for the affected disk-backed ephemeral DinD variant",
-      "name": "github_confgen",
-      "rationale": "Native idle migration applies mount changes without interrupting busy jobs"
-    },
-    {
-      "decision": "Leave admission semantics unchanged in this placement patch",
-      "name": "disk admission",
-      "rationale": "A free-space observation cannot reserve future job growth or silently veto minimum refill"
-    }
-  ],
+  "forecast_commit": "0c933ed061783bfa2cefe18e0eadaaaecf8cbca4",
+  "reviewed_sha": "4578a9576239982e3ba13dd99a744661d44d4a9f",
   "schema": "limetech.ai-review-marker.v2",
-  "stage": "forecast"
+  "stage": "final",
+  "unresolved_proportionality_findings": []
 }
