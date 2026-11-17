@@ -1012,3 +1012,32 @@ package caches are outside this inventory's scope.
 
 These commands do not impose a size limit on active Docker stores. Keep
 build headroom when you budget disk space.
+
+### Qualified ephemeral Podman storage
+
+`PODMAN_POOL_STORAGE="true"` is an infrastructure opt-in for qualified GitHub
+runner images with runner UID1001, GID121 and home `/home/runner`. It defaults
+to false, preserving existing custom images. It requires DinD, ephemeral
+runners and a disk-backed workspace; unsupported combinations fail before
+workspace retirement or creation.
+
+Enabled slots use `CACHE_ROOT/work/SLOT/{workspace,podman-root,podman-runner}`.
+Only `workspace` is exposed at `/_work`. Separate rootful and runner graphroots
+are bound at their native default paths, preventing those stores from growing
+in the host Docker writable layer or being erased by workflow checkout cleanup.
+The existing slot owner retires the whole layout; current container consumers,
+mounted descendants or an unavailable reference inventory preserve the files.
+The configuration fingerprint changes only for opted-in slots, so normal idle
+retirement migrates them while busy jobs keep their current container.
+
+Before enabling a host, run the native `validate --pooled-podman` operation
+against its exact pinned image. This transient validation does not save the
+opt-in. Its owned inert container checks the runner identity, both actual
+Podman graphroots and offline image builds, then settles the container before
+removing its private stores. Qualify simultaneous-slot isolation, cancellation
+and retirement on the intended filesystem before rollout.
+
+This placement option does not reserve future job disk growth. Disk headroom
+and minimum-capacity admission policy remain separate; observing free space
+once is not a capacity guarantee. Persistent GitHub, tmpfs workspaces, GitLab
+and unqualified custom images are outside this option.

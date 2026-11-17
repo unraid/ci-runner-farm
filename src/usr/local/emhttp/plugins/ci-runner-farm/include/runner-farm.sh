@@ -61,6 +61,7 @@ QUEUED_POOLS="false"                  # retired setting; true requires configura
 ELASTIC_POOLS="false"                 # retired setting; true requires configuration migration
 DOCKER_CACHE_MIN_FREE_PERCENT="15"     # reclaim completed DinD stores below this free-space threshold; 0 disables
 DOCKER_CACHE_BUILDERS=""              # optional comma-separated reusable Buildx builder names eligible for pressure eviction
+PODMAN_POOL_STORAGE="false"           # qualified ephemeral GitHub DinD: private Podman stores on the pool
 DOCKER_JOB_PRUNE="false"              # persistent DinD: prune job Docker state and, under pressure, unused images and other checkouts after each job
 RUNNER_CPUS=""                        # per-runner CPU cap; empty = uncapped (CFS time-shares fairly)
 CPU_PINNING="false"                   # true => GitHub runners with a whole-number CPU cap also get a cpuset of that
@@ -183,7 +184,7 @@ HISTORY_FILE="${CRF_HISTORY_FILE:-${CFGDIR}/recommendations.history}"
 # Allowlist of keys the settings page may set. load_cfg only ever assigns these.
 CFG_KEYS="CI_PROVIDER GH_SCOPE GH_OWNER GH_REPOS RUNNER_GROUP GH_APP_ID GH_APP_INSTALLATION_ID GITLAB_URL GITLAB_RUNNER_IMAGE GITLAB_PROJECTS GITLAB_SHUTDOWN_TIMEOUT \
 GITLAB_ALLOWED_IMAGES GITLAB_ALLOWED_SERVICES GITLAB_PULL_POLICY GITLAB_SHM_SIZE \
-RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS QUEUED_POOLS DOCKER_CACHE_MIN_FREE_PERCENT DOCKER_CACHE_BUILDERS DOCKER_JOB_PRUNE \
+RUNNER_COUNT RUNNER_LABELS RUNNER_MODE RUNNER_POOLS ELASTIC_POOLS QUEUED_POOLS DOCKER_CACHE_MIN_FREE_PERCENT DOCKER_CACHE_BUILDERS DOCKER_JOB_PRUNE PODMAN_POOL_STORAGE \
 RUNNER_CPUS CPU_PINNING CPU_PINNING_WHOLE_CORES RUNNER_MEMORY CACHE_ROOT WORK_TMPFS_SIZE USER_SHARE_MOUNTS IMAGE_SOURCE IMAGE EPHEMERAL \
 RUN_AS_ROOT REGISTRY_SERVER REGISTRY_USERNAME CACHE_MOUNTS SHARE_DOCKER_SOCK DIND \
 SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK RUNNER_DNS ARTIFACT_ENDPOINT MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
@@ -210,6 +211,7 @@ load_cfg() {
   # Omitting an optional policy is an explicit opt-out on daemon reload.
   DOCKER_CACHE_BUILDERS=""
   DOCKER_JOB_PRUNE="false"
+  PODMAN_POOL_STORAGE="false"
   RUNNER_DNS=""
   GROWTH_BACKPRESSURE="false"
   CPU_PINNING_WHOLE_CORES="false"
@@ -238,9 +240,36 @@ load_cfg() {
 load_cfg
 [ "$CI_PROVIDER" = "gitlab" ] || CI_PROVIDER="github"
 
+# Opt-in only: custom images and other lifetime variants keep their old storage.
+crf_podman_pool_settings_valid() {
+  case "${PODMAN_POOL_STORAGE:-false}" in
+    false) return 0 ;; true) ;; *) err "PODMAN_POOL_STORAGE must be true or false"; return 1 ;;
+  esac
+  [ "$CI_PROVIDER" = github ] && [ "$DIND" = true ] && [ "$EPHEMERAL" = true ] && [ -z "$WORK_TMPFS_SIZE" ] \
+    || { err "Pooled Podman requires disk-backed ephemeral GitHub DinD"; return 1; }
+  [ "$RUNNER_UID" = 1001 ] && [ "$RUNNER_GID" = 121 ] \
+    || { err "Pooled Podman requires the qualified runner UID/GID contract"; return 1; }
+  local spec dest target
+  for spec in $CACHE_MOUNTS $USER_SHARE_MOUNTS; do
+    dest="${spec#*:}"; dest="${dest%%:*}"
+    case "$dest" in
+      /*) ;; *) err "A pooled Podman mount destination is not absolute"; return 1 ;;
+    esac
+    case "$dest" in
+      *//*|*/../*|*/..|*/./*|*/.) err "A pooled Podman mount destination is not canonical"; return 1 ;;
+    esac
+    for target in /var/lib/containers/storage /home/runner/.local/share/containers/storage; do
+      if crf_mount_destinations_overlap "$dest" "$target"; then
+        err "A configured mount overlaps pooled Podman storage"; return 1
+      fi
+    done
+  done
+}
+
 # A removed allocator's saved state is not proof of unused host capacity.
 # Migration belongs to deployment; runner starts never delete or reinterpret it.
 runner_starts_allowed() {
+  crf_podman_pool_settings_valid || return 1
   if pnpm_recovery_pending; then
     err "Shared pnpm recovery is pending; new runner starts are fenced."
     return 1
@@ -3323,7 +3352,7 @@ quiesce_gitlab_managers_for_stop() {
 }
 
 cleanup_orphan_github_validations() {
-  local names c snapshot id provider role index gen failed=0
+  local names c snapshot id provider role index gen work_bind failed=0
   names="$(docker ps -a \
     --filter 'label=net.unraid.ci-runner-farm.managed=true' \
     --filter 'label=net.unraid.ci-runner-farm.provider=github' \
@@ -3336,10 +3365,15 @@ cleanup_orphan_github_validations() {
     snapshot="$(owned_container_snapshot "$c" 99 github-validate)" \
       || { failed=1; continue; }
     IFS='|' read -r id provider role index gen <<< "$snapshot"
+    work_bind="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/_work"}}{{println .Source}}{{end}}{{end}}' "$id")" || work_bind=""
     log "removing orphaned GitHub validation container $c"
-    if ! docker rm -f "$id" >/dev/null 2>&1 \
-       && docker inspect "$id" >/dev/null 2>&1; then
+    if docker rm -f "$id" >/dev/null 2>&1; then
+      github_cleanup_validation_storage "$c" "$work_bind" || failed=1
+    elif docker inspect "$id" >/dev/null 2>&1; then
       err "could not remove owned GitHub validation container $c"
+      failed=1
+    elif [ -e "$CACHE_ROOT/work/$c/podman-root" ] || [ -e "$CACHE_ROOT/work/$c/podman-runner" ]; then
+      err "validation removal is unknown; preserving pooled storage"
       failed=1
     fi
   done
@@ -4683,6 +4717,13 @@ cmd_logs() {
 }
 
 cmd_validate() {
+  local PODMAN_POOL_STORAGE="${PODMAN_POOL_STORAGE:-false}"
+  case "${1:-}" in
+    '') ;;
+    --pooled-podman) PODMAN_POOL_STORAGE=true ;;
+    *) err "validate accepts only --pooled-podman"; return 1 ;;
+  esac
+  [ "$#" -le 1 ] || { err "validate received extra arguments"; return 1; }
   validate_runner_mode || { err "$POOL_CONFIG_ERROR"; return 1; }
   local rec pool failed=0
   if pool_mode_enabled; then
@@ -5117,7 +5158,7 @@ case "${1:-status}" in
   reconcile-drain)  ( flock -w 5 7 || { echo "reconcile: a drain is already running (it re-reads the cfg each pass and will pick up this change) — skipping duplicate" >>"$RUNDIR/autoscale.log"; exit 0; }; cmd_reconcile_drain ) 7>"$RUNDIR/reconcile.lock" ;;
   logs-tail)    cmd_logs_tail "${2:?usage: logs-tail <name> [n]}" "${3:-150}" ;;
   logs)         cmd_logs "${2:-1}" "${3:-100}" ;;
-  validate)         with_fleet_lock wait cmd_validate ;;
+  validate)         with_fleet_lock wait cmd_validate "${@:2}" ;;
   build-image)      cmd_build_image ;;
   build-async)      cmd_build_async ;;
   build-status)     cmd_build_status ;;

@@ -87,6 +87,7 @@ github_cpu_pinning_applies() {
 }
 
 github_confgen() {
+  crf_podman_pool_settings_valid || return 1
   # Include the DinD runtime contract in the fingerprint. Changing Docker's
   # cgroup namespace for existing slots must drain and recreate them; otherwise
   # an old container can remain online with the broken hierarchy.
@@ -104,6 +105,7 @@ github_confgen() {
       runtime_salt="${runtime_salt}-cache-pressure-threshold-v1-${DOCKER_CACHE_MIN_FREE_PERCENT}"
     fi
   fi
+  [ "${PODMAN_POOL_STORAGE:-false}" != true ] || runtime_salt="${runtime_salt}-pooled-podman-v1"
   # The explicit store contract must replace existing slots through the normal
   # drain lifecycle. Farms without a pnpm-store mount keep their fingerprint.
   for cache_spec in $CACHE_MOUNTS; do
@@ -878,16 +880,43 @@ github_registry_credentials() {
   fi
 }
 
+# Reuse the native Docker reference inventory before retiring pooled stores.
+# This is an observation fence, not authority to clean an externally owned store.
+github_pooled_slot_unreferenced() {
+  local directory="$1" references kind path
+  references="$(crf_docker_storage_references)" \
+    || { err "Cannot verify pooled slot storage references; preserving it"; return 1; }
+  while IFS='|' read -r kind path; do
+    [ -n "$path" ] || continue
+    case "$kind" in
+      consumer)
+        if crf_mount_destinations_overlap "$directory" "$path"; then
+          err "A container still references pooled slot storage; preserving it"; return 1
+        fi ;;
+      mount)
+        case "$path" in "$directory"|"$directory"/*)
+          err "Pooled slot storage still contains a mount; preserving it"; return 1 ;;
+        esac ;;
+      *) return 1 ;;
+    esac
+  done <<< "$references"
+}
+
 # Delete workspaces that earlier resets moved aside. Removal never follows
 # symlinks or crosses into another filesystem.
 github_work_trash_sweep() {
-  local root trash pass
+  local root trash pass entry
   root="$(crf_safe_cache_root)" || return 1
   trash="$root/work/.trash"
   [ -d "$trash" ] && [ ! -L "$trash" ] || return 0
   for pass in 1 2 3; do
     [ -n "$(find "$trash" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ] || return 0
-    find "$trash" -mindepth 1 -maxdepth 1 -exec rm -rf --one-file-system -- {} + 2>/dev/null || true
+    while IFS= read -r -d '' entry; do
+      if [ -e "$entry/podman-root" ] || [ -e "$entry/podman-runner" ]; then
+        github_pooled_slot_unreferenced "$entry" || continue
+      fi
+      rm -rf --one-file-system -- "$entry" 2>/dev/null || true
+    done < <(find "$trash" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
   done
 }
 
@@ -933,6 +962,10 @@ github_fresh_work_dir() {
     *) err "refusing a workspace reset: could not confirm that no container named $name exists"; return 1 ;;
   esac
   dir="$parent/$name"
+  if [ "${PODMAN_POOL_STORAGE:-false}" = true ] || [ -e "$dir/podman-root" ] || [ -e "$dir/podman-runner" ]; then
+    [ ! -L "$dir" ] || { err "Refusing a symlinked pooled slot"; return 1; }
+    if [ -e "$dir" ]; then github_pooled_slot_unreferenced "$dir" || return 1; fi
+  fi
   trash="$parent/.trash"
   if [ -e "$dir" ] || [ -L "$dir" ]; then
     # A slot directory that is its own mount (a dataset, subvolume or tmpfs) is
@@ -964,6 +997,7 @@ github_fresh_work_dir() {
 github_build_args() {
   local idx="$1"
   local name="${2:-${NAME_PREFIX}-${idx}}" role="${CRF_CONTAINER_ROLE:-runner}" host_service_ip image kvm_gid=''
+  crf_podman_pool_settings_valid || return 1
   crf_user_share_mount_config_problem || return 1
   github_validate_runner_dns || return 1
   local pnpm_store_dest='' blob_cache_dest='' cache_spec cache_dest
@@ -1131,6 +1165,22 @@ github_build_args() {
   elif [ "$EPHEMERAL" = true ]; then
     local workdir
     workdir="$(github_fresh_work_dir "$name")" || return 1
+    if [ "${PODMAN_POOL_STORAGE:-false}" = true ]; then
+      # The fresh slot, not /_work, owns both stores. Workflow checkout cleanup
+      # cannot erase engine state while a nested container is still using it.
+      local directory
+      chmod 0700 -- "$workdir" || return 1
+      mkdir -m 0755 -- "$workdir/workspace" || return 1
+      mkdir -m 0700 -- "$workdir/podman-root" "$workdir/podman-runner" || return 1
+      for directory in workspace podman-root podman-runner; do
+        [ ! -L "$workdir/$directory" ] && [ "$(realpath -e -- "$workdir/$directory")" = "$workdir/$directory" ] || return 1
+      done
+      chown 0:0 "$workdir/podman-root" || return 1
+      chown "$RUNNER_UID:$RUNNER_GID" "$workdir/podman-runner" "$workdir/workspace" || return 1
+      ARGS+=( -v "$workdir/podman-root:/var/lib/containers/storage"
+        -v "$workdir/podman-runner:/home/runner/.local/share/containers/storage" )
+      workdir="$workdir/workspace"
+    fi
     ARGS+=( -v "$workdir:/_work" )
   else
     mkdir -p "$CACHE_ROOT/work/$name"
@@ -1279,12 +1329,57 @@ github_usage_context() {
   fi
 }
 
+github_cleanup_validation_storage() {
+  local name="$1" workspace_bind="${2:-}" root directory suffix
+  suffix="${name#"$NAME_PREFIX"-validate-}"
+  [ "$suffix" != "$name" ] && printf '%s' "$suffix" | grep -qE '^[0-9a-f]{12}$' || return 1
+  case "$name" in ''|.*|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  directory="$CACHE_ROOT/work/$name"
+  # Old validators did not allocate pooled stores. Keep their cleanup unchanged.
+  [ -e "$directory/podman-root" ] || [ -L "$directory/podman-root" ] \
+    || [ -e "$directory/podman-runner" ] || [ -L "$directory/podman-runner" ] || return 0
+  root="$(crf_safe_cache_root)" || return 1
+  directory="$root/work/$name"
+  [ "$workspace_bind" = "$directory/workspace" ] || { err "Validation workspace bind is unknown; preserving pooled storage"; return 1; }
+  [ ! -L "$directory" ] && [ "$(realpath -e -- "$directory")" = "$directory" ] || return 1
+  github_pooled_slot_unreferenced "$directory" || return 1
+  rm -rf --one-file-system -- "$directory"
+}
+
+# The existing owned validation container proves real engine placement. No
+# registration, network pull, or host-wide engine cleanup is involved.
+github_validate_pooled_podman() {
+  local id="$1" user home expected
+  docker exec "$id" sh -ec '
+    [ "$(id -u runner)" = 1001 ] && [ "$(id -g runner)" = 121 ]
+    [ "$(getent passwd runner | cut -d: -f6)" = /home/runner ]
+  ' || return 1
+  for user in 0:0 1001:121; do
+    home=/root; expected=/var/lib/containers/storage
+    [ "$user" = 0:0 ] || { home=/home/runner; expected=/home/runner/.local/share/containers/storage; }
+    docker exec --user "$user" --env "HOME=$home" "$id" sh -ec '
+      context="$(mktemp -d)"; runtime="$(mktemp -d)"
+      cleanup() { rm -rf -- "$context" "$runtime"; }
+      trap cleanup EXIT
+      export XDG_RUNTIME_DIR="$runtime"
+      actual="$(timeout 20 podman info --format "{{.Store.GraphRoot}}")"
+      [ "$actual" = "$1" ]
+      printf "pooled-podman graphroot=%s uid=%s\n" "$actual" "$(id -u)"
+      df -Pk -- "$actual"
+      printf "FROM scratch\nCOPY payload /payload\n" > "$context/Containerfile"
+      printf "native-storage-probe\n" > "$context/payload"
+      timeout 30 podman build --isolation=chroot --network=none --tag localhost/farm-storage-probe "$context"
+      timeout 10 podman image inspect localhost/farm-storage-probe --format "{{.Id}}"
+    ' sh "$expected" || return 1
+  done
+}
+
 github_validate() {
   runner_starts_allowed || return 1
   check_cache_root || return 1
   ensure_dirs || return 1
   registry_login || return 1
-  local suffix name snapshot validation_id="" root share_access_ok=1 share_user='0:0' share_spec share_rest share_dest share_mode
+  local suffix name snapshot validation_id="" validation_work_bind="" root share_access_ok=1 share_user='0:0' share_spec share_rest share_dest share_mode
   local -a share_specs=()
   suffix="$(od -An -N6 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
   printf '%s' "$suffix" | grep -qE '^[0-9a-f]{12}$' \
@@ -1294,9 +1389,11 @@ github_validate() {
   # role without changing the ordinary runner contract.
   local NO_REGISTER=1 CRF_CONTAINER_ROLE=validate
   github_build_args 99 "$name" || return 1
+  local validation_sleep=30
+  [ "${PODMAN_POOL_STORAGE:-false}" != true ] || validation_sleep=180
   local injected=() a eimg; eimg="$(effective_image)" || return 1
   for a in "${ARGS[@]}"; do
-    [ "$a" = "$eimg" ] && injected+=( --entrypoint /bin/sh "$eimg" -c "sleep 30" ) || injected+=( "$a" )
+    [ "$a" = "$eimg" ] && injected+=( --entrypoint /bin/sh "$eimg" -c "sleep $validation_sleep" ) || injected+=( "$a" )
   done
   log "validate: launching inert container to verify mounts/limits..."
   local errf; errf="$(mktemp "$RUNDIR/crf-validate.XXXXXX" 2>/dev/null)" \
@@ -1313,6 +1410,7 @@ github_validate() {
   snapshot="$(owned_container_snapshot "$name" 99 github-validate)" \
     || { err "validate: created container failed its ownership check; leaving it untouched"; return 1; }
   validation_id="${snapshot%%|*}"
+  validation_work_bind="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/_work"}}{{println .Source}}{{end}}{{end}}' "$validation_id")" || share_access_ok=0
   echo "--- resource limits ---"
   docker inspect -f 'cpus={{.HostConfig.NanoCpus}} mem={{.HostConfig.Memory}} pids={{.HostConfig.PidsLimit}}' "$validation_id"
   echo "--- mounts ---"
@@ -1330,6 +1428,9 @@ github_validate() {
       fi
     done
   fi
+  if [ "${PODMAN_POOL_STORAGE:-false}" = true ]; then
+    if ! github_validate_pooled_podman "$validation_id"; then share_access_ok=0; fi
+  fi
   echo "--- tmpfs ---"
   docker inspect -f '{{json .HostConfig.Tmpfs}}' "$validation_id"
   echo "--- docker.sock reachable inside container ---"
@@ -1338,8 +1439,9 @@ github_validate() {
     || { err "validate: could not remove owned validation container $name"; return 1; }
   root="$(crf_safe_cache_root)" || { err "validate: refusing cleanup under unsafe CACHE_ROOT"; return 1; }
   rm -rf "$root/docker/$name" 2>/dev/null || true
+  github_cleanup_validation_storage "$name" "$validation_work_bind" || return 1
   if [ "$share_access_ok" -ne 1 ]; then
-    err "validate: user-share mount is not accessible with configured mode by runner UID:GID $share_user"
+    err "validate: user-share or pooled Podman runtime verification failed"
     return 1
   fi
   log "validate: OK (container removed). Provisioning mechanics verified on this host."
