@@ -1222,7 +1222,7 @@ github_build_args() {
 
 github_start_one() {
   local idx="$1" name="$2" rc image
-  crf_storage_start_admit || return 1
+  crf_storage_start_admit "$name" || return 1
   image="$(effective_image)" || return 1
   # Prepare cold private images before minting runner credentials.
   if [ "$IMAGE_SOURCE" = remote ] && [ -n "$IMAGE" ] \

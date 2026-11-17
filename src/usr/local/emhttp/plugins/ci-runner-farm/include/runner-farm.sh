@@ -277,7 +277,8 @@ crf_storage_start_settings_valid() {
   case "${STORAGE_START_GUARD:-false}" in
     false) return 0 ;; true) ;; *) err "STORAGE_START_GUARD must be true or false"; return 1 ;;
   esac
-  [ "$CI_PROVIDER" = github ] || { err "Storage start admission supports GitHub only"; return 1; }
+  [ "$CI_PROVIDER" = github ] && [ -z "${WORK_TMPFS_SIZE:-}" ] \
+    || { err "Storage start admission requires disk-backed GitHub workspaces"; return 1; }
   [[ "${STORAGE_START_MIN_BYTES:-0}" =~ ^[1-9][0-9]{0,17}$ ]] \
     && [[ "${STORAGE_START_MIN_INODES:-0}" =~ ^[1-9][0-9]{0,17}$ ]] \
     || { err "Storage start admission requires positive byte/inode floors below 10^18"; return 1; }
@@ -288,24 +289,45 @@ crf_storage_start_settings_valid() {
 crf_storage_start_admit() {
   crf_storage_start_settings_valid || return 1
   [ "${STORAGE_START_GUARD:-false}" = true ] || return 0
-  local workspace docker_root path metric sample value extra header floor
-  local -a rows=()
+  local workspace docker_root path metric sample value extra header floor slot="${1:-}" old duplicate
+  local -a rows=() targets=() seen=()
   workspace="$(crf_safe_cache_root)" && [ -d "$workspace" ] \
     && [ "$(realpath -e -- "$workspace")" = "$workspace" ] \
     || { err "storage-start: workspace backing path is unknown"; return 1; }
-  docker_root="$(LC_ALL=C timeout 5 docker info --format '{{.DockerRootDir}}' 2>/dev/null)" \
+  docker_root="$(LC_ALL=C timeout --kill-after=1 5 docker info --format '{{.DockerRootDir}}' 2>/dev/null)" \
     || { err "storage-start: Docker root is unavailable"; return 1; }
   [[ "$docker_root" = /* && "$docker_root" != / && "$docker_root" != *$'\n'* && "$docker_root" != *$'\r'* ]] \
     && [ -d "$docker_root" ] \
     || { err "storage-start: Docker root is unknown"; return 1; }
-  for path in "$docker_root" "$workspace"; do
+  targets=( "$docker_root" "$workspace/work" )
+  if [ -n "$slot" ]; then
+    case "$slot" in .*|*[!A-Za-z0-9._-]*) err "storage-start: invalid slot name"; return 1 ;; esac
+    targets+=( "$workspace/work/$slot" )
+    if [ "${PODMAN_POOL_STORAGE:-false}" = true ]; then
+      targets+=( "$workspace/work/$slot/workspace" "$workspace/work/$slot/podman-root" "$workspace/work/$slot/podman-runner" )
+    fi
+  fi
+  for path in "${targets[@]}"; do
+    # A new path inherits its nearest existing ancestor, not necessarily CACHE_ROOT:
+    # work, an existing slot, or a graphroot can be a quota-limited child dataset.
+    while [ ! -e "$path" ]; do
+      [ ! -L "$path" ] && [ "$path" != / ] \
+        || { err "storage-start: backing path is unknown"; return 1; }
+      path="${path%/*}"; [ -n "$path" ] || path=/
+    done
+    [ "$(LC_ALL=C timeout --kill-after=1 5 realpath -e -- "$path" 2>/dev/null)" = "$path" ] \
+      || { err "storage-start: backing path is not canonical"; return 1; }
+    duplicate=false
+    for old in "${seen[@]}"; do [ "$old" != "$path" ] || duplicate=true; done
+    [ "$duplicate" != true ] || continue
+    seen+=( "$path" )
     for metric in bytes inodes; do
       if [ "$metric" = bytes ]; then
-        sample="$(LC_ALL=C timeout 5 df --block-size=1 --output=avail -- "$path" 2>/dev/null)" \
+        sample="$(LC_ALL=C timeout --kill-after=1 5 df --block-size=1 --output=avail -- "$path" 2>/dev/null)" \
           || { err "storage-start: free bytes unavailable"; return 1; }
         header=Avail; floor="$STORAGE_START_MIN_BYTES"
       else
-        sample="$(LC_ALL=C timeout 5 df -i --output=iavail -- "$path" 2>/dev/null)" \
+        sample="$(LC_ALL=C timeout --kill-after=1 5 df -i --output=iavail -- "$path" 2>/dev/null)" \
           || { err "storage-start: free inodes unavailable"; return 1; }
         header=IFree; floor="$STORAGE_START_MIN_INODES"
       fi
@@ -345,13 +367,13 @@ runner_starts_allowed() {
 
 start_owned_container() {
   runner_starts_allowed || return 1
-  crf_storage_start_admit || return 1
+  crf_storage_start_admit "$1" || return 1
   docker start "$2"
 }
 
 run_owned_github_container() {
   runner_starts_allowed || return 1
-  crf_storage_start_admit || return 1
+  crf_storage_start_admit "${NAME_PREFIX}-$1" || return 1
   clear_dangling_endpoint "${NAME_PREFIX}-$1" || return 1
   docker run "${ARGS[@]}"
 }
@@ -2928,8 +2950,9 @@ recreate_stopped_runner() {
   [ -n "$snapshot" ] || snapshot="$(managed_runner_snapshot "$c")" || return 1
   IFS='|' read -r id provider role idx gen <<< "$snapshot"
   pool="$(runner_pool "$c")" || return 1
-  remove_runner "$c" false "$id" "$provider" || return 1
   pool_activate "$pool" || { err "runner $c belongs to unknown pool $pool"; return 1; }
+  crf_storage_start_admit "$c" || return 1
+  remove_runner "$c" false "$id" "$provider" || return 1
   start_one "$idx"
 }
 
@@ -4354,7 +4377,7 @@ cmd_recommendations_json() {
 
 cmd_recycle() {
   runner_starts_allowed || return 1
-  crf_storage_start_admit || { echo '{"ok":false,"error":"storage admission withheld; existing runner preserved"}'; return 1; }
+  crf_storage_start_admit "$1" || { echo '{"ok":false,"error":"storage admission withheld; existing runner preserved"}'; return 1; }
   # Replace one slot without purging its Docker/cache roots. The old provider
   # owns removal ordering; the selected provider owns replacement startup.
   local name="$1" idx old_provider old_gen cur_gen image pool
@@ -4452,7 +4475,7 @@ cmd_recycle() {
   fi
 
   # Preparation may be slow; recheck before retiring the verified old owner.
-  crf_storage_start_admit || { echo '{"ok":false,"error":"storage admission changed; existing runner preserved"}'; return 1; }
+  crf_storage_start_admit "$name" || { echo '{"ok":false,"error":"storage admission changed; existing runner preserved"}'; return 1; }
   if ! remove_runner "$name" false "$target_id" "$old_provider"; then
     echo '{"ok":false,"error":"remove or provider cleanup failed; replacement was not started"}'
     return 1

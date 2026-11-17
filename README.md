@@ -1060,19 +1060,21 @@ they do not exclude unrelated clients from changing references after a snapshot.
 ### GitHub runner storage start policy
 
 `STORAGE_START_GUARD="true"` enables a separate, default-disabled admission
-policy for GitHub runner creation, restart, replacement and runner-image pulls.
+policy for disk-backed GitHub runner creation, restart, replacement and runner-image pulls.
 Set both `STORAGE_START_MIN_BYTES` and `STORAGE_START_MIN_INODES` to explicit
 positive integer floors below 10^18. The default zero values do not select a
-safe production budget. GitLab with this opt-in is rejected before starts;
+safe production budget. GitLab or a RAM workspace with this opt-in is rejected before starts;
 GitLab managers, sidecars and executors are not partly migrated to this policy.
 
 The existing serialized owner reads actual DockerRootDir and the canonical
-workspace filesystem before these operations. Both free bytes and free inodes
+workspace backing filesystems before these operations, including existing work,
+slot and Podman-store child datasets. New paths use their nearest existing
+ancestor rather than assuming that the cache root owns their quota. Both free bytes and free inodes
 must meet the configured floors. Read errors, malformed or unavailable metrics,
-and observation timeouts withhold admission. Each individual observation is
-bounded to five seconds; the snapshot is not atomic. A cached immutable image
-lookup remains read-only. Replacement rechecks after preparation, before retiring
-the existing owner, and creation checks again before Docker runs the replacement.
+and observation timeouts withhold admission. Docker/df observations use a five-second deadline and one-second kill grace;
+local path checks and the non-atomic snapshot are not a hard real-time guarantee. A cached immutable image
+lookup remains read-only. Explicit recycle rechecks after preparation, and stopped-owner recovery checks
+before retiring its old owner. Creation checks again before Docker runs the replacement.
 
 This policy applies to fixed fleets and minimum refills too. The farm can
 therefore remain below its configured minimum while storage is low. It neither
