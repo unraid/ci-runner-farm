@@ -134,8 +134,8 @@ $script
 EOF
   }
   github_validate_pooled_podman immutable-validation-id || fail 'native validator arguments failed'
-  [ "$(wc -l < "$calls")" -gt 3 ] || fail 'both native users were not probed'
-  grep -q '1001:121' "$calls" || fail 'runner identity was not probed'
+  grep -Fq 'exec --user 0:0 --env HOME=/root immutable-validation-id sh -ec' "$calls" || fail 'root probe identity changed'
+  grep -Fq 'exec --user 1001:121 --env HOME=/home/runner immutable-validation-id sh -ec' "$calls" || fail 'runner probe identity changed'
   grep -q 'podman build --isolation=chroot --network=none' "$calls" || fail 'native image build was omitted'
 )
 # Execute the actual remote programs through controlled command boundaries.
