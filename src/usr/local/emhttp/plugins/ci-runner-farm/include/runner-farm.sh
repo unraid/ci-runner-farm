@@ -256,7 +256,7 @@ crf_podman_pool_settings_valid() {
       /*) ;; *) err "A pooled Podman mount destination is not absolute"; return 1 ;;
     esac
     case "$dest" in
-      *//*|*/../*|*/..|*/./*|*/.) err "A pooled Podman mount destination is not canonical"; return 1 ;;
+      /|*/|*//*|*/../*|*/..|*/./*|*/.) err "A pooled Podman mount destination is not canonical"; return 1 ;;
     esac
     for target in /var/lib/containers/storage /home/runner/.local/share/containers/storage; do
       if crf_mount_destinations_overlap "$dest" "$target"; then

@@ -1351,7 +1351,8 @@ github_cleanup_validation_storage() {
 github_validate_pooled_podman() {
   local id="$1" user home expected
   docker exec "$id" sh -ec '
-    [ "$(id -u runner)" = 1001 ] && [ "$(id -g runner)" = 121 ]
+    [ "$(id -u runner)" = 1001 ]
+    [ "$(id -g runner)" = 121 ]
     [ "$(getent passwd runner | cut -d: -f6)" = /home/runner ]
   ' || return 1
   for user in 0:0 1001:121; do

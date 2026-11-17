@@ -19,6 +19,8 @@ CPU_PINNING=false; RUNNER_DNS=''; PODMAN_POOL_STORAGE=true
 host() { printf 'mockhost\n'; }
 runner_host_service_ipv4() { printf '192.0.2.10\n'; }
 crf_safe_cache_root() { printf '%s' "$CACHE_ROOT"; }
+crf_docker_storage_references() { return 0; }
+github_work_trash_sweep_async() { github_work_trash_sweep; }
 # The portable test records intended ownership; the native runtime gate verifies it.
 chown() { printf '%s\n' "$*" >> "$tmp/chown"; }
 docker() {
@@ -76,6 +78,14 @@ for mount in 'other:/var/lib/containers' 'other:/home/runner/.local/share/contai
     [ ! -e "$CACHE_ROOT/work/ci-runner-3" ] || fail 'overlap retired a workspace'
   )
 done
+# Noncanonical destinations must reject before touching an existing slot.
+for destination in /var/lib/containers/storage/ /; do
+  (
+    CACHE_MOUNTS="other:$destination"
+    if github_build_args 1 ci-runner-1 > "$tmp/reject" 2>&1; then fail 'noncanonical destination retired an existing slot'; fi
+    [ -f "$rootful/marker" ] || fail 'noncanonical rejection lost the old store'
+  )
+done
 # Cleanup needs both the native validation name and its captured workspace bind.
 validation="$NAME_PREFIX-validate-012345abcdef"
 validation_root="$CACHE_ROOT/work/$validation"
@@ -128,4 +138,53 @@ EOF
   grep -q '1001:121' "$calls" || fail 'runner identity was not probed'
   grep -q 'podman build --isolation=chroot --network=none' "$calls" || fail 'native image build was omitted'
 )
-printf 'pooled Podman adapter contracts passed.\n' 
+# Execute the actual remote programs through controlled command boundaries.
+# This catches shell exit semantics that syntax and argument checks cannot prove.
+(
+  mkdir "$tmp/probe-bin"
+  cat > "$tmp/probe-bin/id" <<'SH'
+#!/bin/sh
+case "$1" in -u) echo "${PROBE_UID:-1001}" ;; -g) echo "${PROBE_GID:-121}" ;; *) exit 1 ;; esac
+SH
+  cat > "$tmp/probe-bin/getent" <<'SH'
+#!/bin/sh
+printf 'runner:x:1001:121::%s:/bin/sh\n' "${PROBE_HOME:-/home/runner}"
+SH
+  cat > "$tmp/probe-bin/podman" <<'SH'
+#!/bin/sh
+case "$1 $2" in
+  'info --format') printf '%s\n' "${PROBE_GRAPHROOT:-$PROBE_EXPECTED}" ;;
+  'build --isolation=chroot') exit "${PROBE_BUILD_EXIT:-0}" ;;
+  'image inspect') echo 'sha256:probe-image' ;;
+  *) exit 95 ;;
+esac
+SH
+  cat > "$tmp/probe-bin/df" <<'SH'
+#!/bin/sh
+exit 0
+SH
+  chmod +x "$tmp/probe-bin/"*
+  docker() {
+    local previous='' argument script='' expected=''
+    for argument in "$@"; do
+      [ "$previous" != -ec ] || script="$argument"
+      previous="$argument"; expected="$argument"
+    done
+    [ -n "$script" ] || return 94
+    PATH="$tmp/probe-bin:$PATH" PROBE_EXPECTED="$expected" /bin/sh -ec "$script" sh "$expected"
+  }
+  github_validate_pooled_podman immutable-validation-id > "$tmp/probe-log" 2>&1 || fail 'valid executed probe rejected'
+  for invalid in uid gid home graphroot build; do
+    (
+      case "$invalid" in
+        uid) export PROBE_UID=1002 ;; gid) export PROBE_GID=122 ;;
+        home) export PROBE_HOME=/wrong ;; graphroot) export PROBE_GRAPHROOT=/wrong ;;
+        build) export PROBE_BUILD_EXIT=23 ;;
+      esac
+      if github_validate_pooled_podman immutable-validation-id > "$tmp/probe-log" 2>&1; then
+        fail "executed validator accepted wrong $invalid"
+      fi
+    )
+  done
+)
+printf 'pooled Podman adapter contracts passed.\n'
