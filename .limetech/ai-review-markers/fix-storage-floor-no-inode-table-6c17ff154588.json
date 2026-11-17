@@ -1,20 +1,8 @@
 {
   "disposition": "PATCH",
-  "expected_structural_delta": "About ten lines in runner-farm.sh, test fixture cases, one README sentence; zero new owners, settings or dependencies",
-  "minimum_design": "Read total and free inodes in the existing df observation; skip only the inode comparison when both are zero",
-  "outcome": "The storage start fence never reads a filesystem without a fixed inode table as low, and still enforces its byte floor and real inode exhaustion",
-  "reuse_decisions": [
-    {
-      "decision": "extend",
-      "name": "crf_storage_start_admit observation loop",
-      "rationale": "Same df call with one extra column; parsing and fail-closed checks unchanged"
-    },
-    {
-      "decision": "extend",
-      "name": "storage-start-pressure test df fixture",
-      "rationale": "Add the total column and zero-table and exhausted-table cases"
-    }
-  ],
+  "forecast_commit": "3f22538c893e82fcbfc1f43eff9c28ebce001a26",
+  "reviewed_sha": "0314133e31d9b146bf16c17f3f2807c8d67926dc",
   "schema": "limetech.ai-review-marker.v2",
-  "stage": "forecast"
+  "stage": "final",
+  "unresolved_proportionality_findings": []
 }
