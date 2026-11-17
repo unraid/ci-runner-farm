@@ -132,6 +132,51 @@ echo 'job Docker cache: exact job scope, preserved references/custom volumes, lo
  CACHE_MOUNTS='shadow:/opt' 
  if github_build_args 1 test-runner >/dev/null 2>&1; then exit 1; fi
 )
+# A store budget installs the same hook on ephemeral DinD slots, with the
+# budget, a runner-owned record folder and no persistent-runner pruning.
+(
+ export CRF_CFGDIR="$tmp/config2" CRF_RUNDIR="$tmp/run2" CRF_SOURCE_ONLY=1
+ mkdir -p "$CRF_CFGDIR" "$CRF_RUNDIR"
+ # shellcheck source=/dev/null
+ source src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-farm.sh
+ CACHE_ROOT="$tmp/cache2"; CACHE_MOUNTS=''; NO_REGISTER=1; RUN_AS_ROOT=true
+ docker() { printf '%s\n' 'ACTIONS_RUNNER_HOOK_JOB_COMPLETED='; }
+ GH_SCOPE=org; GH_OWNER=example; NETWORK_ISOLATION=off
+ DIND=true; EPHEMERAL=true; SHARE_DOCKER_SOCK=false; DOCKER_JOB_PRUNE=true
+ DOCKER_STORE_BUDGET_GIB=0
+ base_generation="$(github_confgen)"
+ github_build_args 1 test-runner
+ if grep -q 'ACTIONS_RUNNER_HOOK_JOB_COMPLETED\|CRF_DOCKER_STORE_BUDGET_BYTES' <<< "$(printf '%s\n' "${ARGS[@]}")"; then exit 1; fi
+ DOCKER_STORE_BUDGET_GIB=30
+ github_build_args 1 test-runner
+ args="$(printf '%s\n' "${ARGS[@]}")"
+ grep -qx 'ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/opt/ci-runner-farm/job-completed.sh' <<< "$args"
+ grep -qx "CRF_DOCKER_STORE_BUDGET_BYTES=$((30 * 1024 * 1024 * 1024))" <<< "$args"
+ grep -qx 'CRF_JOB_PRUNE=0' <<< "$args"
+ [ -d "$CACHE_ROOT/dind-logs/test-runner/store-budget" ]
+ [ "$(github_confgen)" != "$base_generation" ]
+ budget_generation="$(github_confgen)"
+ DOCKER_STORE_BUDGET_GIB=40
+ [ "$(github_confgen)" != "$budget_generation" ]
+ for bad in 3 -1 1.5 0007 abc 1000000; do
+  DOCKER_STORE_BUDGET_GIB="$bad"
+  if github_build_args 1 test-runner >/dev/null 2>&1; then echo "invalid budget accepted: $bad" >&2; exit 1; fi
+ done
+ # A symlinked record folder is never followed.
+ DOCKER_STORE_BUDGET_GIB=30
+ rm -rf "$CACHE_ROOT/dind-logs/test-runner/store-budget"; ln -s / "$CACHE_ROOT/dind-logs/test-runner/store-budget"
+ if github_build_args 1 test-runner >/dev/null 2>&1; then exit 1; fi
+ rm -f "$CACHE_ROOT/dind-logs/test-runner/store-budget"
+ # status-json reports exact-shape records only, with a fleet summary.
+ good='{"schema":1,"at":1794951796,"budget_bytes":32212254720,"before_bytes":48000001500,"after_bytes":24000001500,"evicted_images":2,"evicted_images_total":7,"skipped_in_use":0,"build_cache_pruned":true,"over_budget":false,"complete":true}'
+ over="${good/\"over_budget\":false/\"over_budget\":true}"
+ for slot in a b c d; do mkdir -p "$CACHE_ROOT/dind-logs/ci-runner-$slot/store-budget"; done
+ printf '%s\n' "$good" > "$CACHE_ROOT/dind-logs/ci-runner-a/store-budget/state.json"
+ printf '%s\n' "$over" > "$CACHE_ROOT/dind-logs/ci-runner-b/store-budget/state.json"
+ printf '%s\n' '{"schema":1,"x":"</script>"}' > "$CACHE_ROOT/dind-logs/ci-runner-c/store-budget/state.json"
+ summary="$(crf_store_budget_status_json $'ci-runner-a\nci-runner-b\nci-runner-c\nci-runner-d')"
+ python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["budget_gib"]==30 and d["slots"]==4 and d["reporting"]==2 and d["over_budget"]==1 and d["unreadable"]==1 and d["evicted_images_last"]==4 and d["evicted_images_total"]==14, d; assert set(d["runners"])=={"ci-runner-a","ci-runner-b"}' "$summary"
+)
 echo 'job Docker cache: persistent DinD only, read-only hook bind and shadow rejection PASS'
 
 # The prior image hook runs first and retains its failure semantics.
