@@ -5005,20 +5005,25 @@ crf_docker_storage_pressure() {
 # Every slot name the saved layout can create, one per line. A pool's slots
 # run from 1 to the larger of its fixed count and its maximum.
 crf_configured_slot_names() {
-  local rec pool fixed max n i
+  local rec records pool fixed max n i
   if pool_mode_enabled; then
     pool_config_validate "$RUNNER_MODE" "$RUNNER_POOLS" "$GH_SCOPE" "$CI_PROVIDER" >/dev/null 2>&1 || return 1
+    # A loop over a failed command would exit 0 with no names; read it first.
+    records="$(pool_records)" && [ -n "$records" ] || return 1
     while IFS= read -r rec; do
       [ -n "$rec" ] || continue
       pool="$(cut -d'|' -f2 <<< "$rec")"; fixed="$(cut -d'|' -f5 <<< "$rec")"; max="$(cut -d'|' -f7 <<< "$rec")"
       [[ "$pool" =~ ^[a-z][a-z0-9-]{0,23}$ && "$fixed" =~ ^[0-9]{1,3}$ && "$max" =~ ^[0-9]{1,3}$ ]] || return 1
       n=$((10#$fixed > 10#$max ? 10#$fixed : 10#$max))
       for ((i = 1; i <= n; i++)); do printf 'ci-runner-%s-%s\n' "$pool" "$i"; done
-    done < <(pool_records) || return 1
+    done <<< "$records"
   else
     n="${RUNNER_COUNT:-0}"
-    [ "${AUTOSCALE:-false}" != true ] || [ "${AUTOSCALE_MAX:-0}" -le "$n" ] || n="$AUTOSCALE_MAX"
     [[ "$n" =~ ^[0-9]{1,3}$ ]] || return 1
+    if [ "${AUTOSCALE:-false}" = true ]; then
+      [[ "${AUTOSCALE_MAX:-0}" =~ ^[0-9]{1,3}$ ]] || return 1
+      [ "$AUTOSCALE_MAX" -le "$n" ] || n="$AUTOSCALE_MAX"
+    fi
     for ((i = 1; i <= n; i++)); do printf 'ci-runner-%s\n' "$i"; done
   fi
 }
@@ -5029,18 +5034,21 @@ crf_configured_slot_names() {
 # (which holds the fleet lock, like every slot creation) moves such folders into
 # the existing trash folders, two slots per pass, every ten minutes at most.
 # Any doubt (a container with the name, an unknown container state, a reference
-# or mount, a recent change, a symlink or separate mount) keeps the folder.
+# or mount, a recently changed top-level folder, a symlink or separate mount)
+# keeps the folder. The age check is a cheap guard, not proof of inactivity:
+# the container-name and reference checks are what protect a store in use.
 crf_retired_slot_cleanup() {
   [ "${RETIRED_STORE_CLEANUP:-false}" = true ] && [ "$CI_PROVIDER" = github ] || return 0
   local stamp="$RUNDIR/retired-cleanup.last" now root configured refs name sub dir kind ref inspect_err
-  local moved=0 keep dest names
+  local moved=0 keep dest names did moves="" source target
   now="$(date +%s)"
   if [ -f "$stamp" ]; then
     [ $((now - $(stat -c %Y -- "$stamp" 2>/dev/null || echo 0))) -ge 600 ] || return 0
   fi
   : > "$stamp" 2>/dev/null || return 0
   root="$(crf_safe_cache_root)" || return 0
-  configured="$(crf_configured_slot_names)" || { err "retired slot cleanup: unreadable pool layout; keeping all slot storage"; return 0; }
+  configured="$(crf_configured_slot_names)" && [ -n "$configured" ] \
+    || { err "retired slot cleanup: unreadable pool layout; keeping all slot storage"; return 0; }
   refs="$(crf_docker_storage_references)" || { err "retired slot cleanup: unknown storage references; keeping all slot storage"; return 0; }
   names="$(for sub in docker work dind-logs; do
       [ -d "$root/$sub" ] && [ ! -L "$root/$sub" ] || continue
@@ -5070,6 +5078,7 @@ crf_retired_slot_cleanup() {
       [ "$keep" = false ] || break
     done
     [ "$keep" = false ] || continue
+    did=false
     for sub in docker work dind-logs; do
       dir="$root/$sub/$name"
       [ -d "$dir" ] || continue
@@ -5082,16 +5091,48 @@ crf_retired_slot_cleanup() {
         && [ "$(stat -c %d -- "$dest")" = "$(stat -c %d -- "$dir")" ] \
         || { err "retired slot cleanup: no safe trash for $sub/$name; keeping it"; continue; }
       mv -T -- "$dir" "$dest/$name.$now.$$" || { err "retired slot cleanup: could not move $sub/$name aside"; continue; }
-      # Slot logs are small; delete them now rather than queue for the reaper.
-      [ "$sub" != dind-logs ] || rm -rf --one-file-system -- "$dest/$name.$now.$$" || true
+      did=true
+      moves+="$dir|$dest/$name.$now.$$"$'\n'
     done
+    [ "$did" = true ] || continue
     log "retired slot storage moved aside: $name (its pool was removed or it is above the pool maximum)"
     moved=$((moved + 1))
     [ "$moved" -lt 2 ] || break
   done <<< "$names"
   [ "$moved" -eq 0 ] && return 0
+  # A container started outside the fleet lock after the first inventory could
+  # have bound a folder before it moved. Look again before anything is deleted;
+  # a folder in use goes back to its place. Without an inventory, keep it all.
+  if ! refs="$(crf_docker_storage_references)"; then
+    err "retired slot cleanup: storage references unknown after the move; restoring moved folders"
+    refs="unknown|/"
+  fi
+  while IFS='|' read -r source target; do
+    [ -n "$source" ] || continue
+    keep=false
+    while IFS='|' read -r kind ref; do
+      [ -n "$ref" ] || continue
+      case "$kind" in
+        consumer) { crf_mount_destinations_overlap "$source" "$ref" || crf_mount_destinations_overlap "$target" "$ref"; } && { keep=true; break; } ;;
+        mount) case "$ref" in "$source"|"$source"/*|"$target"|"$target"/*) keep=true; break ;; esac ;;
+        *) keep=true; break ;;
+      esac
+    done <<< "$refs"
+    [ "$keep" = true ] || continue
+    if [ ! -e "$source" ] && mv -T -- "$target" "$source"; then
+      err "retired slot cleanup: ${source#"$root"/} came into use; restored it"
+    else
+      err "retired slot cleanup: ${source#"$root"/} came into use and could not be restored; kept at $target"
+      # Keep it out of every reaper's reach.
+      mv -T -- "$target" "$root/.retired-in-use.${target##*/}" 2>/dev/null || true
+    fi
+  done <<< "$moves"
+  # Slot logs are small; delete them now. Larger trees go to the background
+  # reapers, never under the fleet lock.
+  find "$root/dind-logs/.trash" -mindepth 1 -maxdepth 1 -type d -name 'ci-runner-*' \
+    -exec rm -rf --one-file-system -- {} + 2>/dev/null || true
   [ ! -d "$root/docker-evicted" ] || layer_integrity_reap_evicted "$root/docker-evicted"
-  github_work_trash_sweep || true
+  github_work_trash_sweep_async || true
 }
 
 crf_storage_pressure_cleanup() {

@@ -1032,9 +1032,12 @@ the fleet lock like every slot creation, then moves the `docker/`, `work/` and
 `dind-logs/` folders of such a slot into the existing trash folders, which are
 deleted in the background at idle priority. It acts only when Docker reports
 that no container has the slot's name, the storage reference inventory finds
-no container or mount using the folders, and the folders have not changed for
-an hour. It never follows a symlink or enters a separate mount. It handles two
-slots per pass and runs at most every ten minutes. GitHub farms only.
+no container or mount using the folders, and the top-level folders have not
+changed for an hour. After the move it checks the references again and puts
+back any folder that came into use. Deletion runs in the background, never
+under the fleet lock. It never follows a symlink or enters a separate mount. It
+handles two slots per pass and runs at most every ten minutes. GitHub farms
+only.
 
 For an explicit cleanup run, use
 `include/runner-farm.sh prune-completed-docker --dry-run`, then
