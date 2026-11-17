@@ -117,6 +117,45 @@ load_cfg; [ "$PODMAN_POOL_STORAGE" = false ] || fail 'omitted opt-in stayed enab
 github_build_args 4 ci-runner-4 || fail 'disabled old behavior rejected'
 [ "$(bind_of /_work)" = "$CACHE_ROOT/work/ci-runner-4" ] || fail 'disabled workspace changed'
 [ -z "$(bind_of /var/lib/containers/storage)" ] || fail 'disabled rootful bind added'
+# Ordinary purge must retire settled pooled stores, but retain referenced trees.
+(
+  root="$tmp/removal"; CACHE_ROOT="$root"; name=ci-runner-9
+  directory="$root/work/$name"
+  provider_stop_remove_container() { [ "${STOP_FAIL:-false}" = false ]; }
+  github_deregister_runner_api() { return 0; }
+  github_runner_registration_name() { printf fixture; }
+  for reference in "consumer|$directory/podman-root" "mount|$directory/podman-runner/merged" unknown ''; do
+    mkdir -p "$directory/podman-root" "$directory/podman-runner" "$root/docker/$name"
+    echo retained > "$directory/podman-root/marker"
+    REFERENCES="$reference"
+    if [ -n "$reference" ]; then
+      if github_remove_runner "$name" true > "$tmp/reject" 2>&1; then fail 'purge accepted referenced pooled stores'; fi
+      [ -f "$directory/podman-root/marker" ] || fail 'purge erased referenced pooled store'
+    else
+      github_remove_runner "$name" true || fail 'settled pooled purge rejected'
+      [ ! -e "$directory" ] || fail 'retired pooled stores leaked after successful removal'
+    fi
+  done
+)
+# Full cache prune must apply the same reference fence to work, including when
+# the opt-in has since been disabled. No unmanaged consumer is safe to erase.
+(
+  root="$tmp/prune"; CACHE_ROOT="$root"; PODMAN_POOL_STORAGE=false
+  directory="$root/work/ci-runner-8"
+  crf_cache_mutation_idle() { return 0; }
+  for reference in "consumer|$directory/podman-root" "mount|$directory/podman-root/merged" unknown ''; do
+    mkdir -p "$directory/podman-root"
+    echo retained > "$directory/podman-root/marker"
+    REFERENCES="$reference"
+    if [ -n "$reference" ]; then
+      if cmd_prune_cache > "$tmp/reject" 2>&1; then fail 'prune accepted a referenced work layout'; fi
+      [ -f "$directory/podman-root/marker" ] || fail 'prune erased referenced pooled storage'
+    else
+      cmd_prune_cache > "$tmp/prune-log" || fail 'unreferenced cache prune rejected'
+      [ ! -e "$directory" ] || fail 'unreferenced work layout leaked'
+    fi
+  done
+)
 # Execute the real validator boundary with mocked Docker, checking its remote
 # program syntax and both users without running a second host engine.
 (
