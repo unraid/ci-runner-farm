@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.8.1](https://github.com/unraid/ci-runner-farm/compare/v3.8.0...v3.8.1) (2026-11-17)
+
+
+### Bug Fixes
+
+* **storage:** re-own runner home parents before the rootless probe ([#250](https://github.com/unraid/ci-runner-farm/issues/250)) ([a8b7378](https://github.com/unraid/ci-runner-farm/commit/a8b73782537c0607f67eef99dce92a971386f557))
+* **storage:** skip the inode floor where no inode table exists ([#251](https://github.com/unraid/ci-runner-farm/issues/251)) ([8c7bb52](https://github.com/unraid/ci-runner-farm/commit/8c7bb52badfabdbc0d497e8211685844e43a0673))
+
 ## [3.8.0](https://github.com/unraid/ci-runner-farm/compare/v3.7.1...v3.8.0) (2026-11-17)
 
 
