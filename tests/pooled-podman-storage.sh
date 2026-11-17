@@ -212,6 +212,10 @@ case "$1 $2" in
     [ "${PROBE_INFO_EXIT:-0}" = 0 ] || exit "$PROBE_INFO_EXIT"
     graphroot="${PROBE_GRAPHROOT:-$PROBE_EXPECTED}"
     if [ "$PROBE_EXPECTED" = /home/runner/.local/share/containers/storage ]; then
+      grep -qx -- '-h 1001:121 /home/runner/.config' "$PROBE_REPAIR_LOG" 2>/dev/null || {
+        echo 'path "/home/runner/.config" exists and it is not owned by the current user' >&2
+        exit 125
+      }
       graphroot="${PROBE_RUNNER_GRAPHROOT:-$graphroot}"
     fi
     printf '%s\n' "$graphroot" ;;
@@ -223,6 +227,21 @@ case "$1 $2" in
   'image inspect') [ "${PROBE_INSPECT_EXIT:-0}" = 0 ] || exit "$PROBE_INSPECT_EXIT"; echo 'sha256:probe-image' ;;
   *) exit 95 ;;
 esac
+SH
+  # Docker creates nested cache mount parents such as ~/.config as root.
+  # Rootless Podman refuses them until the validator re-owns the home parents.
+  cat > "$tmp/probe-bin/chown" <<'SH'
+#!/bin/sh
+[ "${PROBE_CHOWN_EXIT:-0}" = 0 ] || exit "$PROBE_CHOWN_EXIT"
+printf '%s\n' "$*" >> "$PROBE_REPAIR_LOG"
+SH
+  cat > "$tmp/probe-bin/mountpoint" <<'SH'
+#!/bin/sh
+[ "$1" = -q ] && [ "$2" = "${PROBE_MOUNTPOINT:-none}" ]
+SH
+  cat > "$tmp/probe-bin/mkdir" <<'SH'
+#!/bin/sh
+[ "$1" = -p ] || exit 93
 SH
   cat > "$tmp/probe-bin/df" <<'SH'
 #!/bin/sh
@@ -238,13 +257,23 @@ SH
     [ -n "$script" ] || return 94
     PATH="$tmp/probe-bin:$PATH" PROBE_EXPECTED="$expected" /bin/sh -ec "$script" sh "$expected"
   }
+  export PROBE_REPAIR_LOG="$tmp/home-repair"
   github_validate_pooled_podman immutable-validation-id > "$tmp/probe-log" 2>&1 || fail 'valid executed probe rejected'
+  # A cache mounted at a home parent is host data and keeps its owner.
+  (
+    rm -f "$PROBE_REPAIR_LOG"; export PROBE_MOUNTPOINT=/home/runner/.cache
+    github_validate_pooled_podman immutable-validation-id > "$tmp/probe-log" 2>&1 || fail 'probe with a mounted home parent rejected'
+    ! grep -q ' /home/runner/.cache$' "$PROBE_REPAIR_LOG" || fail 'validation re-owned a mounted cache folder'
+    grep -qx -- '-h 1001:121 /home/runner/.local/share' "$PROBE_REPAIR_LOG" || fail 'unmounted home parent was not re-owned'
+  )
   grep -qx 'pooled-podman result user=root step=complete exit=0 store=root_store' "$tmp/probe-log" || fail 'root completion was not recorded'
   grep -qx 'pooled-podman result user=runner step=complete exit=0 store=runner_store' "$tmp/probe-log" || fail 'runner completion was not recorded'
-  for invalid in uid gid home graphroot runner-graphroot info df build inspect; do
+  for invalid in uid gid home home-owner graphroot runner-graphroot info df build inspect; do
     (
+      rm -f "$PROBE_REPAIR_LOG"
       expected_user=image; expected_step=identity; expected_exit=1; expected_store=unobserved
       case "$invalid" in
+        home-owner) export PROBE_CHOWN_EXIT=21; expected_step=home; expected_exit=21 ;;
         uid) export PROBE_UID=1002 ;; gid) export PROBE_GID=122 ;;
         home) export PROBE_HOME=/wrong ;;
         graphroot) export PROBE_GRAPHROOT=/wrong; expected_user=root; expected_step=graphroot_check; expected_store=other ;;
