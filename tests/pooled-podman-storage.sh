@@ -136,7 +136,7 @@ EOF
   github_validate_pooled_podman immutable-validation-id || fail 'native validator arguments failed'
   grep -Fq 'exec --user 0:0 --env HOME=/root immutable-validation-id sh -ec' "$calls" || fail 'root probe identity changed'
   grep -Fq 'exec --user 1001:121 --env HOME=/home/runner immutable-validation-id sh -ec' "$calls" || fail 'runner probe identity changed'
-  grep -q 'podman build --isolation=chroot --network=none' "$calls" || fail 'native image build was omitted'
+  grep -q 'podman build --isolation=chroot --network=host --pull=never' "$calls" || fail 'native image build was omitted'
 )
 # Execute the actual remote programs through controlled command boundaries.
 # This catches shell exit semantics that syntax and argument checks cannot prove.
@@ -154,7 +154,11 @@ SH
 #!/bin/sh
 case "$1 $2" in
   'info --format') printf '%s\n' "${PROBE_GRAPHROOT:-$PROBE_EXPECTED}" ;;
-  'build --isolation=chroot') exit "${PROBE_BUILD_EXIT:-0}" ;;
+  'build --isolation=chroot')
+    [ "$3" = --network=host ] && [ "$4" = --pull=never ] || exit 96
+    for context do :; done
+    [ "$(cat "$context/Containerfile")" = "$(printf 'FROM scratch\nCOPY payload /payload\n')" ] || exit 97
+    exit "${PROBE_BUILD_EXIT:-0}" ;;
   'image inspect') echo 'sha256:probe-image' ;;
   *) exit 95 ;;
 esac

@@ -1369,7 +1369,9 @@ github_validate_pooled_podman() {
       df -Pk -- "$actual"
       printf "FROM scratch\nCOPY payload /payload\n" > "$context/Containerfile"
       printf "native-storage-probe\n" > "$context/payload"
-      timeout 30 podman build --isolation=chroot --network=none --tag localhost/farm-storage-probe "$context"
+      # chroot supports only the outer network namespace. This fixed scratch/COPY
+      # recipe has no RUN; never pull an image or use a remote context.
+      timeout 30 podman build --isolation=chroot --network=host --pull=never --tag localhost/farm-storage-probe "$context"
       timeout 10 podman image inspect localhost/farm-storage-probe --format "{{.Id}}"
     ' sh "$expected" || return 1
   done
