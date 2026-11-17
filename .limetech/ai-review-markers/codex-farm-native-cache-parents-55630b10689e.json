@@ -1,0 +1,15 @@
+{
+  "disposition": "PATCH",
+  "expected_structural_delta": "No new owner, module, dependency, representation, protocol or persisted setting. One validator correction and focused regressions.",
+  "minimum_design": "Repair only the inert validation container home config parent after exact runner identity checks; reject symlinks and retain real graphroot/build/cleanup checks.",
+  "outcome": "Run native pooled Podman qualification with the same non-root cache-parent ownership as normal runner startup.",
+  "reuse_decisions": [
+    {
+      "decision": "extend",
+      "name": "Existing native validator and image home preparation",
+      "rationale": "Normal wait-docker startup repairs Docker-created XDG parents. Inert validation bypasses startup; its existing identity probe can prepare the config parent without changing production provisioning or shared cache contents."
+    }
+  ],
+  "schema": "limetech.ai-review-marker.v2",
+  "stage": "forecast"
+}
