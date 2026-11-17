@@ -57,6 +57,7 @@ github_remote_image_host_pull_required() { return 0; }
 # A tag can move, so a tag is still pulled each time.
 github_prepare_remote_image() {
   image_digest_present "$1" && return 0
+  crf_storage_start_admit || return 1
   registry_login && host_docker_pull "$1"
 }
 github_remote_image_update_allowed() { return 0; }
@@ -1221,6 +1222,7 @@ github_build_args() {
 
 github_start_one() {
   local idx="$1" name="$2" rc image
+  crf_storage_start_admit "$name" || return 1
   image="$(effective_image)" || return 1
   # Prepare cold private images before minting runner credentials.
   if [ "$IMAGE_SOURCE" = remote ] && [ -n "$IMAGE" ] \
@@ -1418,6 +1420,7 @@ github_validate_pooled_podman() {
 
 github_validate() {
   runner_starts_allowed || return 1
+  crf_storage_start_admit || return 1
   check_cache_root || return 1
   ensure_dirs || return 1
   registry_login || return 1

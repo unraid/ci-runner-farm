@@ -129,6 +129,22 @@ run_recycle_tests() (
     fail "recycle sent the mutable slot name to a destructive Docker command"
   fi
 
+  # A pressure decision must preserve the existing immutable owner, including
+  # cached/built-in replacement images and pressure arising during preflight.
+  for pressure_phase in initial late; do
+    (
+      STORAGE_START_GUARD=true; STORAGE_START_MIN_BYTES=1; STORAGE_START_MIN_INODES=1
+      PRESSURE=0; [ "$pressure_phase" != initial ] || PRESSURE=1
+      crf_storage_start_admit() { [ "$PRESSURE" = 0 ]; }
+      recycle_image_preflight() { PRESSURE=1; return 0; }
+      : > "$mutation_log"; REMOVED=0
+      if cmd_recycle ci-runner-1 >"$tmp/recycle-pressure-$pressure_phase.out" 2>&1; then
+        fail "recycle admitted $pressure_phase storage pressure"
+      fi
+      [ ! -s "$mutation_log" ] || fail "recycle retired old owner under $pressure_phase pressure"
+    )
+  done
+
   # The replacement is started only after the old runner is gone, so a failed
   # 'docker run' must surface Docker's own reason instead of the generic message
   # alone. Docker diagnostics are untrusted, so the detail is still redacted, and

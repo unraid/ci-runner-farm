@@ -1056,3 +1056,35 @@ prune preserve work layouts when a container reference, mounted descendant or
 unavailable reference inventory is observed. Non-purging replacements and
 legacy workspaces retain their existing behavior. These are observation fences;
 they do not exclude unrelated clients from changing references after a snapshot.
+
+### GitHub runner storage start policy
+
+`STORAGE_START_GUARD="true"` enables a separate, default-disabled admission
+policy for disk-backed GitHub runner creation, restart, replacement and runner-image pulls.
+Set both `STORAGE_START_MIN_BYTES` and `STORAGE_START_MIN_INODES` to explicit
+positive integer floors below 10^18. The default zero values do not select a
+safe production budget. GitLab or a RAM workspace with this opt-in is rejected before starts;
+GitLab managers, sidecars and executors are not partly migrated to this policy.
+
+The existing serialized owner reads actual DockerRootDir and the canonical
+cache and workspace backing filesystems before these operations, including DinD
+data/logs and existing work,
+slot and Podman-store child datasets. New paths use their nearest existing
+ancestor rather than assuming that the cache root owns their quota. Both free bytes and free inodes
+must meet the configured floors. Read errors, malformed or unavailable metrics,
+and observation timeouts withhold admission. Docker/df observations use a five-second deadline and one-second kill grace;
+local path checks and the non-atomic snapshot are not a hard real-time guarantee. A cached immutable image
+lookup remains read-only. Explicit recycle rechecks after preparation, and stopped-owner recovery checks
+before retiring its old owner. Creation checks again before Docker runs the replacement.
+
+This policy applies to fixed fleets and minimum refills too. The farm can
+therefore remain below its configured minimum while storage is low. It neither
+stops active jobs nor disables read-only status, cleanup or recovery commands.
+Cleanup thresholds and ownership fences remain separate. It does not cover
+unrelated writers, mirror maintenance or manual image builds.
+
+Headroom observations reserve no future writes. Already-online runners can
+accept jobs, and active or unbounded jobs can still exhaust a filesystem.
+Choose production floors and a concurrent-build envelope from measured builds,
+then qualify pressure/recovery and repeated builds on the native filesystem.
+Do not treat one free-space snapshot or an admission pass as capacity proof.
