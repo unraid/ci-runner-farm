@@ -34,13 +34,14 @@ case "$1 $2" in
  'system df')
   [ "${BUDGET_MODE:-}" != df-error ] || exit 1
   total=0; for f in "$BUDGET_STATE"/images/*; do [ -e "$f" ] && total=$((total + $(cat "$f"))); done
-  printf 'Images|%sGB\nContainers|1.5kB\nLocal Volumes|0B\nBuild Cache|%sGB\n' "$total" "$(cat "$BUDGET_STATE/cache")" ;;
+  printf 'Images|%sGB\nContainers|1.5kB\nLocal Volumes|%sGB\nBuild Cache|%sGB\n' "$total" "${VOLUMES_GB:-0}" "$(cat "$BUDGET_STATE/cache")" ;;
  'ps -a') if [ "${3:-}" = -q ] || [ "${2:-}" = -aq ]; then echo "$RUNNING"; fi ;;
  'ps -aq') echo "$RUNNING" ;;
  'inspect --format') echo "$IMG_U" ;;
  'rm -v') echo "rm $3" >> "$BUDGET_LOG" ;;
  'volume prune'|'image prune') echo "$1 $2" >> "$BUDGET_LOG" ;;
  'builder prune')
+  [ "${BUILDX_BUILDER:-}" = default ] || { echo 'builder prune reached the job builder' >&2; exit 1; }
   echo "$*" >> "$BUDGET_LOG"
   case "$*" in *until=168h*) echo $(( $(cat "$BUDGET_STATE/cache") / 2 )) > "$BUDGET_STATE/cache" ;; *-a*) echo 0 > "$BUDGET_STATE/cache" ;; esac ;;
  'image ls') for k in a b c u; do [ -e "$BUDGET_STATE/images/$k" ] && eval echo "\$IMG_$(echo $k | tr a-z A-Z)"; done; true ;;
@@ -78,8 +79,9 @@ sed "s#/var/log/dind/store-budget#$tmp/record#" "$hook" > "$tmp/hook.sh"; chmod 
 mkdir "$tmp/record"
 run() { : > "$BUDGET_LOG"; bash "$tmp/hook.sh" > "$tmp/output" 2>&1; }
 
-# Under budget: only disposable state goes; no image or cache eviction.
-reset_store 5; export CRF_DOCKER_STORE_BUDGET_BYTES=$((60 * 1000 * 1000 * 1000)); run
+# Under budget: only disposable state goes; no image or cache eviction. Warm
+# builder volumes are not removable here, so they never count against it.
+reset_store 5; export CRF_DOCKER_STORE_BUDGET_BYTES=$((60 * 1000 * 1000 * 1000)); VOLUMES_GB=90 run
 ! grep -q 'image rm\|builder prune' "$BUDGET_LOG" || fail 'under-budget store lost warm state'
 grep -q '"over_budget":false' "$tmp/record/state.json" || fail 'under-budget record missing'
 
@@ -93,13 +95,21 @@ grep -q 'builder prune -f --filter until=168h' "$BUDGET_LOG" || fail 'old build 
 ! grep -q "image rm used:1\|image rm $u" "$BUDGET_LOG" || fail 'an image in use was offered for removal'
 [ -e "$BUDGET_STATE/images/u" ] && [ -e "$BUDGET_STATE/images/c" ] || fail 'in-use or newest image was removed'
 record="$(cat "$tmp/record/state.json")"
-[[ "$record" =~ ^\{\"schema\":1,\"at\":[0-9]+,\"budget_bytes\":25000000000,\"before_bytes\":48000001500,\"after_bytes\":24000001500,\"evicted_images\":2,\"evicted_images_total\":2,\"skipped_in_use\":0,\"build_cache_pruned\":true,\"over_budget\":false,\"complete\":true\}$ ]] \
+[[ "$record" =~ ^\{\"schema\":1,\"at\":[0-9]+,\"budget_bytes\":25000000000,\"before_bytes\":48000000000,\"after_bytes\":24000000000,\"other_bytes\":1500,\"evicted_images\":2,\"evicted_images_total\":2,\"skipped_in_use\":0,\"build_cache_pruned\":true,\"over_budget\":false,\"complete\":true\}$ ]] \
   || fail "record shape or values wrong: $record"
 grep -q 'removed 2 unused image' "$tmp/output" || fail 'eviction not reported in the job log'
 
+# An image a container used recently is evicted after images unused for longer,
+# even when its tag time is older: pulls do not update the tag time.
+reset_store 8; printf '%s 2026-11-17T00:00:00\n' "$a" > "$tmp/record/last-used"; run
+[ "$(grep -o 'image rm [^ ]*' "$BUDGET_LOG" | tr '\n' ' ')" = "image rm mid:1 image rm mid:2 image rm new:1 " ] \
+  || fail "recent use did not delay eviction: $(tr '\n' ' ' < "$BUDGET_LOG")"
+grep -q "^$u " "$tmp/record/last-used" || fail 'the image of an existing container was not noted as used'
+rm -f "$tmp/record/last-used"
+
 # Totals accumulate across ephemeral generations of the same slot.
 reset_store 8; run
-[[ "$(cat "$tmp/record/state.json")" == *'"evicted_images_total":4'* ]] || fail 'cumulative eviction count not kept'
+[[ "$(cat "$tmp/record/state.json")" == *'"evicted_images_total":6'* ]] || fail 'cumulative eviction count not kept'
 
 # Still over after every unused image: all build cache goes and the record says so.
 reset_store 8; rm -f "$tmp/record/state.json"; export CRF_DOCKER_STORE_BUDGET_BYTES=$((5 * 1000 * 1000 * 1000)); run || true
@@ -107,10 +117,11 @@ grep -q 'builder prune -a -f' "$BUDGET_LOG" || fail 'final build cache prune ski
 [[ "$(cat "$tmp/record/state.json")" == *'"over_budget":true'* ]] || fail 'over-budget store reported as within budget'
 grep -q 'budget pass incomplete' "$tmp/output" || fail 'over-budget result not visible in the job log'
 
-# An unreadable size never escalates to eviction.
+# An unreadable size never escalates to eviction, and the record says the
+# pass did not complete.
 reset_store 8; rm -f "$tmp/record/state.json"; BUDGET_MODE=df-error run || true
 ! grep -q 'image rm\|builder prune' "$BUDGET_LOG" || fail 'eviction ran without a size reading'
-[ ! -e "$tmp/record/state.json" ] || fail 'record written without a size reading'
+[[ "$(cat "$tmp/record/state.json")" == *'"complete":false'* ]] || fail 'failed pass left no incomplete record'
 
 # Without a budget the hook keeps its previous behavior.
 reset_store 8; unset CRF_DOCKER_STORE_BUDGET_BYTES; run

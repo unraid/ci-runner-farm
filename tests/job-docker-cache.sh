@@ -168,12 +168,15 @@ echo 'job Docker cache: exact job scope, preserved references/custom volumes, lo
  if github_build_args 1 test-runner >/dev/null 2>&1; then exit 1; fi
  rm -f "$CACHE_ROOT/dind-logs/test-runner/store-budget"
  # status-json reports exact-shape records only, with a fleet summary.
- good='{"schema":1,"at":1794951796,"budget_bytes":32212254720,"before_bytes":48000001500,"after_bytes":24000001500,"evicted_images":2,"evicted_images_total":7,"skipped_in_use":0,"build_cache_pruned":true,"over_budget":false,"complete":true}'
+ good='{"schema":1,"at":1794951796,"budget_bytes":32212254720,"before_bytes":48000001500,"after_bytes":24000001500,"other_bytes":0,"evicted_images":2,"evicted_images_total":7,"skipped_in_use":0,"build_cache_pruned":true,"over_budget":false,"complete":true}'
  over="${good/\"over_budget\":false/\"over_budget\":true}"
  for slot in a b c d; do mkdir -p "$CACHE_ROOT/dind-logs/ci-runner-$slot/store-budget"; done
  printf '%s\n' "$good" > "$CACHE_ROOT/dind-logs/ci-runner-a/store-budget/state.json"
  printf '%s\n' "$over" > "$CACHE_ROOT/dind-logs/ci-runner-b/store-budget/state.json"
  printf '%s\n' '{"schema":1,"x":"</script>"}' > "$CACHE_ROOT/dind-logs/ci-runner-c/store-budget/state.json"
+ # A FIFO in place of the record must not block status-json.
+ mkdir -p "$CACHE_ROOT/dind-logs/ci-runner-e/store-budget"; mkfifo "$CACHE_ROOT/dind-logs/ci-runner-e/store-budget/state.json"
+ [ "$(timeout 10 bash -c "$(declare -f crf_store_budget_status_json); CRF_STORE_BUDGET_RECORD='$CRF_STORE_BUDGET_RECORD'; CACHE_ROOT='$CACHE_ROOT'; DOCKER_STORE_BUDGET_GIB=30; crf_store_budget_status_json ci-runner-e" | python3 -c 'import json,sys; print(json.load(sys.stdin)["reporting"])')" = 0 ]
  summary="$(crf_store_budget_status_json $'ci-runner-a\nci-runner-b\nci-runner-c\nci-runner-d')"
  python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["budget_gib"]==30 and d["slots"]==4 and d["reporting"]==2 and d["over_budget"]==1 and d["unreadable"]==1 and d["evicted_images_last"]==4 and d["evicted_images_total"]==14, d; assert set(d["runners"])=={"ci-runner-a","ci-runner-b"}' "$summary"
 )

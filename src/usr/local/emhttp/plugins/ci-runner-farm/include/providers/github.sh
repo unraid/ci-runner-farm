@@ -109,7 +109,8 @@ github_confgen() {
     runtime_salt="${runtime_salt}-job-cache-cleanup-v3"
     [ "${DOCKER_STORE_BUDGET_GIB:-0}" -eq 0 ] || runtime_salt="${runtime_salt}-store-budget-v1-${DOCKER_STORE_BUDGET_GIB}"
     # Opting in must replace existing slots; the default keeps the fingerprint.
-    [ "${DOCKER_JOB_PRUNE:-false}" != true ] || runtime_salt="${runtime_salt}-job-prune-v1"
+    # Job pruning is persistent-only; ephemeral slots always get CRF_JOB_PRUNE=0.
+    [ "$EPHEMERAL" != false ] || [ "${DOCKER_JOB_PRUNE:-false}" != true ] || runtime_salt="${runtime_salt}-job-prune-v1"
     # Existing slots must pick up a changed threshold. The default keeps the
     # prior fingerprint so an upgrade does not recycle every persistent slot.
     if [ -n "${DOCKER_CACHE_BUILDERS:-}" ]; then

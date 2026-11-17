@@ -4645,7 +4645,7 @@ cmd_usage_refresh() {
 # The job-completed hook writes one fixed-shape record per slot into the slot's
 # host-visible log folder. A job can write there too, so only an exact shape is
 # reported; anything else counts as an unreadable record.
-CRF_STORE_BUDGET_RECORD='^\{"schema":1,"at":[0-9]{1,12},"budget_bytes":[0-9]{1,16},"before_bytes":[0-9]{1,16},"after_bytes":[0-9]{1,16},"evicted_images":[0-9]{1,6},"evicted_images_total":[0-9]{1,9},"skipped_in_use":[0-9]{1,6},"build_cache_pruned":(true|false),"over_budget":(true|false),"complete":(true|false)\}$'
+CRF_STORE_BUDGET_RECORD='^\{"schema":1,"at":[0-9]{1,12},"budget_bytes":[0-9]{1,16},"before_bytes":[0-9]{1,16},"after_bytes":[0-9]{1,16},"other_bytes":[0-9]{1,16},"evicted_images":[0-9]{1,6},"evicted_images_total":[0-9]{1,9},"skipped_in_use":[0-9]{1,6},"build_cache_pruned":(true|false),"over_budget":(true|false),"complete":(true|false)\}$'
 crf_store_budget_status_json() {
   local names="$1" c record slots=0 reporting=0 over=0 unreadable=0 evicted=0 total=0 runners="" first=1 value
   local budget="${DOCKER_STORE_BUDGET_GIB:-0}"
@@ -4656,7 +4656,8 @@ crf_store_budget_status_json() {
     slots=$((slots + 1))
     record="$CACHE_ROOT/dind-logs/$c/store-budget/state.json"
     [ -f "$record" ] && [ ! -L "$record" ] || continue
-    value="$(head -c 1024 -- "$record" 2>/dev/null | head -n 1)"
+    # A job could swap in a FIFO or device; never follow or block on it.
+    value="$(dd if="$record" bs=1024 count=1 iflag=nofollow,nonblock 2>/dev/null | head -n 1)"
     if ! [[ "$value" =~ $CRF_STORE_BUDGET_RECORD ]]; then unreadable=$((unreadable + 1)); continue; fi
     reporting=$((reporting + 1))
     [[ "$value" == *'"over_budget":true'* ]] && over=$((over + 1))
