@@ -329,7 +329,7 @@ crf_storage_start_admit() {
           || { err "storage-start: free bytes unavailable"; return 1; }
         header=Avail; floor="$STORAGE_START_MIN_BYTES"
       else
-        sample="$(LC_ALL=C timeout --kill-after=1 5 df --output=itotal,iavail -- "$path" 2>/dev/null)" \
+        sample="$(LC_ALL=C timeout --kill-after=1 5 df --block-size=1 --output=itotal,iavail -- "$path" 2>/dev/null)" \
           || { err "storage-start: free inodes unavailable"; return 1; }
         header=InodesIFree; floor="$STORAGE_START_MIN_INODES"
       fi
@@ -345,8 +345,8 @@ crf_storage_start_admit() {
       fi
       [[ "$value" =~ ^[0-9]{1,18}$ ]] && [ -z "$extra" ] \
         || { err "storage-start: unknown filesystem headroom"; return 1; }
-      # A filesystem without a fixed inode table (btrfs, overlay) reports zero
-      # total and free inodes. It has no inode limit; its byte floor still applies.
+      # A filesystem without a fixed inode table (for example btrfs) reports
+      # zero total and free inodes. It has no inode limit; its byte floor applies.
       [ "$metric" != inodes ] || [ "$((10#$total))" -ne 0 ] || [ "$((10#$value))" -ne 0 ] || continue
       [ "$((10#$value))" -ge "$floor" ] \
         || { err "storage-start: $metric below configured floor; preserving existing capacity"; return 1; }
