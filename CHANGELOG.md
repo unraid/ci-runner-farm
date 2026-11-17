@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.9.0](https://github.com/unraid/ci-runner-farm/compare/v3.8.1...v3.9.0) (2026-11-17)
+
+
+### Features
+
+* **storage:** bound each DinD slot's Docker store between jobs ([#254](https://github.com/unraid/ci-runner-farm/issues/254)) ([ea77a3d](https://github.com/unraid/ci-runner-farm/commit/ea77a3d1772de77227b2f37e8e1f29e88c07c580))
+* **storage:** reclaim storage of slots that no longer exist ([#256](https://github.com/unraid/ci-runner-farm/issues/256)) ([0ce7ffd](https://github.com/unraid/ci-runner-farm/commit/0ce7ffd668f5223f2d8b670505de719b45c14ec0))
+
 ## [3.8.1](https://github.com/unraid/ci-runner-farm/compare/v3.8.0...v3.8.1) (2026-11-17)
 
 
