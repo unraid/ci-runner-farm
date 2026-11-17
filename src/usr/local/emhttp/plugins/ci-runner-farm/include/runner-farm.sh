@@ -329,7 +329,7 @@ crf_storage_start_admit() {
           || { err "storage-start: free bytes unavailable"; return 1; }
         header=Avail; floor="$STORAGE_START_MIN_BYTES"
       else
-        sample="$(LC_ALL=C timeout --kill-after=1 5 df -i --output=iavail -- "$path" 2>/dev/null)" \
+        sample="$(LC_ALL=C timeout --kill-after=1 5 df --output=iavail -- "$path" 2>/dev/null)" \
           || { err "storage-start: free inodes unavailable"; return 1; }
         header=IFree; floor="$STORAGE_START_MIN_INODES"
       fi

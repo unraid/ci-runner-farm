@@ -11,6 +11,15 @@ mkdir -p "$CRF_CFGDIR" "$CRF_RUNDIR" "$tmp/cache/work" "$tmp/docker-root"
 source src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-farm.sh
 fail() { printf 'STORAGE START FAIL: %s\n' "$*" >&2; exit 1; }
 CI_PROVIDER=github; WORK_TMPFS_SIZE=""; CACHE_ROOT="$tmp/cache"; ARGS=(fixture-image)
+# Exercise the actual coreutils options before the metric fixtures replace df.
+# Mocked output cannot establish that the production command is supported.
+(
+  crf_safe_cache_root() { printf '%s\n' "$CACHE_ROOT"; }
+  docker() { printf '%s\n' "$tmp/docker-root"; }
+  timeout() { shift 2; "$@"; }
+  STORAGE_START_GUARD=true; STORAGE_START_MIN_BYTES=1; STORAGE_START_MIN_INODES=1
+  crf_storage_start_admit fixture || fail 'native df observations rejected healthy storage'
+)
 STORAGE_START_GUARD=true; STORAGE_START_MIN_BYTES=1000; STORAGE_START_MIN_INODES=10
 DB=2000; WB=2000; CB=2000; DI=20; WI=20; CACHE_INODES=20; DF_MODE=valid; INFO_MODE=valid
 calls="$tmp/calls"; effects="$tmp/effects"; : > "$calls"; : > "$effects"
