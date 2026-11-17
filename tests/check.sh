@@ -68,6 +68,7 @@ bash tests/provider-mocks.sh
 bash tests/cpu-pinning.sh
 bash tests/growth-backpressure.sh
 bash tests/fresh-workspace.sh
+bash tests/pooled-podman-storage.sh
 bash tests/retired-docker-cache.sh
 bash tests/completed-docker-cache.sh
 bash tests/job-docker-cache.sh

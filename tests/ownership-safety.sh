@@ -212,6 +212,8 @@ run_github_validate_test() (
     esac
   }
 
+  # Disabled pooled storage must retain the existing inspect/exec contract.
+  [ "$PODMAN_POOL_STORAGE" = false ] || fail "pooled storage unexpectedly enabled"
   github_validate >"$tmp/github-validate.out" \
     || { cat "$tmp/github-validate.out" >&2; fail "GitHub validation failed"; }
   printf '%s' "$VALIDATE_NAME" | grep -qE '^ci-runner-validate-[0-9a-f]{12}$' \
