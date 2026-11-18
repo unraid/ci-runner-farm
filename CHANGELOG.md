@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.10.0](https://github.com/unraid/ci-runner-farm/compare/v3.9.0...v3.10.0) (2026-11-17)
+
+
+### Features
+
+* **storage:** remove superseded runner images from the host ([#257](https://github.com/unraid/ci-runner-farm/issues/257)) ([6e1b8c3](https://github.com/unraid/ci-runner-farm/commit/6e1b8c3c7bafe2ffa117abc96dca6d5bf31d4cf3))
+
 ## [3.9.0](https://github.com/unraid/ci-runner-farm/compare/v3.8.1...v3.9.0) (2026-11-17)
 
 
