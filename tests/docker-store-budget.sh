@@ -66,6 +66,24 @@ case "$1 $2" in
  *) echo "unexpected docker $*" >&2; exit 1 ;;
 esac
 MOCK
+# The typed API query is the fast path. By default it fails, so the cases
+# below exercise the docker system df fallback; FAST_API=1 serves it.
+cat > "$tmp/bin/curl" <<'MOCK'
+#!/usr/bin/env bash
+[ "${FAST_API:-}" = 1 ] || exit 7
+[[ "$*" == *'--unix-socket /var/run/docker.sock'* && "$*" == *'/v1.44/system/df?type=image&type=build-cache'* ]] || exit 2
+[ "${API_TIMEOUT:-}" != 1 ] || exit 124
+echo "curl df" >> "$BUDGET_LOG"
+total=0; for f in "$BUDGET_STATE"/images/*; do [ -e "$f" ] && total=$((total + $(cat "$f"))); done
+printf '{"LayersSize":%s,"BuildCache":[{"Size":%s,"Shared":false},{"Size":7000000000,"Shared":true}]}\n' \
+  "$((total * 1000000000))" "$(( $(cat "$BUDGET_STATE/cache") * 1000000000 ))"
+MOCK
+# Free space for the skip window's pressure check; DF_PRESSURE=1 is short.
+cat > "$tmp/bin/df" <<'MOCK'
+#!/usr/bin/env bash
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+if [ "${DF_PRESSURE:-}" = 1 ]; then echo 'cache 1000 950 50 95% /var/lib/docker'; else echo 'cache 1000 500 500 50% /var/lib/docker'; fi
+MOCK
 cat > "$tmp/bin/timeout" <<'MOCK'
 #!/usr/bin/env bash
 while [[ "$1" == -* ]]; do shift; [ "${prev:-}" = -k ] || true; done
@@ -126,6 +144,36 @@ reset_store 8; rm -f "$tmp/record/state.json"; BUDGET_MODE=df-error run || true
 ! grep -q 'image rm\|builder prune' "$BUDGET_LOG" || fail 'eviction ran without a size reading'
 [[ "$(cat "$tmp/record/state.json")" == *'"over_budget":false,"complete":false'* ]] || fail 'failed pass left no incomplete record, or claimed over budget'
 
+# The typed API query measures images and build cache without docker system df
+# (which walks volumes and container layers); shared cache is not counted.
+reset_store 8; rm -f "$tmp/record/state.json"; export CRF_DOCKER_STORE_BUDGET_BYTES=$((25 * 1000 * 1000 * 1000)); FAST_API=1 run
+grep -q '^curl df' "$BUDGET_LOG" || fail 'fast API path not used'
+! grep -q 'system df' "$BUDGET_LOG" || fail 'docker system df ran although the API answered'
+[[ "$(cat "$tmp/record/state.json")" == *'"after_bytes":24000000000,"other_bytes":0,'* ]] || fail "fast path measured wrongly: $(cat "$tmp/record/state.json")"
+# A complete record from the last 15 minutes at no more than 75% of the budget
+# skips measurement and keeps the record (the window cannot extend itself).
+reset_store 2; rm -f "$tmp/record/state.json"; export CRF_DOCKER_STORE_BUDGET_BYTES=$((60 * 1000 * 1000 * 1000)); FAST_API=1 run
+first="$(cat "$tmp/record/state.json")"
+FAST_API=1 run
+! grep -q 'curl df\|system df' "$BUDGET_LOG" || fail 'recent record well under budget was measured again'
+[ "$(cat "$tmp/record/state.json")" = "$first" ] || fail 'skip rewrote the record'
+grep -q '^image prune' "$BUDGET_LOG" || fail 'skip also skipped disposable job state'
+# Under disk pressure the window never applies.
+DF_PRESSURE=1 FAST_API=1 run
+grep -q '^curl df' "$BUDGET_LOG" || fail 'skip window applied under disk pressure'
+# A record for another budget, or an incomplete one, is measured again.
+sed -i 's/"complete":true}/"complete":false}/' "$tmp/record/state.json"; FAST_API=1 run
+grep -q '^curl df' "$BUDGET_LOG" || fail 'an incomplete record skipped measurement'
+# The same record older than 15 minutes is measured again.
+sed -i 's/"at":[0-9]*/"at":1/' "$tmp/record/state.json"; FAST_API=1 run
+grep -q '^curl df' "$BUDGET_LOG" || fail 'stale record skipped measurement'
+# Above 75% of the budget, every pass measures.
+reset_store 8; rm -f "$tmp/record/state.json"; export CRF_DOCKER_STORE_BUDGET_BYTES=$((60 * 1000 * 1000 * 1000)); FAST_API=1 run
+FAST_API=1 run
+grep -q '^curl df' "$BUDGET_LOG" || fail 'a store near its budget skipped measurement'
+# A timed-out API query does not fall back to the equally slow walk.
+reset_store 8; rm -f "$tmp/record/state.json"; API_TIMEOUT=1 FAST_API=1 run || true
+! grep -q 'system df' "$BUDGET_LOG" || fail 'timed-out API query fell back to docker system df'
 # Without a budget the hook keeps its previous behavior.
 reset_store 8; unset CRF_DOCKER_STORE_BUDGET_BYTES; run
 ! grep -q 'image rm\|builder prune\|system df' "$BUDGET_LOG" || fail 'budget pass ran without an opt-in'

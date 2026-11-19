@@ -24,15 +24,21 @@ case "${1:-}" in
   *)
     # Hook failure must not fail a completed build. Bound both the whole pass
     # and each Docker call; unknown cleanup stays visible in the job log.
+    # The slot is held until this hook returns; name any pass that is slow.
+    slow_pass() { [ $(( SECONDS - $2 )) -le 5 ] || printf '[ci-runner-farm] job-end %s took %ss\n' "$1" $(( SECONDS - $2 )) >&2; }
+    started=$SECONDS
     if ! timeout -k 2 30 bash "$0" --cleanup; then
       echo '[ci-runner-farm] job cache cleanup incomplete; retained uncertain caches' >&2
     fi
+    slow_pass 'job cache cleanup' "$started"
     # An opt-in per-slot budget bounds the inner store between jobs. The slot
     # takes no job until this hook returns, so the pass is time-bounded.
     if [[ "${CRF_DOCKER_STORE_BUDGET_BYTES:-0}" =~ ^[1-9][0-9]{0,15}$ ]]; then
+      started=$SECONDS
       if ! timeout -k 2 240 bash "$0" --budget; then
         echo '[ci-runner-farm] Docker store budget pass incomplete; retained remaining state' >&2
       fi
+      slow_pass 'Docker store budget pass' "$started"
     fi
     # Pruning removes state a later job could reuse, so it is opt-in.
     if [ "${CRF_JOB_PRUNE:-}" = 1 ]; then
@@ -161,10 +167,37 @@ if [ "$1" = --budget ]; then
   trap write_record EXIT
   run_docker() { timeout -k 2 60 docker --host unix:///var/run/docker.sock "$@"; }
   # Only images and build cache count against the budget: they are what this
-  # pass may remove. Containers and volumes (warm builders, named caches) are
-  # reported as other_bytes. docker system df reads daemon metadata for these.
+  # pass may remove. The typed API query (API 1.42+) asks for exactly these,
+  # so the daemon never walks volumes or container layers; that walk made a
+  # full docker system df take tens of seconds on stores with large builder
+  # volumes. docker system df stays as the fallback and then also reports
+  # containers and volumes as other_bytes; the fast path reports 0 there.
   measure() {
-    local rows sizes
+    local rows sizes json status=0
+    if command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+      # API 1.44 pins the response fields; an older daemon refuses and falls back.
+      json="$(timeout -k 2 30 curl -sf --unix-socket /var/run/docker.sock 'http://localhost/v1.44/system/df?type=image&type=build-cache')" || status=$?
+      # A timed-out query means the daemon is walking anyway; the fallback
+      # would walk again, so give up for this pass instead.
+      [ "$status" -ne 124 ] || return 1
+    else
+      status=1
+    fi
+    if [ "$status" -eq 0 ] && sizes="$(python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+layers = d.get("LayersSize")
+cache = d.get("BuildCache") or []
+if not isinstance(layers, int) or layers < 0 or not isinstance(cache, list): sys.exit(1)
+total = layers
+for entry in cache:
+    size = entry.get("Size")
+    if not isinstance(size, int) or size < 0: sys.exit(1)
+    if not entry.get("Shared"): total += size
+print(total, 0)' <<< "$json" 2>/dev/null)"; then
+      read -r size other <<< "$sizes"
+      return 0
+    fi
     rows="$(run_docker system df --format '{{.Type}}|{{.Size}}')" || return 1
     sizes="$(awk -F'|' '
       { if (NF != 2 || $2 !~ /^[0-9]+(\.[0-9]+)?(B|kB|MB|GB|TB|PB)$/) { bad = 1; exit }
@@ -176,8 +209,8 @@ if [ "$1" = --budget ]; then
   }
   measures=0
   remeasure() { measures=$((measures + 1)); [ "$measures" -le 8 ] || return 1; measure; }
-  measure || exit 1
-  before="$size"
+  phase_started=$SECONDS
+  slow_phase() { [ $(( SECONDS - phase_started )) -le 5 ] || printf '[ci-runner-farm] Docker store budget: %s took %ss\n' "$1" $(( SECONDS - phase_started )) >&2; phase_started=$SECONDS; }
   # Note every image a container referenced, before this job's stopped
   # containers go, so a pulled image counts as used now, not at its build date.
   now="$(date -u +%Y-%m-%dT%H:%M:%S)"
@@ -210,7 +243,27 @@ if [ "$1" = --budget ]; then
   [[ "$api" =~ ^1\.([1-9][0-9]{0,2})$ ]] || exit 1
   [ "${BASH_REMATCH[1]}" -lt 42 ] || run_docker volume prune -f >/dev/null || exit 1
   run_docker image prune -f >/dev/null || exit 1
+  slow_phase 'disposable job state'
+  # A complete record from the last 15 minutes that was well under budget
+  # (at most 75%) needs no new measurement while the filesystem has room; the
+  # next pass after that window measures again. The record is kept as is, so
+  # the window cannot extend.
+  # Never skip while the filesystem is short of space (or its state is unknown).
+  pressure=0; cache_pressure || pressure=$?
+  if [ "$pressure" -eq 1 ] && [ "$record_ok" = true ] && [ -f "$state/state.json" ] && [ ! -L "$state/state.json" ]; then
+    last="$(dd if="$state/state.json" bs=1024 count=1 iflag=nofollow,nonblock 2>/dev/null)"
+    if [[ "$last" =~ \"at\":([0-9]{1,12}), ]]; then last_at="${BASH_REMATCH[1]}"; else last_at=0; fi
+    if [[ "$last" =~ \"budget_bytes\":([0-9]{1,16}),.*\"after_bytes\":([0-9]{1,16}), ]] \
+       && [ "${BASH_REMATCH[1]}" = "$budget" ] && [[ "$last" == *'"complete":true}'* ]] \
+       && [ $(( $(date +%s) - 10#$last_at )) -ge 0 ] && [ $(( $(date +%s) - 10#$last_at )) -lt 900 ] \
+       && [ $(( 10#${BASH_REMATCH[2]} * 4 )) -le $(( budget * 3 )) ]; then
+      record_ok=false
+      exit 0
+    fi
+  fi
   remeasure || exit 1
+  before="$size"
+  slow_phase 'measurement'
   if [ "$size" -gt "$budget" ]; then
     # Build cache older than a week is the cheapest state to rebuild.
     run_docker builder prune -f --filter until=168h >/dev/null || exit 1
@@ -270,6 +323,7 @@ if [ "$1" = --budget ]; then
     cache_pruned=true
     remeasure || exit 1
   fi
+  slow_phase 'eviction'
   over=false; [ "$size" -le "$budget" ] || over=true
   # Hitting the per-pass image cap leaves work for the next job.
   [ "${capped:-false}" = true ] || complete=true
