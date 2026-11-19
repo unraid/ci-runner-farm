@@ -1,20 +1,8 @@
 {
   "disposition": "PATCH",
-  "expected_structural_delta": "One measurement function and call-order change in runner-job-cleanup.sh, test cases, README; no new owners",
-  "minimum_design": "Measure images and build cache through the Docker API typed system df query instead of docker system df, measure once when under budget, and log slow phases; keep docker system df as the fallback",
-  "outcome": "The per-slot store budget pass no longer adds 15-75 s to every job end; the end hook returns to a few seconds",
-  "reuse_decisions": [
-    {
-      "decision": "extend",
-      "name": "runner-job-cleanup.sh --budget measure()",
-      "rationale": "Same budgeted quantities, faster source"
-    },
-    {
-      "decision": "extend",
-      "name": "docker-store-budget test fake daemon",
-      "rationale": "Add a fake API endpoint and a fallback case"
-    }
-  ],
+  "forecast_commit": "65507c9294267adcc3e99a49eff7f83f3a0b4b9b",
+  "reviewed_sha": "8ec587fc778b63d51f3a424964020bd0bb3870db",
   "schema": "limetech.ai-review-marker.v2",
-  "stage": "forecast"
+  "stage": "final",
+  "unresolved_proportionality_findings": []
 }
