@@ -1001,15 +1001,20 @@ the job-completed hook:
 
 1. removes stopped job containers (warm Buildx builders stay), anonymous
    volumes and dangling images;
-2. reads the size of the slot's images and build cache from
-   `docker system df`;
+2. reads the size of the slot's images and build cache through the Docker API
+   (`/system/df?type=image&type=build-cache`), which does not walk volumes or
+   container layers; `docker system df` is the fallback;
 3. when they are over budget, removes build cache older than a week, then
    unused images, least recently used first, then the remaining unused build
    cache.
 
 Only images and build cache count against the budget, because only they are
 removed. Containers and volumes, such as a warm Buildx builder's state, are
-reported as `other_bytes`. "Recently used" is the latest of when a container
+reported as `other_bytes` only by the `docker system df` fallback (the API path
+reports `0`). A complete record from the last 15 minutes that used at most 75%
+of the budget skips the measurement, so most job ends do not measure at all.
+When a pass or one of its phases takes more than five seconds, the job log
+names it. "Recently used" is the latest of when a container
 last referenced the image (noted by the hook after each job) and its tag time;
 an image never seen in use falls back to its build date. Build cache pruning
 always targets the daemon's default builder, never the builder a job selected.
