@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.10.1](https://github.com/unraid/ci-runner-farm/compare/v3.10.0...v3.10.1) (2026-11-19)
+
+
+### Bug Fixes
+
+* **storage:** keep the store budget pass off the job's critical path ([#259](https://github.com/unraid/ci-runner-farm/issues/259)) ([d9eda8a](https://github.com/unraid/ci-runner-farm/commit/d9eda8a5277dbfa191353321fb25676396e3a737))
+
 ## [3.10.0](https://github.com/unraid/ci-runner-farm/compare/v3.9.0...v3.10.0) (2026-11-17)
 
 

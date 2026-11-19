@@ -2,13 +2,13 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name          "ci-runner-farm">
 <!ENTITY author        "Lime Technology">
-<!ENTITY version       "2026.11.17.2102.196-3.8.1">
-<!ENTITY pluginVersion "3.8.1">
-<!ENTITY releaseTag    "v3.8.1">
+<!ENTITY version       "2026.11.19.0119.204-3.10.1">
+<!ENTITY pluginVersion "3.10.1">
+<!ENTITY releaseTag    "v3.10.1">
 <!ENTITY pluginURL     "https://github.com/unraid/ci-runner-farm/releases/latest/download/ci-runner-farm.plg">
-<!ENTITY packageName   "ci-runner-farm-2026.11.17.2102.196-3.8.1.tgz">
-<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/v3.8.1/ci-runner-farm-2026.11.17.2102.196-3.8.1.tgz">
-<!ENTITY packageMD5    "21c25792fe5c765df77261b978892c2d">
+<!ENTITY packageName   "ci-runner-farm-2026.11.19.0119.204-3.10.1.tgz">
+<!ENTITY packageURL    "https://github.com/unraid/ci-runner-farm/releases/download/v3.10.1/ci-runner-farm-2026.11.19.0119.204-3.10.1.tgz">
+<!ENTITY packageMD5    "97173b334a74f78886b764f91e43b339">
 <!ENTITY plgdir        "/usr/local/emhttp/plugins/&name;">
 <!ENTITY cfgdir        "/boot/config/plugins/&name;">
 ]>
@@ -23,8 +23,7 @@
 <CHANGES>
 ### &version;
 ### Bug Fixes
-* **storage:** re-own runner home parents before the rootless probe ([#250](https://github.com/unraid/ci-runner-farm/issues/250)) ([a8b7378](https://github.com/unraid/ci-runner-farm/commit/a8b73782537c0607f67eef99dce92a971386f557))
-* **storage:** skip the inode floor where no inode table exists ([#251](https://github.com/unraid/ci-runner-farm/issues/251)) ([8c7bb52](https://github.com/unraid/ci-runner-farm/commit/8c7bb52badfabdbc0d497e8211685844e43a0673))
+* **storage:** keep the store budget pass off the job's critical path ([#259](https://github.com/unraid/ci-runner-farm/issues/259)) ([d9eda8a](https://github.com/unraid/ci-runner-farm/commit/d9eda8a5277dbfa191353321fb25676396e3a737))
 </CHANGES>
 
 <!-- plugin package: Unraid downloads it to flash and verifies the MD5 -->
@@ -41,11 +40,11 @@ PLGDIR="/usr/local/emhttp/plugins/ci-runner-farm"
 CFGDIR="/boot/config/plugins/ci-runner-farm"
 mkdir -p "$CFGDIR" "$PLGDIR"
 # Sweep any older package versions off flash, keeping this build's package.
-find "$CFGDIR" -maxdepth 1 -name 'ci-runner-farm-*.tgz' ! -name 'ci-runner-farm-2026.11.17.2102.196-3.8.1.tgz' -delete 2>/dev/null || true
+find "$CFGDIR" -maxdepth 1 -name 'ci-runner-farm-*.tgz' ! -name 'ci-runner-farm-2026.11.19.0119.204-3.10.1.tgz' -delete 2>/dev/null || true
 # Extract ONLY into the plugin dir; --no-same-owner forces root ownership;
 # --no-overwrite-dir leaves existing dir metadata alone. System dirs untouched.
 # The .tgz is kept on flash so the on-boot reinstall works without a download.
-tar -xzf "$CFGDIR/ci-runner-farm-2026.11.17.2102.196-3.8.1.tgz" --no-same-owner --no-overwrite-dir -C "$PLGDIR"
+tar -xzf "$CFGDIR/ci-runner-farm-2026.11.19.0119.204-3.10.1.tgz" --no-same-owner --no-overwrite-dir -C "$PLGDIR"
 # Remove obsolete allocation runtime only; keep saved configuration and ledgers.
 rm -f -- "$PLGDIR/bin/ci-runner-capacity" "$PLGDIR/include/shared-capacity.sh" "$PLGDIR/include/build-demand.php"
 chown -R root:root "$PLGDIR"
@@ -111,7 +110,7 @@ fi
 ( nohup "$PLGDIR/include/runner-farm.sh" boot-autostart >>"$CFGDIR/boot.log" 2>&1 & ) || true
 echo ""
 echo "+=============================================================+"
-echo "| ci-runner-farm 2026.11.17.2102.196-3.8.1 installed.                         "
+echo "| ci-runner-farm 2026.11.19.0119.204-3.10.1 installed.                         "
 echo "| Settings > Utilities > CI Runner Farm                        "
 echo "| Select GitHub or GitLab, save its token, then Start.         "
 echo "+=============================================================+"
