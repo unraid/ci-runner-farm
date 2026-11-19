@@ -173,10 +173,17 @@ if [ "$1" = --budget ]; then
   # volumes. docker system df stays as the fallback and then also reports
   # containers and volumes as other_bytes; the fast path reports 0 there.
   measure() {
-    local rows sizes json
-    if command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 \
-       && json="$(timeout -k 2 30 curl -sf --unix-socket /var/run/docker.sock 'http://localhost/system/df?type=image&type=build-cache')" \
-       && sizes="$(python3 -c '
+    local rows sizes json status=0
+    if command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+      # API 1.44 pins the response fields; an older daemon refuses and falls back.
+      json="$(timeout -k 2 30 curl -sf --unix-socket /var/run/docker.sock 'http://localhost/v1.44/system/df?type=image&type=build-cache')" || status=$?
+      # A timed-out query means the daemon is walking anyway; the fallback
+      # would walk again, so give up for this pass instead.
+      [ "$status" -ne 124 ] || return 1
+    else
+      status=1
+    fi
+    if [ "$status" -eq 0 ] && sizes="$(python3 -c '
 import json, sys
 d = json.load(sys.stdin)
 layers = d.get("LayersSize")
@@ -187,7 +194,7 @@ for entry in cache:
     size = entry.get("Size")
     if not isinstance(size, int) or size < 0: sys.exit(1)
     if not entry.get("Shared"): total += size
-print(total, 0)' <<< "$json")"; then
+print(total, 0)' <<< "$json" 2>/dev/null)"; then
       read -r size other <<< "$sizes"
       return 0
     fi
@@ -238,9 +245,12 @@ print(total, 0)' <<< "$json")"; then
   run_docker image prune -f >/dev/null || exit 1
   slow_phase 'disposable job state'
   # A complete record from the last 15 minutes that was well under budget
-  # (at most 75%) needs no new measurement; the next pass after that window
-  # measures again. The record is kept as is, so the window cannot extend.
-  if [ "$record_ok" = true ] && [ -f "$state/state.json" ] && [ ! -L "$state/state.json" ]; then
+  # (at most 75%) needs no new measurement while the filesystem has room; the
+  # next pass after that window measures again. The record is kept as is, so
+  # the window cannot extend.
+  # Never skip while the filesystem is short of space (or its state is unknown).
+  pressure=0; cache_pressure || pressure=$?
+  if [ "$pressure" -eq 1 ] && [ "$record_ok" = true ] && [ -f "$state/state.json" ] && [ ! -L "$state/state.json" ]; then
     last="$(dd if="$state/state.json" bs=1024 count=1 iflag=nofollow,nonblock 2>/dev/null)"
     if [[ "$last" =~ \"at\":([0-9]{1,12}), ]]; then last_at="${BASH_REMATCH[1]}"; else last_at=0; fi
     if [[ "$last" =~ \"budget_bytes\":([0-9]{1,16}),.*\"after_bytes\":([0-9]{1,16}), ]] \
