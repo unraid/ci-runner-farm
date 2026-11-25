@@ -68,6 +68,7 @@ bash tests/provider-mocks.sh
 bash tests/cpu-pinning.sh
 bash tests/growth-backpressure.sh
 bash tests/phase-timing.sh
+bash tests/store-purge.sh
 bash tests/fresh-workspace.sh
 bash tests/pooled-podman-storage.sh
 bash tests/storage-start-pressure.sh

@@ -1205,6 +1205,24 @@ layer_integrity_evict_store() {
   layer_integrity_reap_evicted "$trash"
 }
 
+# Move <path> into folder <trash> with a same-filesystem rename, so that a
+# large tree can be deleted in the background instead of under fleet.lock.
+# Returns 0 when <path> is gone (moved, or absent), and 1 when a rename is not
+# safe: <path> is a symlink or its own mount, the trash folder does not resolve
+# to itself, or the two are on different filesystems (a rename must never turn
+# into a copy). The caller then deletes in place, as before.
+crf_stage_aside() {
+  local path="$1" trash="$2" name="$3"
+  [ -e "$path" ] || [ -L "$path" ] || return 0
+  [ ! -L "$path" ] && [ -d "$path" ] || return 1
+  [ "$(stat -c %d -- "$path" 2>/dev/null)" = "$(stat -c %d -- "${path%/*}" 2>/dev/null)" ] || return 1
+  [ ! -L "$trash" ] && mkdir -p -- "$trash" 2>/dev/null \
+    && [ "$(realpath -e -- "$trash" 2>/dev/null)" = "$trash" ] \
+    && [ "$(stat -c %d -- "$path" 2>/dev/null)" = "$(stat -c %d -- "$trash" 2>/dev/null)" ] || return 1
+  mv -T -- "$path" "$trash/$name.$(date +%s).$$.$RANDOM" 2>/dev/null || return 1
+  [ ! -e "$path" ] && [ ! -L "$path" ]
+}
+
 # Delete moved-aside stores in the background, one reaper at a time. The child
 # closes the inherited fleet-lock descriptors so it never holds the lock.
 layer_integrity_reap_evicted() {
@@ -1213,15 +1231,32 @@ layer_integrity_reap_evicted() {
     exec 7>&- 8>&- 9>&-
     exec 9>"$RUNDIR/layer-evicted.lock" || exit 0
     flock -n 9 || exit 0
-    for d in "$trash"/*; do
-      [ -d "$d" ] && [ ! -L "$d" ] || continue
-      if command -v ionice >/dev/null 2>&1; then
-        ionice -c 3 nice -n 19 rm -rf --one-file-system -- "$d"
-      else
-        nice -n 19 rm -rf --one-file-system -- "$d"
-      fi
+    # Up to three passes, so a store moved aside during a pass is not left
+    # waiting for the next trigger.
+    for pass in 1 2 3; do
+      found=false
+      for d in "$trash"/*; do
+        [ -d "$d" ] && [ ! -L "$d" ] || continue
+        found=true
+        if command -v ionice >/dev/null 2>&1; then
+          ionice -c 3 nice -n 19 rm -rf --one-file-system -- "$d"
+        else
+          nice -n 19 rm -rf --one-file-system -- "$d"
+        fi
+      done
+      [ "$found" = true ] || break
     done
   ) </dev/null >/dev/null 2>&1 &
+}
+
+# Restart the background reaper when moved-aside stores are left over, for
+# example after a restart during a delete. Cheap when there is nothing to do.
+crf_reap_staged_stores() {
+  local root
+  root="$(crf_safe_cache_root 2>/dev/null)" || return 0
+  [ -d "$root/docker-evicted" ] && [ ! -L "$root/docker-evicted" ] \
+    && [ -n "$(ls -A "$root/docker-evicted" 2>/dev/null)" ] || return 0
+  layer_integrity_reap_evicted "$root/docker-evicted"
 }
 
 # Evict one slot's corrupt layers inside its idle runner. Exit 20 means a job
@@ -1573,6 +1608,7 @@ lifecycle_tick_steps() {
   crf_storage_pressure_cleanup
   crf_timing_mark pressure_cleanup
   crf_retired_slot_cleanup
+  crf_reap_staged_stores
   crf_timing_mark retired_cleanup
   crf_runner_image_prune
   crf_timing_mark image_prune
