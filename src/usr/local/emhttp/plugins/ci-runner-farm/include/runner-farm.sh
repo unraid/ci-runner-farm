@@ -1205,26 +1205,32 @@ layer_integrity_evict_store() {
   layer_integrity_reap_evicted "$trash"
 }
 
+# The mount that holds <path>. findmnt sees a bind mount of the same
+# filesystem, which stat's device number and %m cannot.
+crf_mount_of() {
+  findmnt -n -o TARGET --target "$1" 2>/dev/null || stat -c %m -- "$1" 2>/dev/null
+}
+
 # Move <path> into folder <trash> with a same-filesystem rename, so that a
 # large tree can be deleted in the background instead of under fleet.lock.
 # Returns 0 when <path> is gone (moved, or absent), and 1 when a rename is not
 # safe: <path> is a symlink or its own mount, the trash folder does not resolve
 # to itself, or the two are on different filesystems or mounts (a rename must
-# never turn into a copy; a bind mount of the same filesystem has the same
-# device number, so the mount point is compared too). The caller then deletes
-# in place, as before.
+# never turn into a copy). The caller then deletes in place, as before. The
+# moved folder is stamped now, so its age tells how long it has waited.
 crf_stage_aside() {
-  local path="$1" trash="$2" name="$3" device mount
+  local path="$1" trash="$2" name="$3" device mount dest
   [ -e "$path" ] || [ -L "$path" ] || return 0
   [ ! -L "$path" ] && [ -d "$path" ] || return 1
-  device="$(stat -c %d -- "$path" 2>/dev/null)" && mount="$(stat -c %m -- "$path" 2>/dev/null)" || return 1
-  [ "$device" = "$(stat -c %d -- "${path%/*}" 2>/dev/null)" ] \
-    && [ "$mount" = "$(stat -c %m -- "${path%/*}" 2>/dev/null)" ] || return 1
+  device="$(stat -c %d -- "$path" 2>/dev/null)" && mount="$(crf_mount_of "$path")" && [ -n "$mount" ] || return 1
+  [ "$device" = "$(stat -c %d -- "${path%/*}" 2>/dev/null)" ] && [ "$mount" = "$(crf_mount_of "${path%/*}")" ] || return 1
   [ ! -L "$trash" ] && mkdir -p -- "$trash" 2>/dev/null \
     && [ "$(realpath -e -- "$trash" 2>/dev/null)" = "$trash" ] \
     && [ "$device" = "$(stat -c %d -- "$trash" 2>/dev/null)" ] \
-    && [ "$mount" = "$(stat -c %m -- "$trash" 2>/dev/null)" ] || return 1
-  mv -T -- "$path" "$trash/$name.$(date +%s).$$.$RANDOM" 2>/dev/null || return 1
+    && [ "$mount" = "$(crf_mount_of "$trash")" ] || return 1
+  dest="$trash/$name.$(date +%s).$$.$RANDOM"
+  mv -T -- "$path" "$dest" 2>/dev/null || return 1
+  touch -c -- "$dest" 2>/dev/null || true
   [ ! -e "$path" ] && [ ! -L "$path" ]
 }
 

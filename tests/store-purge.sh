@@ -38,6 +38,11 @@ grep -qx "reap $ROOT/docker-evicted" "$tmp/calls" && grep -qx sweep "$tmp/calls"
 # The container is removed and deregistered first, as before.
 [ "$(head -2 "$tmp/calls" | tr '\n' ' ')" = "rm ci-runner-build-3 deregister ci-runner-build-3 " ] || fail "removal order changed: $(cat "$tmp/calls")"
 
+# A moved store is stamped with the move time, so an old store is not "stuck".
+slot ci-runner-build-12; touch -d '-2 days' "$ROOT/docker/ci-runner-build-12"
+github_remove_runner ci-runner-build-12 true || fail "purge of an old store failed"
+[ -z "$(find "$ROOT/docker-evicted" -mindepth 1 -maxdepth 1 -name 'ci-runner-build-12.*' -mmin +5)" ] || fail "moved store kept its old age"
+
 # ---- no purge touches nothing --------------------------------------------------
 slot ci-runner-build-4
 github_remove_runner ci-runner-build-4 false || fail "remove without purge failed"
@@ -87,9 +92,10 @@ CRF_PURGE_INPLACE=1 github_remove_runner ci-runner-build-10 true || fail "in-pla
   && [ "$(staged work/.trash ci-runner-build-10)" = 0 ] || fail "in-place purge staged a tree"
 # ---- a store on a different mount of the same device is deleted in place ----------
 slot ci-runner-build-11
-stat() { if [ "$1 $2" = "-c %m" ] && [ "${*: -1}" = "$ROOT/docker-evicted" ]; then echo /elsewhere; else command stat "$@"; fi; }
+crf_mount_of() { if [ "$1" = "$ROOT/docker-evicted" ]; then echo /elsewhere; else echo /; fi; }
 github_remove_runner ci-runner-build-11 true || fail "cross-mount purge failed"
-unset -f stat
+unset -f crf_mount_of
+. <(sed -n '/^crf_mount_of() {/,/^}/p' src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-farm.sh)
 [ ! -e "$ROOT/docker/ci-runner-build-11" ] && [ "$(staged docker-evicted ci-runner-build-11)" = 0 ] || fail "a cross-mount store was staged"
 # ---- pooled-trash leftovers restart their sweep too; old stores are reported -----
 rm -rf "$ROOT/docker-evicted"/*; mkdir -p "$ROOT/work/.trash/x.1"; : > "$tmp/calls"
