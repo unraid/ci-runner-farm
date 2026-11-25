@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.11.1](https://github.com/unraid/ci-runner-farm/compare/v3.11.0...v3.11.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **storage:** delete purged slot stores in the background ([#271](https://github.com/unraid/ci-runner-farm/issues/271)) ([d6032e0](https://github.com/unraid/ci-runner-farm/commit/d6032e0ea255526cff0e4eff115b7b309b84de31))
+
 ## [3.11.0](https://github.com/unraid/ci-runner-farm/compare/v3.10.1...v3.11.0) (2026-11-25)
 
 
