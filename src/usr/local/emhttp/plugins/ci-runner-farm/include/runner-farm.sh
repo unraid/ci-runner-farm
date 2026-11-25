@@ -2870,7 +2870,8 @@ start_one() {
 }
 
 # Count the runners of <pool> from current native process evidence on immutable
-# owned IDs, and print "highest busy idle unknown". Logs cannot prove idle.
+# owned IDs, and print "highest busy idle unknown pending young". Logs cannot
+# prove idle.
 #   * highest: the highest slot index the pool holds, in any state;
 #   * busy: running with one Runner.Listener and one Runner.Worker;
 #   * idle: running with one Runner.Listener and no Runner.Worker;
@@ -2878,10 +2879,13 @@ start_one() {
 #     is pending capacity: it keeps its slot and will take the next job, so it
 #     is neither busy, idle nor unknown;
 #   * unknown: true when any owner is paused or in another state, or its
-#     process list is unreadable or unexpected.
+#     process list is unreadable or unexpected;
+#   * pending: runners that are still starting;
+#   * young: running or starting runners that started after epoch <since>
+#     (optional), whatever their state.
 pool_runner_counts() {
-  local pool="$1" maximum names c observed_pool snapshot id idx state processes counts listeners workers
-  local busy=0 idle=0 highest=0 unknown=false
+  local pool="$1" since="${2:-}" maximum names c observed_pool snapshot id idx state status paused started processes counts listeners workers
+  local busy=0 idle=0 pending=0 young=0 highest=0 unknown=false
   maximum="$(pool_max "$pool")" || return 1
   names="$(managed_names)" || return 1
   while IFS= read -r c; do
@@ -2892,12 +2896,18 @@ pool_runner_counts() {
     IFS='|' read -r id _ _ idx _ <<< "$snapshot"
     [ "$idx" -le "$maximum" ] || return 1
     [ "$idx" -le "$highest" ] || highest="$idx"
-    state="$(docker inspect --format '{{.State.Status}}|{{.State.Paused}}' "$id")" || return 1
-    case "$state" in
-      exited\|false|created\|false) continue ;;
+    state="$(docker inspect --format '{{.State.Status}}|{{.State.Paused}}|{{.State.StartedAt}}' "$id")" || return 1
+    IFS='|' read -r status paused started <<< "$state"
+    case "$status|$paused" in
+      exited\|false) continue ;;
+      created\|false) pending=$((pending + 1)); young=$((young + 1)); continue ;;
       running\|false) ;;
       *) unknown=true; continue ;;
     esac
+    if [ -n "$since" ] && [ -n "$started" ] && started="$(date -d "$started" +%s 2>/dev/null)" \
+      && [ "$started" -gt "$since" ]; then
+      young=$((young + 1))
+    fi
     processes="$(docker top "$id" -eo pid,comm)" || { unknown=true; continue; }
     # A process name can contain spaces (rootless Podman runs "podman pause"),
     # so the command is everything after the PID, matched exactly. Only a
@@ -2916,7 +2926,7 @@ pool_runner_counts() {
       END { if (bad) exit 1; print listeners+0 "|" workers+0 }')" || { unknown=true; continue; }
     IFS='|' read -r listeners workers <<< "$counts"
     if [ "$listeners" -eq 0 ] && [ "$workers" -eq 0 ]; then
-      continue
+      pending=$((pending + 1))
     elif [ "$listeners" -ne 1 ] || [ "$workers" -gt 1 ]; then
       unknown=true
     elif [ "$workers" -eq 1 ]; then
@@ -2925,25 +2935,32 @@ pool_runner_counts() {
       idle=$((idle + 1))
     fi
   done <<< "$names"
-  printf '%s %s %s %s\n' "$highest" "$busy" "$idle" "$unknown"
+  printf '%s %s %s %s %s %s\n' "$highest" "$busy" "$idle" "$unknown" "$pending" "$young"
 }
 
 # The slot count a pool should hold: its highest slot, or busy + warm runners
 # when that is more. Unknown owners keep their exact slots and suppress
 # growth. With a fresh queue reading (growth-queue.sh), the pool grows toward
-# busy + queued jobs instead of busy + warm. Clamped to the pool's bounds. This
-# target calculation never removes a runner.
+# busy runners plus the jobs still waiting: queued jobs in the reading minus
+# the runners started since it, which take or will take those jobs, plus the
+# runners still starting. Clamped to the pool's bounds. This target
+# calculation never removes a runner.
 pool_start_target() {
-  local pool="$1" maximum minimum warm counts highest busy idle unknown target queued
+  local pool="$1" maximum minimum warm counts highest busy idle unknown pending young target reading ts queued demand
   maximum="$(pool_max "$pool")" || return 1
   minimum="$(pool_min "$pool")" || return 1
   warm="$(pool_idle "$pool")" || return 1
   [ "$warm" -gt 0 ] || warm=1
-  counts="$(pool_runner_counts "$pool")" || return 1
-  read -r highest busy idle unknown <<< "$counts"
+  ts=""
+  if reading="$(growth_queue_reading "$pool")"; then read -r ts queued <<< "$reading"; fi
+  counts="$(pool_runner_counts "$pool" "$ts")" || return 1
+  read -r highest busy idle unknown pending young <<< "$counts"
   # A pool with no idle runner may have jobs waiting: keep its reading fresh.
   [ "$idle" -gt 0 ] || growth_queue_request
-  if queued="$(growth_queue_depth "$pool")" && [ "$queued" -gt "$warm" ]; then warm="$queued"; fi
+  if [ -n "$ts" ]; then
+    demand=$(( queued - young )); [ "$demand" -ge 0 ] || demand=0
+    [ $(( demand + pending )) -le "$warm" ] || warm=$(( demand + pending ))
+  fi
   target="$highest"
   if [ "$unknown" = false ] && [ "$target" -lt $((busy + warm)) ]; then target=$((busy + warm)); fi
   [ "$target" -ge "$minimum" ] || target="$minimum"

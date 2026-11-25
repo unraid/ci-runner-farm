@@ -1442,6 +1442,8 @@ github_pool_queue_refresh() {
     printf '%s\n' "$counts" | growth_queue_write || true
   fi
   rm -rf "$tmpd"
+  # Job lists are cached per run; drop entries for runs that are long gone.
+  gh_etag_prune
 }
 
 github_stats_refresh() {

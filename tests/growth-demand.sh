@@ -46,9 +46,10 @@ docker() {
   case "$1" in
     inspect)
       if [ "$2" = --format ]; then
+        local since; since="$(iso $(( $(date +%s) - $(slot_field "$4" 3) )))"
         case "$(slot_field "$4" 2)" in
-          exited) echo 'exited|false' ;; created) echo 'created|false' ;; paused) echo 'running|true' ;;
-          *) echo 'running|false' ;;
+          exited) echo "exited|false|$since" ;; created) echo 'created|false|0001-01-01T00:00:00Z' ;;
+          paused) echo "running|true|$since" ;; *) echo "running|false|$since" ;;
         esac
         return 0
       fi
@@ -72,6 +73,7 @@ docker() {
 }
 SPAWNS="$tmp/spawns"; : > "$SPAWNS"
 growth_queue_spawn() { echo spawn >> "$SPAWNS"; }
+depth() { growth_queue_reading "$1" | cut -d' ' -f2; }
 queue() {  # <age seconds> then "pool count" pairs
   local age="$1"; shift
   { printf 'v1 %s\n' "$(( $(date +%s) - age ))"; printf '%s %s\n' "$@"; } > "$RUNDIR/pool-queue.cache"
@@ -80,9 +82,9 @@ queue() {  # <age seconds> then "pool count" pairs
 # ---- starting runners are pending, not unknown ----------------------------
 fleet 'ci-runner-build-1 busy 60 0 0' 'ci-runner-build-2 busy 60 0 0' 'ci-runner-build-3 starting 5 0 0'
 rm -f "$RUNDIR/pool-queue.cache"
-[ "$(pool_runner_counts build)" = '3 2 0 false' ] || fail "a starting runner was not pending: $(pool_runner_counts build)"
+[ "$(pool_runner_counts build)" = '3 2 0 false 1 0' ] || fail "a starting runner was not pending: $(pool_runner_counts build)"
 fleet 'ci-runner-build-1 busy 60 0 0' 'ci-runner-build-2 busy 60 0 0' 'ci-runner-build-3 busy 60 0 0' 'ci-runner-build-4 created 0 0 0'
-[ "$(pool_runner_counts build)" = '4 3 0 false' ] || fail "a created runner was not pending: $(pool_runner_counts build)"
+[ "$(pool_runner_counts build)" = '4 3 0 false 1 1' ] || fail "a created runner was not pending: $(pool_runner_counts build)"
 # Three busy and one pending runner: busy + warm = 4, so the pending runner is
 # the warm one and the pool holds at 4 (before, it was "unknown" and also 4).
 [ "$(pool_start_target build)" = 4 ] || fail "pending runner changed the target"
@@ -102,6 +104,21 @@ queue 10 build 40 quick 0
 [ "$(pool_start_target build)" = 12 ] || fail "queue target was not capped at the pool maximum"
 queue 10 build 0 quick 0
 [ "$(pool_start_target build)" = 4 ] || fail "empty queue: want busy + warm = 4"
+# Runners started since the reading take its queued jobs; they are not counted
+# twice. Reading 30 s old with 4 queued; 4 old busy runners and 4 that started
+# 10 s ago and are busy: no demand is left, so busy + warm = 9, not 12.
+fleet 'ci-runner-build-1 busy 60 0 0' 'ci-runner-build-2 busy 60 0 0' 'ci-runner-build-3 busy 60 0 0' 'ci-runner-build-4 busy 60 0 0' \
+  'ci-runner-build-5 busy 10 0 0' 'ci-runner-build-6 busy 10 0 0' 'ci-runner-build-7 busy 10 0 0' 'ci-runner-build-8 busy 10 0 0'
+queue 30 build 4 quick 0
+[ "$(pool_start_target build)" = 9 ] || fail "queued jobs were counted twice: $(pool_start_target build)"
+# Two of four started and still starting: 2 jobs left + 2 starting = 4 beyond busy.
+fleet 'ci-runner-build-1 busy 60 0 0' 'ci-runner-build-2 busy 60 0 0' 'ci-runner-build-3 busy 60 0 0' 'ci-runner-build-4 busy 60 0 0' \
+  'ci-runner-build-5 starting 10 0 0' 'ci-runner-build-6 starting 10 0 0'
+[ "$(pool_start_target build)" = 8 ] || fail "pacing lost the queue target: $(pool_start_target build)"
+# A reading from the future (clock skew) is not used.
+fleet 'ci-runner-build-1 busy 60 0 0' 'ci-runner-build-2 busy 60 0 0' 'ci-runner-build-3 busy 60 0 0'
+queue -60 build 5 quick 0
+[ "$(pool_start_target build)" = 4 ] || fail "a future reading was used"
 queue 181 build 5 quick 0
 [ "$(pool_start_target build)" = 4 ] || fail "stale reading was used"
 rm -f "$RUNDIR/pool-queue.cache"
@@ -122,16 +139,23 @@ fleet 'ci-runner-build-1 busy 60 0 0' 'ci-runner-build-2 busy 60 0 0' 'ci-runner
 # A pool with no idle runner asks for a reading when it is due; one with an
 # idle runner, or a fresh reading, does not.
 fleet 'ci-runner-build-1 busy 60 0 0' 'ci-runner-build-2 busy 60 0 0'
-: > "$SPAWNS"; rm -f "$RUNDIR/pool-queue.cache"
+: > "$SPAWNS"; rm -f "$RUNDIR/pool-queue.cache" "$RUNDIR/pool-queue.attempt"
 pool_start_target build >/dev/null
 [ "$(wc -l < "$SPAWNS")" = 1 ] || fail "a saturated pool did not ask for a reading"
 : > "$SPAWNS"; queue 30 build 0 quick 0
 pool_start_target build >/dev/null
 [ ! -s "$SPAWNS" ] || fail "a fresh reading was refreshed again"
-queue 95 build 0 quick 0
+queue 95 build 0 quick 0; rm -f "$RUNDIR/pool-queue.attempt"
 pool_start_target build >/dev/null
 [ -s "$SPAWNS" ] || fail "a due reading was not refreshed"
-: > "$SPAWNS"; rm -f "$RUNDIR/pool-queue.cache"
+# An attempt that wrote nothing is not retried before the interval.
+: > "$SPAWNS"
+pool_start_target build >/dev/null
+[ ! -s "$SPAWNS" ] || fail "a failed refresh was retried at once"
+touch -d '-100 seconds' "$RUNDIR/pool-queue.attempt"
+pool_start_target build >/dev/null
+[ -s "$SPAWNS" ] || fail "a failed refresh was never retried"
+: > "$SPAWNS"; rm -f "$RUNDIR/pool-queue.cache" "$RUNDIR/pool-queue.attempt"
 fleet 'ci-runner-build-1 busy 60 0 0' 'ci-runner-build-2 idle 60 0 0'
 pool_start_target build >/dev/null
 [ ! -s "$SPAWNS" ] || fail "a pool with an idle runner asked for a reading"
@@ -163,6 +187,34 @@ for slot in \
   fleet 'ci-runner-build-1 busy 60 0 0' 'ci-runner-build-2 busy 60 0 0' 'ci-runner-build-3 busy 60 0 0' "$slot"
   if admit_slot ci-runner-build-4; then fail "not a replacement but admitted at 95% CPU: $slot"; fi
 done
+# An exit stamped in the future (clock skew) is not a replacement.
+fleet 'ci-runner-build-1 busy 60 0 0' 'ci-runner-build-2 busy 60 0 0' 'ci-runner-build-3 busy 60 0 0' 'ci-runner-build-4 exited 300 -60 0'
+if admit_slot ci-runner-build-4; then fail "a future exit was a replacement"; fi
+# With a fresh reading, a replacement needs queued jobs beyond the idle and
+# starting runners. After a matrix ends (empty queue), restarts are gated, so
+# the pool can shrink.
+fleet 'ci-runner-build-1 busy 60 0 0' 'ci-runner-build-2 busy 60 0 0' 'ci-runner-build-3 starting 5 0 0' 'ci-runner-build-4 exited 300 5 0'
+queue 30 build 0 quick 0
+if admit_slot ci-runner-build-4; then fail "a restart with an empty queue skipped the CPU gate"; fi
+queue 30 build 1 quick 0   # the starting runner is young and takes the one job
+if admit_slot ci-runner-build-4; then fail "a restart with its job covered skipped the CPU gate"; fi
+queue 30 build 3 quick 0   # 3 queued - 1 young = 2 > 0 idle + 1 starting
+admit_slot ci-runner-build-4 || fail "a replacement with jobs waiting was withheld"
+grep -qF 'replacement, 2 queued jobs wait beyond 0 idle and 1 starting runners' "$LOG" || fail "reading-based replacement log missing"
+[ "$(cut -d'|' -f1 "$RUNDIR/growth-gate.state")" = admitted:replacement ] || fail "replacement not recorded as admitted:replacement"
+rm -f "$RUNDIR/pool-queue.cache"
+# Under CPU pinning, a replacement also skips the CPU block check; net growth does not.
+CPU_PINNING=true
+crf_cpu_pinning_choose() { printf '0-3 3500 1\n'; }
+crf_cpu_pinning_whole_cores_enabled() { return 1; }
+set_host 20
+fleet 'ci-runner-build-1 busy 60 0 0' 'ci-runner-build-2 busy 60 0 0' 'ci-runner-build-3 busy 60 0 0' 'ci-runner-build-4 exited 300 5 0'
+admit_slot ci-runner-build-4 || fail "a pinned replacement was held on a busy block"
+growth_gate_reset
+if growth_gate_admit build 9 ci-runner-build-9; then fail "net growth skipped the CPU block check"; fi
+[ "$(cut -d'|' -f1 "$RUNDIR/growth-gate.state")" = withheld:cpu-block ] || fail "block check did not withhold net growth"
+CPU_PINNING=false
+set_host 95
 # An idle runner in the pool means nothing waits that it could take.
 fleet 'ci-runner-build-1 busy 60 0 0' 'ci-runner-build-2 busy 60 0 0' 'ci-runner-build-3 idle 60 0 0' 'ci-runner-build-4 exited 300 5 0'
 if admit_slot ci-runner-build-4; then fail "a replacement beside an idle runner skipped the CPU gate"; fi
@@ -256,19 +308,50 @@ gh_api() {
 }
 rm -f "$RUNDIR/pool-queue.cache" "$RUNDIR/gh-ratelimit"
 github_pool_queue_refresh
-[ "$(growth_queue_depth build)" = 2 ] && [ "$(growth_queue_depth quick)" = 1 ] || fail "refresh did not write the counts: $(cat "$RUNDIR/pool-queue.cache" 2>/dev/null)"
+[ "$(depth build)" = 2 ] && [ "$(depth quick)" = 1 ] || fail "refresh did not write the counts: $(cat "$RUNDIR/pool-queue.cache" 2>/dev/null)"
 [ "$(wc -l < "$CALLS")" = 3 ] || fail "refresh made unexpected calls: $(cat "$CALLS")"
+# The reserve crossed after the run lists: no job lists, old reading stays.
+gh_api_lists_then_low() {
+  printf '%s\n' "$2" >> "$CALLS"
+  case "$2" in
+    *status=*) printf '1999 %s\n' "$(( $(date +%s) + 600 ))" > "$RUNDIR/gh-ratelimit"
+      printf '%s' '{"workflow_runs":[{"id":7,"status":"queued","created_at":"2026-01-01T00:00:00Z"}]}' ;;
+    *) printf '%s' '{"jobs":[]}' ;;
+  esac
+}
+saved_gh_api="$(declare -f gh_api)"
+gh_api() { gh_api_lists_then_low "$@"; }
+queue 100 build 9 quick 9; : > "$CALLS"; rm -f "$RUNDIR/gh-ratelimit"
+github_pool_queue_refresh
+! grep -q '/jobs' "$CALLS" && [ "$(depth build)" = 9 ] || fail "the reader went on past its reserve: $(cat "$CALLS")"
+rm -f "$RUNDIR/gh-ratelimit"
+# At most 8 job lists per refresh, queued runs oldest first.
+gh_api() {
+  printf '%s\n' "$2" >> "$CALLS"
+  case "$2" in
+    *status=queued*) printf '{"workflow_runs":['; for n in $(seq 101 112); do
+        printf '{"id":%s,"status":"queued","created_at":"2026-01-01T00:%s:00Z"},' "$n" "$(( 112 - n + 10 ))"; done
+      printf '{"id":1,"status":"completed"}]}' ;;
+    *status=in_progress*) printf '%s' '{"workflow_runs":[]}' ;;
+    *) printf '%s' '{"jobs":[]}' ;;
+  esac
+}
+: > "$CALLS"
+github_pool_queue_refresh
+[ "$(grep -c '/jobs' "$CALLS")" = 8 ] || fail "job lists not capped at 8: $(grep -c '/jobs' "$CALLS")"
+[ "$(grep -o 'runs/[0-9]*/jobs' "$CALLS" | head -1)" = runs/112/jobs ] || fail "oldest queued run not read first: $(grep -o 'runs/[0-9]*/jobs' "$CALLS" | head -1)"
+eval "$saved_gh_api"
 # Under the reader's reserve nothing is read and the old reading stays.
 printf '1999 %s\n' "$(( $(date +%s) + 600 ))" > "$RUNDIR/gh-ratelimit"
 queue 100 build 9 quick 9; : > "$CALLS"
 github_pool_queue_refresh
-[ ! -s "$CALLS" ] && [ "$(growth_queue_depth build)" = 9 ] || fail "the reader ignored its reserve"
+[ ! -s "$CALLS" ] && [ "$(depth build)" = 9 ] || fail "the reader ignored its reserve"
 rm -f "$RUNDIR/gh-ratelimit"
 # When every run list fails, nothing is written.
 gh_api() { return 1; }
 queue 100 build 9 quick 9
 github_pool_queue_refresh
-[ "$(growth_queue_depth build)" = 9 ] || fail "a failed read replaced the reading"
+[ "$(depth build)" = 9 ] || fail "a failed read replaced the reading"
 # No busy repository on this host: nothing to read.
 : > "$RUNDIR/usage.cache"; : > "$CALLS"
 gh_api() { printf '%s\n' "$2" >> "$CALLS"; return 1; }

@@ -72,8 +72,6 @@ growth_gate_reset() {
   # Per pool, for the published growth state: the latest gate decision key,
   # and the target and running count the tick worked toward.
   declare -gA GROWTH_POOL_DECISION=() GROWTH_POOL_TARGET=() GROWTH_POOL_RUNNERS=()
-  # Per pool, the idle runner count read for replacement decisions.
-  declare -gA GROWTH_POOL_IDLE=()
 }
 growth_gate_reset
 
@@ -366,7 +364,7 @@ growth_gate_admit() {
   fi
   [ -n "$replacement" ] || GROWTH_ADMITTED=$(( GROWTH_ADMITTED + 1 ))
   GROWTH_DEDUCTED=$(( GROWTH_DEDUCTED + runner ))
-  growth_gate_record admitted "$label" "$numbers" "$pool"
+  growth_gate_record "admitted${replacement:+:replacement}" "$label" "$numbers" "$pool"
   return 0
 }
 
