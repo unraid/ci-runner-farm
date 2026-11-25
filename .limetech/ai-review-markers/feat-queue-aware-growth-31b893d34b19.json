@@ -1,35 +1,8 @@
 {
   "disposition": "PATCH",
-  "expected_structural_delta": "One new small shell module for the queue reading and cache, one new CLI subcommand, one engine-only setting. No new daemon, store outside RUNDIR, or dependency. Existing gate and target functions gain small branches.",
-  "minimum_design": "Add a bounded, budget-aware per-pool queued-job reading written to a RUNDIR cache by a background command; feed it into pool_start_target; count starting containers as pending instead of unknown; exempt replacements of just-finished slots from the CPU checks only while their pool has queued jobs; measure the gate's CPU over about 60 s from per-tick samples.",
-  "outcome": "Under a burst, autoscaled pools hold their size and grow while GitHub jobs for their labels wait, up to the pool maximum and the host CPU ceiling, and shrink only when nothing waits. Missing or stale queue data falls back to the current behaviour.",
-  "reuse_decisions": [
-    {
-      "decision": "reuse",
-      "name": "gh_api ETag cache and background rate reserve",
-      "rationale": "Conditional GETs and the reserve already bound background GitHub reads."
-    },
-    {
-      "decision": "extend",
-      "name": "growth_gate_admit",
-      "rationale": "Add a replacement flag that skips only the CPU checks and pacing; memory checks stay."
-    },
-    {
-      "decision": "extend",
-      "name": "pool_start_target",
-      "rationale": "Add the queue term and a starting-container state instead of a new sizing owner."
-    },
-    {
-      "decision": "not applicable",
-      "name": "queued.cache single-pool reader",
-      "rationale": "It counts queued runs without labels, so it cannot size a pool."
-    },
-    {
-      "decision": "extend",
-      "name": "growth-cpu.sample",
-      "rationale": "Keep a short sample history in the same file instead of a second CPU source."
-    }
-  ],
+  "forecast_commit": "4e5aa987b2c3b2d63ca263f927a2b674a5eb8d2f",
+  "reviewed_sha": "53097949098722ddcaff47287a04f89cd9fce165",
   "schema": "limetech.ai-review-marker.v2",
-  "stage": "forecast"
+  "stage": "final",
+  "unresolved_proportionality_findings": []
 }
