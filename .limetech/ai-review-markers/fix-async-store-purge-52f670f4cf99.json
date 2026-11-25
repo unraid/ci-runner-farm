@@ -1,20 +1,8 @@
 {
   "disposition": "PATCH",
-  "expected_structural_delta": "One helper and one leftover-sweep function in the engine, a few lines in github_remove_runner, a multi-pass loop in the reaper. No new daemon, setting or store.",
-  "minimum_design": "One small crf_stage_aside helper (same-filesystem rename with symlink, mount and device guards) used by github_remove_runner for docker/<slot> and pooled work/<slot>; reuse the existing docker-evicted reaper and work trash sweep; reaper loops until empty; lifecycle tick restarts it for leftovers. Unsafe cases keep the in-place delete.",
-  "outcome": "Removing a runner with its storage no longer holds the fleet lock for a large delete: slot Docker stores and pooled workspaces are moved aside and deleted in the background, so a Start that reaps many dead slots finishes in seconds.",
-  "reuse_decisions": [
-    {
-      "decision": "reuse",
-      "name": "layer_integrity_reap_evicted and docker-evicted",
-      "rationale": "Existing background reaper for moved-aside Docker stores."
-    },
-    {
-      "decision": "reuse",
-      "name": "github_work_trash_sweep_async and work/.trash",
-      "rationale": "Existing background sweep for moved-aside workspaces."
-    }
-  ],
+  "forecast_commit": "ddc68e5cca2456945de3ab18b48aecf674ab5020",
+  "reviewed_sha": "e8a17155e2b307ec8034c124cf289f499b8908db",
   "schema": "limetech.ai-review-marker.v2",
-  "stage": "forecast"
+  "stage": "final",
+  "unresolved_proportionality_findings": []
 }
