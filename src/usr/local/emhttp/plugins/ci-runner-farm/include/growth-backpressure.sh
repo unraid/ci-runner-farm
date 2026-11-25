@@ -52,6 +52,8 @@
 GROWTH_STARTS_PER_TICK="${CRF_GROWTH_STARTS_PER_TICK:-2}"  # internal pacing, not web-settable
 GROWTH_CPU_WINDOW="${CRF_GROWTH_CPU_WINDOW:-2}"            # seconds for a fresh CPU sample
 GROWTH_CPU_SAMPLE_MAX_AGE=300                              # older stored samples are not reused
+GROWTH_CPU_SMOOTH="${CRF_GROWTH_CPU_SMOOTH:-60}"           # seconds the gate's CPU reading spans when history allows
+GROWTH_CPU_SAMPLE_SPACING=10                               # seconds between stored samples
 GROWTH_BLOCK_CORES_LIMIT=3000                              # thousandths of a core, 4-thread block
 GROWTH_CPUSET_THREAD_LIMIT=750                             # thousandths of a core per thread, whole-core groups
 GROWTH_MEMORY_PRESSURE_FULL_LIMIT=500                      # hundredths of a percent (5%)
@@ -70,6 +72,8 @@ growth_gate_reset() {
   # Per pool, for the published growth state: the latest gate decision key,
   # and the target and running count the tick worked toward.
   declare -gA GROWTH_POOL_DECISION=() GROWTH_POOL_TARGET=() GROWTH_POOL_RUNNERS=()
+  # Per pool, the idle runner count read for replacement decisions.
+  declare -gA GROWTH_POOL_IDLE=()
 }
 growth_gate_reset
 
@@ -114,21 +118,61 @@ growth_proc_cpu_jiffies() {
     "$(( 10#$idle + 10#$iowait ))"
 }
 
-# Host CPU busy percent over the time since the previous stored sample (the
-# previous tick), or over a fresh GROWTH_CPU_WINDOW when that sample is
-# missing, too recent, or too old. Stores the current reading for the next tick.
+# $RUNDIR/growth-cpu.sample keeps a short history of "epoch total idle" lines,
+# oldest first. Every autoscale and lifecycle check adds one, so the gate can
+# measure CPU over about a minute instead of the few seconds since the last
+# start. A short burst then does not withhold growth, and a short lull does
+# not admit it.
+
+# Print the stored samples that can be compared with the reading <now> <total>:
+# well formed, not from the future, at most GROWTH_CPU_SAMPLE_MAX_AGE old, and
+# with fewer jiffies than now (a counter that went back is not comparable).
+growth_cpu_samples() {
+  local sample="$RUNDIR/growth-cpu.sample"
+  [ -f "$sample" ] || return 0
+  awk -v now="$1" -v total="$2" -v max="$GROWTH_CPU_SAMPLE_MAX_AGE" '
+    NF >= 3 && $1 ~ /^[0-9]{1,18}$/ && $2 ~ /^[0-9]{1,18}$/ && $3 ~ /^[0-9]{1,18}$/ \
+      && $1 <= now && now - $1 <= max && $2 < total && $3 <= $2 { print $1, $2, $3 }' "$sample" 2>/dev/null
+}
+
+# Add the reading <now> <total> <idle> to the history, unless the newest
+# stored sample is under GROWTH_CPU_SAMPLE_SPACING seconds old. Samples that
+# can no longer be used are dropped.
+growth_cpu_store() {
+  local sample="$RUNDIR/growth-cpu.sample" kept newest=""
+  kept="$(growth_cpu_samples "$1" "$2")"
+  [ -z "$kept" ] || newest="$(tail -n 1 <<< "$kept" | cut -d' ' -f1)"
+  if [ -n "$newest" ] && [ $(( $1 - newest )) -lt "$GROWTH_CPU_SAMPLE_SPACING" ]; then return 0; fi
+  ( umask 077; { [ -z "$kept" ] || printf '%s\n' "$kept"; printf '%s %s %s\n' "$1" "$2" "$3"; } > "$sample.tmp.$$" \
+    && mv -f "$sample.tmp.$$" "$sample" ) 2>/dev/null || rm -f "$sample.tmp.$$" 2>/dev/null
+}
+
+# Record a CPU sample for later gate decisions. Checks call this every tick.
+growth_cpu_record_sample() {
+  local cur total idle
+  growth_gate_enabled || return 0
+  cur="$(growth_proc_cpu_jiffies)" || return 0
+  read -r total idle <<< "$cur"
+  growth_cpu_store "$(date +%s)" "$total" "$idle"
+}
+
+# Host CPU busy percent over about GROWTH_CPU_SMOOTH seconds: since the newest
+# stored sample that is at least that old. Without one, since the oldest sample
+# that is at least GROWTH_CPU_WINDOW old, and without that, over a fresh
+# GROWTH_CPU_WINDOW. Stores the current reading in the history.
 growth_cpu_busy_percent() {
-  local sample="$RUNDIR/growth-cpu.sample" cur total idle now prev_ts="" prev_total="" prev_idle="" window dt di
+  local cur total idle now prev_total="" prev_idle="" dt di ts t i fallback=""
   cur="$(growth_proc_cpu_jiffies)" || return 1
   read -r total idle <<< "$cur"
   now="$(date +%s)"
-  if [ -f "$sample" ]; then read -r prev_ts prev_total prev_idle _ < "$sample" 2>/dev/null || true; fi
-  window=-1
-  if growth_uint "$prev_ts" && growth_uint "$prev_total" && growth_uint "$prev_idle"; then
-    window=$(( now - prev_ts ))
-  fi
-  if [ "$window" -lt "$GROWTH_CPU_WINDOW" ] || [ "$window" -gt "$GROWTH_CPU_SAMPLE_MAX_AGE" ] \
-    || [ "$total" -le "$prev_total" ]; then
+  while read -r ts t i; do
+    [ -n "$ts" ] || continue
+    [ $(( now - ts )) -ge "$GROWTH_CPU_WINDOW" ] || continue
+    [ -n "$fallback" ] || fallback="$t $i"
+    if [ $(( now - ts )) -ge "$GROWTH_CPU_SMOOTH" ]; then prev_total="$t"; prev_idle="$i"; fi
+  done <<< "$(growth_cpu_samples "$now" "$total")"
+  if [ -z "$prev_total" ] && [ -n "$fallback" ]; then read -r prev_total prev_idle <<< "$fallback"; fi
+  if [ -z "$prev_total" ]; then
     prev_total="$total"; prev_idle="$idle"
     sleep "$GROWTH_CPU_WINDOW"
     cur="$(growth_proc_cpu_jiffies)" || return 1
@@ -137,8 +181,7 @@ growth_cpu_busy_percent() {
   fi
   dt=$(( total - prev_total )); di=$(( idle - prev_idle ))
   [ "$dt" -gt 0 ] && [ "$di" -ge 0 ] && [ "$di" -le "$dt" ] || return 1
-  ( umask 077; printf '%s %s %s\n' "$now" "$total" "$idle" > "$sample.tmp.$$" \
-    && mv -f "$sample.tmp.$$" "$sample" ) 2>/dev/null || rm -f "$sample.tmp.$$" 2>/dev/null
+  growth_cpu_store "$now" "$total" "$idle"
   printf '%s\n' "$(( ((dt - di) * 100 + dt / 2) / dt ))"
 }
 
@@ -229,16 +272,20 @@ growth_gate_record() {
 
 # Return 0 when the farm may start slot <idx> of <pool> now. Starts that are
 # not growth (gate off, AUTOSCALE off, or idx at or below the floor) always
-# pass. <label> names the slot in the log.
+# pass. <label> names the slot in the log. A non-empty <replacement> gives the
+# reason the start is a replacement (see growth-queue.sh): the slot's runner
+# just finished a job, so starting it again keeps the pool's size and adds no
+# load. A replacement skips the CPU checks and the per-tick pacing; the
+# settings and memory checks still apply.
 growth_gate_admit() {
-  local pool="$1" idx="$2" label="${3:-slot $2}" floor ceiling reserve runner need avail cpu metrics numbers
+  local pool="$1" idx="$2" label="${3:-slot $2}" replacement="${4:-}" floor ceiling reserve runner need avail cpu metrics numbers
   local cpus choice block block_use measured block_limit block_word block_cpus
   growth_gate_enabled || return 0
   floor="$(growth_floor "$pool")" || return 0
   growth_uint "$floor" || floor=0
   [ "$idx" -le "$floor" ] && return 0
   # Pacing within one tick is not a state change and is not logged.
-  [ "$GROWTH_ADMITTED" -lt "$GROWTH_STARTS_PER_TICK" ] || return 1
+  [ -n "$replacement" ] || [ "$GROWTH_ADMITTED" -lt "$GROWTH_STARTS_PER_TICK" ] || return 1
   ceiling="${GROWTH_CPU_CEILING:-}"
   if ! growth_uint "$ceiling" || [ "$ceiling" -lt 1 ] || [ "$ceiling" -gt 100 ] \
     || ! reserve="$(growth_size_bytes "${GROWTH_MEMORY_RESERVE:-}")" \
@@ -262,7 +309,9 @@ growth_gate_admit() {
   avail=$(( GROWTH_MEM_AVAIL - GROWTH_DEDUCTED ))
   need=$(( runner + reserve ))
   numbers="cpu ${cpu}% (ceiling ${ceiling}%), MemAvailable $(growth_mib "$avail") MiB (need $(growth_mib "$runner") + reserve $(growth_mib "$reserve") MiB)"
-  if [ "$cpu" -gt "$ceiling" ]; then
+  if [ -n "$replacement" ]; then
+    numbers="replacement, $replacement (CPU checks skipped), $numbers"
+  elif [ "$cpu" -gt "$ceiling" ]; then
     growth_gate_record withheld:cpu "$label" "$numbers" "$pool"
     return 1
   fi
@@ -281,7 +330,7 @@ growth_gate_admit() {
   # Under pinning, host CPU busy understates contention: a new runner shares
   # the block placement would give it. Check that block's measured load last,
   # because previewing placement is the most expensive check.
-  if [ "${CPU_PINNING:-false}" = true ] && [ "${CI_PROVIDER:-github}" = github ] \
+  if [ -z "$replacement" ] && [ "${CPU_PINNING:-false}" = true ] && [ "${CI_PROVIDER:-github}" = github ] \
     && cpus="$(growth_runner_cpus "$pool")" && [[ "$cpus" =~ ^[1-9][0-9]{0,3}$ ]]; then
     # A start admitted on a measured block is not visible to the next preview
     # until its container exists, so admit one such start per tick. Later
@@ -315,7 +364,7 @@ growth_gate_admit() {
       fi
     fi
   fi
-  GROWTH_ADMITTED=$(( GROWTH_ADMITTED + 1 ))
+  [ -n "$replacement" ] || GROWTH_ADMITTED=$(( GROWTH_ADMITTED + 1 ))
   GROWTH_DEDUCTED=$(( GROWTH_DEDUCTED + runner ))
   growth_gate_record admitted "$label" "$numbers" "$pool"
   return 0

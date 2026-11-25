@@ -1314,6 +1314,136 @@ github_queued_refresh() {
   echo "github $(date +%s) $total" > "$RUNDIR/queued.cache"
 }
 
+# Per-pool queued job counts for demand-aware growth (include/growth-queue.sh).
+# The reader is kept small, because it runs while pools are saturated, which
+# is also when runner registrations use the most API requests:
+#   * It reads only repositories in GH_REPOS that have a job running on this
+#     host now (from the live usage snapshot). A burst usually comes from a few
+#     repositories, and their jobs reach every host quickly.
+#   * Per repository, it lists queued and in-progress runs (conditional GETs:
+#     an unchanged list costs no rate limit), then reads the job lists of at
+#     most GITHUB_POOL_QUEUE_RUNS runs: queued runs first, oldest first, then
+#     in-progress runs, newest first.
+#   * It stops while fewer than GITHUB_POOL_QUEUE_RESERVE requests remain, a
+#     larger reserve than other background reads keep.
+# A queued job counts for the one pool whose runners carry every label it asks
+# for, choosing the pool with the fewest labels, so a generic job is not
+# counted in every pool. When nothing could be read, no reading is written and
+# the previous one ages out; a partial reading only undercounts.
+GITHUB_POOL_QUEUE_RUNS=8
+GITHUB_POOL_QUEUE_RESERVE="${CRF_GITHUB_POOL_QUEUE_RESERVE:-2000}"
+GITHUB_POOL_QUEUE_USAGE_AGE=120 # seconds; an older usage snapshot is not used
+
+# Repositories in GH_REPOS with a job running on this host, one per line.
+github_pool_queue_repos() {
+  local usage="$RUNDIR/usage.cache" age repo r
+  [ -f "$usage" ] || return 0
+  age=$(( $(date +%s) - $(stat -c %Y "$usage" 2>/dev/null || echo 0) ))
+  [ "$age" -ge 0 ] && [ "$age" -le "$GITHUB_POOL_QUEUE_USAGE_AGE" ] || return 0
+  while read -r _ _ _ phase _ _ _ _ _ _ _ _ repo _; do
+    [ "$phase" = busy ] && [ -n "$repo" ] || continue
+    repo="$(printf '%s' "$repo" | base64 -d 2>/dev/null)" || continue
+    [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || continue
+    for r in $GH_REPOS; do
+      [ "${r,,}" = "${repo,,}" ] && { printf '%s\n' "$r"; break; }
+    done
+  done < "$usage" | sort -u
+}
+
+# Print "rank time repository run_id" for queued (rank 0, time ascending) and
+# in-progress (rank 1, time descending) runs in run list files given as
+# repository=file pairs, sorted in reading order. Fails when no file holds a
+# run list.
+github_pool_queue_runs() {
+  php -r '
+    $ok = false; $runs = [];
+    foreach (array_slice($argv, 1) as $pair) {
+      [$repo, $file] = explode("=", $pair, 2);
+      $data = json_decode((string)@file_get_contents($file), true);
+      if (!is_array($data) || !is_array($data["workflow_runs"] ?? null)) continue;
+      $ok = true;
+      foreach ($data["workflow_runs"] as $run) {
+        if (!is_array($run) || !is_int($run["id"] ?? null)) continue;
+        $rank = ["queued" => 0, "in_progress" => 1][$run["status"] ?? ""] ?? null;
+        if ($rank === null) continue;
+        $time = strtotime(is_string($run["created_at"] ?? null) ? $run["created_at"] : "") ?: 0;
+        $runs[$repo . "/" . $run["id"]] = [$rank, $rank === 0 ? $time : -$time, $repo, $run["id"]];
+      }
+    }
+    usort($runs, fn($a, $b) => [$a[0], $a[1]] <=> [$b[0], $b[1]]);
+    foreach ($runs as $r) echo $r[0], " ", $r[1], " ", $r[2], " ", $r[3], "\n";
+    exit($ok ? 0 : 1);
+  ' "$@"
+}
+
+# Print "pool count" for every pool in <labels file> ("pool label,label"
+# lines), counting queued jobs in the job list files that follow.
+github_pool_queue_count() {
+  php -r '
+    $pools = [];
+    foreach (file($argv[1], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+      [$pool, $labels] = array_pad(explode(" ", $line, 2), 2, "");
+      $pools[$pool] = array_flip(array_filter(explode(",", $labels), "strlen"));
+    }
+    $counts = array_fill_keys(array_keys($pools), 0);
+    $seen = [];
+    foreach (array_slice($argv, 2) as $file) {
+      $data = json_decode((string)@file_get_contents($file), true);
+      foreach ((is_array($data) && is_array($data["jobs"] ?? null)) ? $data["jobs"] : [] as $job) {
+        if (!is_array($job) || ($job["status"] ?? "") !== "queued" || !is_array($job["labels"] ?? null)) continue;
+        if (isset($job["id"]) && isset($seen[$job["id"]])) continue;
+        if (isset($job["id"])) $seen[$job["id"]] = true;
+        $wanted = array_flip(array_map(fn($l) => strtolower((string)$l), $job["labels"]));
+        if (!$wanted) continue;
+        $best = null;
+        foreach ($pools as $pool => $have) {
+          if (array_diff_key($wanted, $have)) continue;
+          if ($best === null || count($have) < count($pools[$best])) $best = $pool;
+        }
+        if ($best !== null) $counts[$best]++;
+      }
+    }
+    foreach ($counts as $pool => $n) echo $pool, " ", $n, "\n";
+  ' "$@"
+}
+
+github_pool_queue_refresh() {
+  [ -z "$ACCESS_TOKEN" ] && [ "$GITHUB_APP_MODE" != true ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
+  growth_queue_enabled || return 0
+  # Every background read in this process keeps the larger reserve.
+  local GH_API_RESERVE="$GITHUB_POOL_QUEUE_RESERVE"
+  gh_rate_allows_background || return 0
+  local tmpd repos repo status n=0 k=0 pairs=() runs id jobs=() counts
+  repos="$(github_pool_queue_repos)"
+  [ -n "$repos" ] || return 0
+  tmpd="$(mktemp -d 2>/dev/null)" || return 0
+  if ! growth_queue_pool_labels > "$tmpd/pools" 2>/dev/null || [ ! -s "$tmpd/pools" ]; then rm -rf "$tmpd"; return 0; fi
+  while read -r repo; do
+    for status in queued in_progress; do
+      n=$((n+1)); pairs+=("$repo=$tmpd/runs.$n")
+      GH_API_BACKGROUND=1 gh_api GET "/repos/${repo}/actions/runs?status=${status}&per_page=20" \
+        > "$tmpd/runs.$n" 2>/dev/null &
+      [ $((n % 4)) -eq 0 ] && wait
+    done
+  done <<< "$repos"
+  wait
+  gh_rate_allows_background || { rm -rf "$tmpd"; return 0; }
+  runs="$(github_pool_queue_runs "${pairs[@]}")" || { rm -rf "$tmpd"; return 0; }
+  while read -r _ _ repo id; do
+    [ -n "$id" ] || continue
+    k=$((k+1)); jobs+=("$tmpd/jobs.$k")
+    GH_API_BACKGROUND=1 gh_api GET "/repos/${repo}/actions/runs/${id}/jobs?filter=latest&per_page=100" \
+      > "$tmpd/jobs.$k" 2>/dev/null &
+    [ $((k % 4)) -eq 0 ] && wait
+  done < <(printf '%s\n' "$runs" | sed '/^$/d' | head -n "$GITHUB_POOL_QUEUE_RUNS")
+  wait
+  # A job list skipped for the reserve would undercount; keep the old reading.
+  if gh_rate_allows_background && counts="$(github_pool_queue_count "$tmpd/pools" "${jobs[@]}")"; then
+    printf '%s\n' "$counts" | growth_queue_write || true
+  fi
+  rm -rf "$tmpd"
+}
+
 github_stats_refresh() {
   [ -z "$ACCESS_TOKEN" ] && [ "$GITHUB_APP_MODE" != true ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
   [ -n "$ACCESS_TOKEN" ] || { echo "github $(date +%s) 0 0 0 0 -1" > "$RUNDIR/stats.cache"; return 0; }

@@ -67,8 +67,8 @@ expect_admit build 10 ci-runner-build-10
 [ "$(state)" = admitted ] || fail "admission was not recorded"
 grep -qF 'growth backpressure: admitted ci-runner-build-10: cpu 50% (ceiling 80%), MemAvailable 81920 MiB (need 16384 + reserve 8192 MiB)' "$LOG" \
   || fail "admission log lacks its numbers: $(cat "$LOG")"
-# The current reading becomes the next tick's previous sample.
-read -r _ sample_total sample_idle < "$RUNDIR/growth-cpu.sample"
+# The current reading is added to the sample history for later checks.
+read -r _ sample_total sample_idle <<< "$(tail -n 1 "$RUNDIR/growth-cpu.sample")"
 [ "$sample_total" = 100 ] && [ "$sample_idle" = 50 ] || fail "CPU sample was not stored for the next tick"
 
 set_host 80 80

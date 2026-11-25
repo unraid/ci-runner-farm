@@ -134,6 +134,7 @@ AUTOSCALE_INTERVAL="30"              # seconds between checks
 AUTOSCALE_IDLE_GRACE="5"             # consecutive over-idle checks before scaling down (anti-flap)
 GROWTH_BACKPRESSURE="false"          # true => autoscale starts above the minimum wait for host CPU/memory headroom
 GROWTH_CPU_CEILING="80"              # withhold growth while host CPU busy percent is above this (1-100)
+GROWTH_QUEUE="true"                   # false => pool growth ignores the GitHub queue (see include/growth-queue.sh)
 GROWTH_MEMORY_RESERVE="8g"           # withhold growth unless MemAvailable >= runner memory limit + this reserve
 # ---- build-poison self-heal (see heal_poisoned_runners) ----------------------
 # Internal cadence/bounds, deliberately not web-settable. The CRF_* environment
@@ -178,6 +179,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/cpu-pinning.sh"
 # shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/growth-backpressure.sh
 . "$SCRIPT_DIR/growth-backpressure.sh"
+# shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/growth-queue.sh
+. "$SCRIPT_DIR/growth-queue.sh"
 # shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/github-app.sh
 . "$SCRIPT_DIR/github-app.sh"
 # shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/pnpm-recovery.sh
@@ -195,7 +198,7 @@ RUNNER_CPUS CPU_PINNING CPU_PINNING_WHOLE_CORES RUNNER_MEMORY CACHE_ROOT WORK_TM
 RUN_AS_ROOT REGISTRY_SERVER REGISTRY_USERNAME CACHE_MOUNTS SHARE_DOCKER_SOCK DIND \
 SHARED_IMAGE_CACHE NETWORK_ISOLATION RUNNER_NETWORK RUNNER_DNS ARTIFACT_ENDPOINT MIRROR_PORT AUTOSCALE AUTOSCALE_MIN \
 AUTOSCALE_MAX AUTOSCALE_MIN_IDLE AUTOSCALE_STEP AUTOSCALE_INTERVAL \
-AUTOSCALE_IDLE_GRACE GROWTH_BACKPRESSURE GROWTH_CPU_CEILING GROWTH_MEMORY_RESERVE \
+AUTOSCALE_IDLE_GRACE GROWTH_BACKPRESSURE GROWTH_CPU_CEILING GROWTH_MEMORY_RESERVE GROWTH_QUEUE \
 IMAGE_AUTOUPDATE IMAGE_AUTOUPDATE_INTERVAL IMAGE_DRAIN_TIMEOUT \
 DASHBOARD_WIDGET_ENABLE"
 
@@ -226,6 +229,7 @@ load_cfg() {
   STORAGE_START_MIN_INODES="0"
   RUNNER_DNS=""
   GROWTH_BACKPRESSURE="false"
+  GROWTH_QUEUE="true"
   CPU_PINNING_WHOLE_CORES="false"
   [ -f "$CFG" ] || return 0
   local line key val
@@ -598,11 +602,14 @@ runner_pool() {
 # path that restarts or recreates a slot that is not running calls this, so a
 # slot withheld above the autoscale floor stays exited until the host has
 # headroom. Passes when the gate is off or the slot is a refill.
+# A slot whose runner just finished a job, in a pool with no idle runner, is a
+# replacement that the gate does not hold back on CPU (see growth-queue.sh).
 growth_gate_admit_slot() {
-  local pool
+  local pool replacement
   growth_gate_enabled || return 0
   pool="$(runner_pool "$1")" || { err "growth backpressure: could not read the pool of $1"; return 1; }
-  growth_gate_admit "$pool" "$2" "$1"
+  replacement="$(growth_replacement_reason "$pool" "$1")" || replacement=""
+  growth_gate_admit "$pool" "$2" "$1" "$replacement"
 }
 
 BASE_NAME_PREFIX="$NAME_PREFIX"
@@ -1340,6 +1347,7 @@ autoscale_tick() {
   runner_starts_allowed || return 0
   [ "$AUTOSCALE" = "true" ] || return 0
   growth_gate_reset
+  growth_cpu_record_sample
   # Keep a recent CPU usage sample for load-aware placement.
   [ "${CPU_PINNING:-false}" != true ] || crf_cpu_usage_refresh >/dev/null 2>&1 || true
   crf_storage_pressure_cleanup
@@ -1538,6 +1546,7 @@ lifecycle_tick() {
   if pnpm_recovery_pending; then pnpm_recovery_tick; return $?; fi
   runner_starts_allowed || return 0
   growth_gate_reset
+  growth_cpu_record_sample
   # Keep a recent CPU usage sample for load-aware placement.
   [ "${CPU_PINNING:-false}" != true ] || crf_cpu_usage_refresh >/dev/null 2>&1 || true
   crf_storage_pressure_cleanup
@@ -2860,16 +2869,20 @@ start_one() {
   provider_call start_one "$idx" "$name"
 }
 
-# Growth uses only current native process evidence on immutable owned IDs.
-# Logs cannot prove idle. Unknown/paused/starting owners retain their exact slots
-# and suppress growth. This target calculation never removes a runner.
-pool_start_target() {
-  local pool="$1" maximum minimum warm names c observed_pool snapshot id idx state processes counts listeners workers
-  local busy=0 highest=0 unknown=false target
+# Count the runners of <pool> from current native process evidence on immutable
+# owned IDs, and print "highest busy idle unknown". Logs cannot prove idle.
+#   * highest: the highest slot index the pool holds, in any state;
+#   * busy: running with one Runner.Listener and one Runner.Worker;
+#   * idle: running with one Runner.Listener and no Runner.Worker;
+#   * a runner that is still starting (created, or running before its listener)
+#     is pending capacity: it keeps its slot and will take the next job, so it
+#     is neither busy, idle nor unknown;
+#   * unknown: true when any owner is paused or in another state, or its
+#     process list is unreadable or unexpected.
+pool_runner_counts() {
+  local pool="$1" maximum names c observed_pool snapshot id idx state processes counts listeners workers
+  local busy=0 idle=0 highest=0 unknown=false
   maximum="$(pool_max "$pool")" || return 1
-  minimum="$(pool_min "$pool")" || return 1
-  warm="$(pool_idle "$pool")" || return 1
-  [ "$warm" -gt 0 ] || warm=1
   names="$(managed_names)" || return 1
   while IFS= read -r c; do
     [ -n "$c" ] || continue
@@ -2881,7 +2894,7 @@ pool_start_target() {
     [ "$idx" -le "$highest" ] || highest="$idx"
     state="$(docker inspect --format '{{.State.Status}}|{{.State.Paused}}' "$id")" || return 1
     case "$state" in
-      exited\|false) continue ;;
+      exited\|false|created\|false) continue ;;
       running\|false) ;;
       *) unknown=true; continue ;;
     esac
@@ -2902,12 +2915,35 @@ pool_start_target() {
       name == "Runner.Worker" { workers++ }
       END { if (bad) exit 1; print listeners+0 "|" workers+0 }')" || { unknown=true; continue; }
     IFS='|' read -r listeners workers <<< "$counts"
-    if [ "$listeners" -ne 1 ] || [ "$workers" -gt 1 ]; then
+    if [ "$listeners" -eq 0 ] && [ "$workers" -eq 0 ]; then
+      continue
+    elif [ "$listeners" -ne 1 ] || [ "$workers" -gt 1 ]; then
       unknown=true
     elif [ "$workers" -eq 1 ]; then
       busy=$((busy + 1))
+    else
+      idle=$((idle + 1))
     fi
   done <<< "$names"
+  printf '%s %s %s %s\n' "$highest" "$busy" "$idle" "$unknown"
+}
+
+# The slot count a pool should hold: its highest slot, or busy + warm runners
+# when that is more. Unknown owners keep their exact slots and suppress
+# growth. With a fresh queue reading (growth-queue.sh), the pool grows toward
+# busy + queued jobs instead of busy + warm. Clamped to the pool's bounds. This
+# target calculation never removes a runner.
+pool_start_target() {
+  local pool="$1" maximum minimum warm counts highest busy idle unknown target queued
+  maximum="$(pool_max "$pool")" || return 1
+  minimum="$(pool_min "$pool")" || return 1
+  warm="$(pool_idle "$pool")" || return 1
+  [ "$warm" -gt 0 ] || warm=1
+  counts="$(pool_runner_counts "$pool")" || return 1
+  read -r highest busy idle unknown <<< "$counts"
+  # A pool with no idle runner may have jobs waiting: keep its reading fresh.
+  [ "$idle" -gt 0 ] || growth_queue_request
+  if queued="$(growth_queue_depth "$pool")" && [ "$queued" -gt "$warm" ]; then warm="$queued"; fi
   target="$highest"
   if [ "$unknown" = false ] && [ "$target" -lt $((busy + warm)) ]; then target=$((busy + warm)); fi
   [ "$target" -ge "$minimum" ] || target="$minimum"
@@ -4010,6 +4046,10 @@ memory_limit_bytes() {
 
 cmd_queued_refresh() {
   provider_call queued_refresh
+}
+
+cmd_pool_queue_refresh() {
+  [ "$CI_PROVIDER" = gitlab ] || github_pool_queue_refresh
 }
 
 # Warm dependency caches can contain live SQLite indexes and must only be
@@ -5510,6 +5550,7 @@ case "${1:-status}" in
   image-info-json) cmd_image_info_json ;;
   queued-json)  cmd_queued_json ;;
   queued-refresh) cmd_queued_refresh ;;
+  pool-queue-refresh) cmd_pool_queue_refresh ;;
   cache-usage-json) cmd_cache_usage_json ;;
   cache-usage-refresh) cmd_cache_usage_refresh ;;
   usage-refresh) cmd_usage_refresh ;;
