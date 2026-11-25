@@ -12,8 +12,8 @@
 #     may be waiting for the pool, such a restart skips the gate's CPU checks
 #     and its per-tick pacing. Memory checks, and readable host metrics, still
 #     apply. With a fresh queue reading, jobs are waiting while the reading's
-#     queued jobs, minus the runners started since it, outnumber the pool's
-#     idle and starting runners. Without one, jobs may be waiting while the
+#     queued jobs, minus the busy runners that started since it, outnumber the
+#     pool's idle and starting runners. Without one, jobs may be waiting while the
 #     pool on this host has no idle runner: an idle runner takes a matching
 #     queued job within seconds. Otherwise restarts are gated as before, which
 #     is how a pool shrinks after demand ends. A restart counts as a
@@ -33,7 +33,7 @@
 #     last attempt wrote a reading. A reading older than
 #     GROWTH_QUEUE_MAX_AGE, a missing or malformed file, or a pool the reading
 #     does not name all mean "unknown", and the target is then busy + warm, as
-#     before. The reading can undercount, which only means less growth.
+#     before. A partial reading undercounts, which means less growth.
 #
 # Both act only for GitHub pools (RUNNER_MODE=pools) with AUTOSCALE and
 # GROWTH_BACKPRESSURE on, so the pool maximum, memory checks, and for net

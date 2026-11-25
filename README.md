@@ -788,8 +788,8 @@ like growth, the host is busy, and the slot stays exited while jobs wait.
   pacing. It keeps the pool's size and adds no load the host did not already
   carry. Memory checks still apply, and host metrics must still be readable.
   With a fresh queue reading (below), jobs are waiting while the reading's
-  queued jobs, minus the runners started since the reading, outnumber the
-  pool's idle and starting runners. Without a reading, jobs may be waiting
+  queued jobs, minus the busy runners that started since the reading,
+  outnumber the pool's idle and starting runners. Without a reading, jobs may be waiting
   while the pool on this host has no idle runner, because an idle runner takes
   a matching queued job within seconds. Otherwise restarts are checked as
   before. That is how a pool shrinks after a burst. Without a reading, a pool
@@ -798,8 +798,9 @@ like growth, the host is busy, and the slot stays exited while jobs wait.
   the number of queued jobs for each pool in the background, at most once
   every 90 seconds, whether or not the last attempt succeeded. The pool then
   grows toward its busy runners plus the jobs still waiting: queued jobs in
-  the reading, minus the runners started since it, plus the runners still
-  starting. This replaces busy plus `idle` when it is larger, up to the pool's
+  the reading, minus the busy runners that started since it. Idle and
+  starting runners already hold slots, so they cover waiting jobs without new
+  starts. This replaces busy plus `idle` when it is larger, up to the pool's
   `max`. Each new slot still needs the gate's CPU and memory headroom. The
   reader only looks at repositories in `GH_REPOS` that have a job running on
   this host, lists their queued and in-progress runs, and reads the job lists
