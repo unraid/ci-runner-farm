@@ -1608,9 +1608,11 @@ lifecycle_tick_steps() {
 # paused, so one batch must not hold the lock for its whole length. Resume only
 # from the snapshot that exists after the lock is reacquired.
 lifecycle_yield() {
+  crf_lock_release_begin
   flock -u 8 2>/dev/null
   sleep "$LIFECYCLE_YIELD"
   flock -n 8 2>/dev/null || return 1
+  crf_lock_release_end
   reload_locked_snapshot || return 1
   runner_starts_allowed
 }
@@ -1773,9 +1775,11 @@ lifecycle_event_candidates() {
 # Hand fleet.lock to any waiter between replacements, as the tick does, then
 # wait for it again. Resume only from the snapshot after the lock returns.
 lifecycle_event_yield() {
+  crf_lock_release_begin
   flock -u 8 2>/dev/null
   sleep "$LIFECYCLE_YIELD"
   flock -w "$LIFECYCLE_EVENT_LOCK_WAIT" 8 2>/dev/null || return 1
+  crf_lock_release_end
   reload_locked_snapshot
 }
 
@@ -1951,9 +1955,11 @@ drain_and_recreate() {
       log "image-update: $c still busy after ${limit}s — leaving on old image this cycle"
       return 1
     fi
+    crf_lock_release_begin
     flock -u 8 2>/dev/null                 # release the fleet lock while idle-waiting
     sleep 15; waited=$((waited+15))
     flock -w 20 8 2>/dev/null || { log "image-update: fleet busy elsewhere — deferring $c to next cycle"; return 1; }
+    crf_lock_release_end
     # Another action may have changed provider settings or removed a credential
     # while this drain deliberately released fleet.lock. Resume only from the
     # snapshot that exists after the lock was reacquired.
@@ -3128,16 +3134,24 @@ with_fleet_lock() {
   fi
 }
 
-crf_fleet_lock_requested() { crf_timing_now; CRF_LOCK_REQUESTED="$CRF_NOW_US"; CRF_LOCK_ACQUIRED=""; }
+crf_fleet_lock_requested() {
+  crf_timing_now; CRF_LOCK_REQUESTED="$CRF_NOW_US"; CRF_LOCK_ACQUIRED=""
+  CRF_LOCK_RELEASED_US=0; CRF_LOCK_RELEASE_AT=""
+}
 crf_fleet_lock_acquired() { crf_timing_now; CRF_LOCK_ACQUIRED="$CRF_NOW_US"; }
-# <rc or busy> <caller>: one "op=lock" line with wait_ms and hold_ms.
+# <rc or busy> <caller>: one "op=lock" line with wait_ms, hold_ms and
+# released_ms (time the command gave the lock back, for example in a yield;
+# not part of hold_ms).
 crf_fleet_lock_timing() {
-  local line
+  local line released=0
+  # A yield that could not take the lock back stays released to the end.
+  [ -z "${CRF_LOCK_RELEASE_AT:-}" ] || crf_lock_release_end
   crf_timing_now
-  if [ -n "$CRF_LOCK_ACQUIRED" ]; then
-    line="wait_ms=$(crf_timing_ms "$CRF_LOCK_REQUESTED" "$CRF_LOCK_ACQUIRED") hold_ms=$(crf_timing_ms "$CRF_LOCK_ACQUIRED" "$CRF_NOW_US")"
+  [ -z "${CRF_LOCK_RELEASED_US:-}" ] || released=$(( CRF_LOCK_RELEASED_US / 1000 ))
+  if [ -n "$CRF_LOCK_ACQUIRED" ] && [ -n "$CRF_NOW_US" ]; then
+    line="wait_ms=$(crf_timing_ms "$CRF_LOCK_REQUESTED" "$CRF_LOCK_ACQUIRED") hold_ms=$(( (CRF_NOW_US - CRF_LOCK_ACQUIRED) / 1000 - released )) released_ms=$released"
   else
-    line="wait_ms=$(crf_timing_ms "$CRF_LOCK_REQUESTED" "$CRF_NOW_US") hold_ms=0"
+    line="wait_ms=$(crf_timing_ms "$CRF_LOCK_REQUESTED" "$CRF_NOW_US") hold_ms=0 released_ms=0"
   fi
   crf_timing_write "op=lock subject=${2:--} rc=$1 $line"
 }

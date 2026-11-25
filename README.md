@@ -824,14 +824,19 @@ batches of runner exits. Each line is `key=value` fields:
 
 ```text
 ts=1767225600.123 op=recycle subject=ci-runner-build-3 rc=0 total_ms=9810 checks_ms=40 inventory_ms=1200 ...
-ts=1767225610.456 op=lock subject=autoscale_tick rc=0 wait_ms=0 hold_ms=4200
+ts=1767225610.456 op=lock subject=autoscale_tick rc=0 wait_ms=0 hold_ms=4200 released_ms=0
 ```
 
 A `*_ms` field is the time since the previous step, so the steps of one line
-add up to its `total_ms`. `op=lock` lines give the wait for and the hold of
-the fleet lock, and `rc=busy` marks a check that skipped because the lock was
+add up to at most its `total_ms`: an early return or the time after the last
+step is not a step. A step can appear more than once, for example once per
+replacement, so add the repeats. `op=lock` lines give the wait for the fleet
+lock, the time it was held (`hold_ms`), and the time the holder gave it back
+in between, for example in a pause between replacements (`released_ms`, not
+part of `hold_ms`). `rc=busy` marks a check that skipped because the lock was
 taken. The file stays under 4 MiB: when it grows past that, its older half is
-dropped. Timing never changes what an operation does or returns.
+dropped. It is never written to flash. Timing never changes what an
+operation does or returns.
 
 ![Fleet state and controls](docs/images/fleet.png)
 

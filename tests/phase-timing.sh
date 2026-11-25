@@ -41,6 +41,16 @@ outer
 # Without EPOCHREALTIME, date supplies the time.
 ( unset EPOCHREALTIME; timed ) || fail "fallback clock failed"
 [[ "$(last)" == *"op=demo"* ]] || fail "fallback clock wrote no line"
+# A failing clock (no EPOCHREALTIME and a failing date) never changes an
+# operation's status.
+rc=0; ( unset EPOCHREALTIME; date() { return 1; }; reload_locked_snapshot() { return 0; }; r3() { return 3; }
+  with_fleet_lock try r3 ) || rc=$?
+[ "$rc" = 3 ] || fail "a failing clock changed the lock status to $rc"
+# The timing file is never written to flash (RUNDIR's fallback).
+lines="$(wc -l < "$T")"
+( RUNDIR=/boot/config/plugins/ci-runner-farm; crf_timing_write "op=flash" ) || fail "flash refusal failed"
+( CFGDIR="$RUNDIR"; crf_timing_write "op=flash" ) || fail "config-folder refusal failed"
+[ "$(wc -l < "$T")" = "$lines" ] && ! grep -q 'op=flash' "$T" || fail "timing was written to the config folder"
 # An unwritable timing file never fails the operation.
 ( RUNDIR="$tmp/missing/dir"; timed ) || fail "a write failure failed the operation"
 # The file stays under its cap and keeps whole lines.
@@ -55,7 +65,16 @@ CRF_TIMING_MAX_BYTES=4194304
 reload_locked_snapshot() { return 0; }
 returns() { return "$1"; }
 with_fleet_lock wait returns 0 || fail "lock wait changed rc 0"
-[[ "$(last)" =~ op=lock\ subject=returns\ rc=0\ wait_ms=[0-9]+\ hold_ms=[0-9]+$ ]] || fail "lock line: $(last)"
+[[ "$(last)" =~ op=lock\ subject=returns\ rc=0\ wait_ms=[0-9]+\ hold_ms=[0-9]+\ released_ms=0$ ]] || fail "lock line: $(last)"
+# Time the holder gives the lock back is reported apart from the hold.
+yields() { sleep 0.1; crf_lock_release_begin; flock -u 8; sleep 0.4; flock 8; crf_lock_release_end; sleep 0.1; }
+with_fleet_lock wait yields || fail "yielding command failed"
+line="$(last)"; released="$(field "$line" released_ms)"; hold="$(field "$line" hold_ms)"
+[ "$released" -ge 350 ] && [ "$hold" -lt 350 ] || fail "released time counted as hold: $line"
+# A yield that cannot take the lock back stays released until the command ends.
+lost() { crf_lock_release_begin; flock -u 8; sleep 0.3; return 5; }
+rc=0; with_fleet_lock wait lost || rc=$?
+[ "$rc" = 5 ] && [ "$(field "$(last)" released_ms)" -ge 250 ] || fail "lost yield: rc $rc, $(last)"
 rc=0; with_fleet_lock try returns 3 || rc=$?
 [ "$rc" = 3 ] || fail "lock try changed rc 3 to $rc"
 # A try that finds the lock busy skips with status 0 and records the skip.
@@ -97,5 +116,13 @@ lifecycle_event_dispatch "$id1 ci-runner-build-1 0"$'\n'"$id2 ci-runner-build-2 
 line="$(last)"
 [[ "$line" == *"op=event-batch subject=slots-2 rc=0 "*"lock_wait_ms="*"setup_ms="*"replace_ms="*"yield_wait_ms="*"replace_ms="* ]] \
   || fail "event batch line: $line"
+
+# A batch that cannot get the lock records "busy" and leaves the slots to the tick.
+LIFECYCLE_EVENT_LOCK_WAIT=1; : > "$REPLACED"
+( flock 9; sleep 2.5 ) 9>"$RUNDIR/fleet.lock" &
+holder=$!; sleep 0.3
+lifecycle_event_dispatch "$id1 ci-runner-build-1 0" >/dev/null 2>&1 || fail "busy event batch failed"
+wait "$holder"
+[ ! -s "$REPLACED" ] && [[ "$(last)" == *"op=event-batch subject=slots-1 rc=busy "*"lock_wait_ms="* ]] || fail "busy batch: $(last)"
 
 echo 'phase-timing: OK — line format, phase sums, helper marks, fallbacks, cap, lock wait/hold/busy, wrapper output and status, event batches'
