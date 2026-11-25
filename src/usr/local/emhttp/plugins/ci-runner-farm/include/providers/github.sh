@@ -1299,17 +1299,29 @@ github_remove_runner() {
   crf_timing_mark deregister
   if [ "$purge" = true ]; then
     root="$(crf_safe_cache_root)" || { err "refusing GitHub runner cleanup under unsafe CACHE_ROOT '$CACHE_ROOT'"; return 1; }
+    case "$c" in ''|.*|*[!A-Za-z0-9._-]*) return 1 ;; esac
     directory="$root/work/$c"
+    # Large slot trees are moved aside and deleted in the background, so a
+    # removal does not hold fleet.lock for minutes. A tree that cannot be
+    # moved safely is deleted in place, as before.
     # Retire pooled stores even if the setting was disabled after allocation.
     # Legacy workspaces keep their preexisting lifetime.
     if [ -e "$directory/podman-root" ] || [ -L "$directory/podman-root" ] \
       || [ -e "$directory/podman-runner" ] || [ -L "$directory/podman-runner" ]; then
-      case "$c" in ''|.*|*[!A-Za-z0-9._-]*) return 1 ;; esac
       [ ! -L "$directory" ] && [ "$(realpath -e -- "$directory")" = "$directory" ] || return 1
       github_pooled_slot_unreferenced "$directory" || return 1
-      rm -rf --one-file-system -- "$directory" || return 1
+      if [ "${CRF_PURGE_INPLACE:-0}" != 1 ] && crf_stage_aside "$directory" "$root/work/.trash" "$c"; then
+        github_work_trash_sweep_async
+      else
+        rm -rf --one-file-system -- "$directory" || return 1
+      fi
     fi
-    rm -rf "$root/docker/$c" 2>/dev/null || failed=1
+    # CRF_PURGE_INPLACE=1 asks for the space now (pressure cleanup).
+    if [ "${CRF_PURGE_INPLACE:-0}" != 1 ] && crf_stage_aside "$root/docker/$c" "$root/docker-evicted" "$c"; then
+      [ ! -d "$root/docker-evicted" ] || layer_integrity_reap_evicted "$root/docker-evicted"
+    else
+      rm -rf "$root/docker/$c" 2>/dev/null || failed=1
+    fi
   fi
   return "$failed"
 }

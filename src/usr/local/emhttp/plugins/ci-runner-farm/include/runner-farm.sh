@@ -1205,6 +1205,35 @@ layer_integrity_evict_store() {
   layer_integrity_reap_evicted "$trash"
 }
 
+# The mount that holds <path>. findmnt sees a bind mount of the same
+# filesystem, which stat's device number and %m cannot.
+crf_mount_of() {
+  findmnt -n -o TARGET --target "$1" 2>/dev/null || stat -c %m -- "$1" 2>/dev/null
+}
+
+# Move <path> into folder <trash> with a same-filesystem rename, so that a
+# large tree can be deleted in the background instead of under fleet.lock.
+# Returns 0 when <path> is gone (moved, or absent), and 1 when a rename is not
+# safe: <path> is a symlink or its own mount, the trash folder does not resolve
+# to itself, or the two are on different filesystems or mounts (a rename must
+# never turn into a copy). The caller then deletes in place, as before. The
+# moved folder is stamped now, so its age tells how long it has waited.
+crf_stage_aside() {
+  local path="$1" trash="$2" name="$3" device mount dest
+  [ -e "$path" ] || [ -L "$path" ] || return 0
+  [ ! -L "$path" ] && [ -d "$path" ] || return 1
+  device="$(stat -c %d -- "$path" 2>/dev/null)" && mount="$(crf_mount_of "$path")" && [ -n "$mount" ] || return 1
+  [ "$device" = "$(stat -c %d -- "${path%/*}" 2>/dev/null)" ] && [ "$mount" = "$(crf_mount_of "${path%/*}")" ] || return 1
+  [ ! -L "$trash" ] && mkdir -p -- "$trash" 2>/dev/null \
+    && [ "$(realpath -e -- "$trash" 2>/dev/null)" = "$trash" ] \
+    && [ "$device" = "$(stat -c %d -- "$trash" 2>/dev/null)" ] \
+    && [ "$mount" = "$(crf_mount_of "$trash")" ] || return 1
+  dest="$trash/$name.$(date +%s).$$.$RANDOM"
+  mv -T -- "$path" "$dest" 2>/dev/null || return 1
+  touch -c -- "$dest" 2>/dev/null || true
+  [ ! -e "$path" ] && [ ! -L "$path" ]
+}
+
 # Delete moved-aside stores in the background, one reaper at a time. The child
 # closes the inherited fleet-lock descriptors so it never holds the lock.
 layer_integrity_reap_evicted() {
@@ -1213,15 +1242,45 @@ layer_integrity_reap_evicted() {
     exec 7>&- 8>&- 9>&-
     exec 9>"$RUNDIR/layer-evicted.lock" || exit 0
     flock -n 9 || exit 0
-    for d in "$trash"/*; do
-      [ -d "$d" ] && [ ! -L "$d" ] || continue
-      if command -v ionice >/dev/null 2>&1; then
-        ionice -c 3 nice -n 19 rm -rf --one-file-system -- "$d"
-      else
-        nice -n 19 rm -rf --one-file-system -- "$d"
-      fi
+    # Up to three passes, so a store moved aside during a pass is not left
+    # waiting for the next trigger.
+    for pass in 1 2 3; do
+      found=false
+      for d in "$trash"/*; do
+        [ -d "$d" ] && [ ! -L "$d" ] || continue
+        found=true
+        if command -v ionice >/dev/null 2>&1; then
+          ionice -c 3 nice -n 19 rm -rf --one-file-system -- "$d"
+        else
+          nice -n 19 rm -rf --one-file-system -- "$d"
+        fi
+      done
+      [ "$found" = true ] || break
     done
   ) </dev/null >/dev/null 2>&1 &
+}
+
+# Restart the background deletes when moved-aside trees are left over, for
+# example after a restart during a delete. Cheap when there is nothing to do.
+# A tree still there after six hours cannot be deleted (an immutable file, a
+# nested mount); it is reported at most once an hour.
+crf_reap_staged_stores() {
+  local root stuck mark="$RUNDIR/staged-stuck.logged"
+  root="$(crf_safe_cache_root 2>/dev/null)" || return 0
+  # A trash folder is used only when it resolves to itself, so no symlink in
+  # its path can point the delete somewhere else.
+  if [ "$(realpath -e -- "$root/work/.trash" 2>/dev/null)" = "$root/work/.trash" ] \
+    && [ -n "$(ls -A "$root/work/.trash" 2>/dev/null)" ]; then
+    github_work_trash_sweep_async
+  fi
+  [ "$(realpath -e -- "$root/docker-evicted" 2>/dev/null)" = "$root/docker-evicted" ] \
+    && [ -n "$(ls -A "$root/docker-evicted" 2>/dev/null)" ] || return 0
+  layer_integrity_reap_evicted "$root/docker-evicted"
+  stuck="$(find "$root/docker-evicted" -mindepth 1 -maxdepth 1 -mmin +360 2>/dev/null | wc -l | tr -d ' ')"
+  if [ "${stuck:-0}" -gt 0 ] && [ -z "$(find "$mark" -mmin -60 2>/dev/null)" ]; then
+    touch "$mark" 2>/dev/null || true
+    err "storage: $stuck moved-aside Docker store(s) in $root/docker-evicted could not be deleted for over six hours; check them"
+  fi
 }
 
 # Evict one slot's corrupt layers inside its idle runner. Exit 20 means a job
@@ -1573,6 +1632,7 @@ lifecycle_tick_steps() {
   crf_storage_pressure_cleanup
   crf_timing_mark pressure_cleanup
   crf_retired_slot_cleanup
+  crf_reap_staged_stores
   crf_timing_mark retired_cleanup
   crf_runner_image_prune
   crf_timing_mark image_prune
@@ -4262,7 +4322,7 @@ cmd_cache_usage_refresh() {
   # Scope the "cache" total to the warm caches — exclude each runner's Docker data
   # root (docker/), the workspace (work/), the image mirror, and DinD logs, which are
   # the fleet's Docker storage (tens of GB per runner), not clearable cache.
-  total="$(du -sb --exclude=docker --exclude=work --exclude=registry-mirror --exclude=dind-logs "$root" 2>/dev/null | cut -f1)"; [ -n "$total" ] || total=-1
+  total="$(du -sb --exclude=docker --exclude=docker-evicted --exclude=.retired-staging --exclude=work --exclude=registry-mirror --exclude=dind-logs "$root" 2>/dev/null | cut -f1)"; [ -n "$total" ] || total=-1
   for d in $CACHE_PKG_DIRS; do
     [ -d "$root/$d" ] && { n="$(du -sb "$root/$d" 2>/dev/null | cut -f1)"; pkg=$(( pkg + ${n:-0} )); }
   done
@@ -5088,7 +5148,9 @@ cmd_prune_completed_docker() {
       log "completed Docker store eligible for lifecycle cleanup: $c"
       continue
     fi
-    remove_runner "$c" true "$id" github || return 1
+    # Pressure cleanup checks free space after each removal, so this delete
+    # must free the space now, not later in the background.
+    CRF_PURGE_INPLACE=1 remove_runner "$c" true "$id" github || return 1
     docker inspect "$id" >/dev/null 2>&1 && return 1
     docker inspect "$c" >/dev/null 2>&1 && return 1
     [ ! -e "$store" ] && [ ! -L "$store" ] || return 1
