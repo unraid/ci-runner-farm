@@ -19,7 +19,12 @@ runner_pool() { echo build; }
 pool_activate() { :; }
 crf_safe_cache_root() { echo "$fixture_root"; }
 crf_docker_storage_references() { [ "$1" = "$fixture_id" ] || return 1; printf '%s\n' "$fixture_references"; }
-github_remove_runner() { echo remove >> "$tmp/order"; touch "$tmp/removed"; rm -rf "$fixture_store"; }
+# Pressure cleanup must free space now; the real purge would otherwise only move
+# the store aside for the background reaper.
+github_remove_runner() {
+  [ "${CRF_PURGE_INPLACE:-0}" = 1 ] || fail 'pressure cleanup did not ask for an in-place delete'
+  echo remove >> "$tmp/order"; touch "$tmp/removed"; rm -rf "$fixture_store"
+}
 docker() {
   [ "$1" = inspect ] || return 1
   if [ "$2" != --format ]; then [ ! -e "$tmp/removed" ]; return; fi

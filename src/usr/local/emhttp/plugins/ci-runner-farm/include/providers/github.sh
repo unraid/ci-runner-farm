@@ -1310,13 +1310,14 @@ github_remove_runner() {
       || [ -e "$directory/podman-runner" ] || [ -L "$directory/podman-runner" ]; then
       [ ! -L "$directory" ] && [ "$(realpath -e -- "$directory")" = "$directory" ] || return 1
       github_pooled_slot_unreferenced "$directory" || return 1
-      if crf_stage_aside "$directory" "$root/work/.trash" "$c"; then
+      if [ "${CRF_PURGE_INPLACE:-0}" != 1 ] && crf_stage_aside "$directory" "$root/work/.trash" "$c"; then
         github_work_trash_sweep_async
       else
         rm -rf --one-file-system -- "$directory" || return 1
       fi
     fi
-    if crf_stage_aside "$root/docker/$c" "$root/docker-evicted" "$c"; then
+    # CRF_PURGE_INPLACE=1 asks for the space now (pressure cleanup).
+    if [ "${CRF_PURGE_INPLACE:-0}" != 1 ] && crf_stage_aside "$root/docker/$c" "$root/docker-evicted" "$c"; then
       [ ! -d "$root/docker-evicted" ] || layer_integrity_reap_evicted "$root/docker-evicted"
     else
       rm -rf "$root/docker/$c" 2>/dev/null || failed=1

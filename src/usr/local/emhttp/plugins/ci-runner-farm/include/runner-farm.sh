@@ -1209,16 +1209,21 @@ layer_integrity_evict_store() {
 # large tree can be deleted in the background instead of under fleet.lock.
 # Returns 0 when <path> is gone (moved, or absent), and 1 when a rename is not
 # safe: <path> is a symlink or its own mount, the trash folder does not resolve
-# to itself, or the two are on different filesystems (a rename must never turn
-# into a copy). The caller then deletes in place, as before.
+# to itself, or the two are on different filesystems or mounts (a rename must
+# never turn into a copy; a bind mount of the same filesystem has the same
+# device number, so the mount point is compared too). The caller then deletes
+# in place, as before.
 crf_stage_aside() {
-  local path="$1" trash="$2" name="$3"
+  local path="$1" trash="$2" name="$3" device mount
   [ -e "$path" ] || [ -L "$path" ] || return 0
   [ ! -L "$path" ] && [ -d "$path" ] || return 1
-  [ "$(stat -c %d -- "$path" 2>/dev/null)" = "$(stat -c %d -- "${path%/*}" 2>/dev/null)" ] || return 1
+  device="$(stat -c %d -- "$path" 2>/dev/null)" && mount="$(stat -c %m -- "$path" 2>/dev/null)" || return 1
+  [ "$device" = "$(stat -c %d -- "${path%/*}" 2>/dev/null)" ] \
+    && [ "$mount" = "$(stat -c %m -- "${path%/*}" 2>/dev/null)" ] || return 1
   [ ! -L "$trash" ] && mkdir -p -- "$trash" 2>/dev/null \
     && [ "$(realpath -e -- "$trash" 2>/dev/null)" = "$trash" ] \
-    && [ "$(stat -c %d -- "$path" 2>/dev/null)" = "$(stat -c %d -- "$trash" 2>/dev/null)" ] || return 1
+    && [ "$device" = "$(stat -c %d -- "$trash" 2>/dev/null)" ] \
+    && [ "$mount" = "$(stat -c %m -- "$trash" 2>/dev/null)" ] || return 1
   mv -T -- "$path" "$trash/$name.$(date +%s).$$.$RANDOM" 2>/dev/null || return 1
   [ ! -e "$path" ] && [ ! -L "$path" ]
 }
@@ -1249,14 +1254,25 @@ layer_integrity_reap_evicted() {
   ) </dev/null >/dev/null 2>&1 &
 }
 
-# Restart the background reaper when moved-aside stores are left over, for
+# Restart the background deletes when moved-aside trees are left over, for
 # example after a restart during a delete. Cheap when there is nothing to do.
+# A tree still there after six hours cannot be deleted (an immutable file, a
+# nested mount); it is reported at most once an hour.
 crf_reap_staged_stores() {
-  local root
+  local root stuck mark="$RUNDIR/staged-stuck.logged"
   root="$(crf_safe_cache_root 2>/dev/null)" || return 0
+  if [ -d "$root/work/.trash" ] && [ ! -L "$root/work/.trash" ] \
+    && [ -n "$(ls -A "$root/work/.trash" 2>/dev/null)" ]; then
+    github_work_trash_sweep_async
+  fi
   [ -d "$root/docker-evicted" ] && [ ! -L "$root/docker-evicted" ] \
     && [ -n "$(ls -A "$root/docker-evicted" 2>/dev/null)" ] || return 0
   layer_integrity_reap_evicted "$root/docker-evicted"
+  stuck="$(find "$root/docker-evicted" -mindepth 1 -maxdepth 1 -mmin +360 2>/dev/null | wc -l | tr -d ' ')"
+  if [ "${stuck:-0}" -gt 0 ] && [ -z "$(find "$mark" -mmin -60 2>/dev/null)" ]; then
+    touch "$mark" 2>/dev/null || true
+    err "storage: $stuck moved-aside Docker store(s) in $root/docker-evicted could not be deleted for over six hours; check them"
+  fi
 }
 
 # Evict one slot's corrupt layers inside its idle runner. Exit 20 means a job
@@ -4298,7 +4314,7 @@ cmd_cache_usage_refresh() {
   # Scope the "cache" total to the warm caches — exclude each runner's Docker data
   # root (docker/), the workspace (work/), the image mirror, and DinD logs, which are
   # the fleet's Docker storage (tens of GB per runner), not clearable cache.
-  total="$(du -sb --exclude=docker --exclude=work --exclude=registry-mirror --exclude=dind-logs "$root" 2>/dev/null | cut -f1)"; [ -n "$total" ] || total=-1
+  total="$(du -sb --exclude=docker --exclude=docker-evicted --exclude=.retired-staging --exclude=work --exclude=registry-mirror --exclude=dind-logs "$root" 2>/dev/null | cut -f1)"; [ -n "$total" ] || total=-1
   for d in $CACHE_PKG_DIRS; do
     [ -d "$root/$d" ] && { n="$(du -sb "$root/$d" 2>/dev/null | cut -f1)"; pkg=$(( pkg + ${n:-0} )); }
   done
@@ -5124,7 +5140,9 @@ cmd_prune_completed_docker() {
       log "completed Docker store eligible for lifecycle cleanup: $c"
       continue
     fi
-    remove_runner "$c" true "$id" github || return 1
+    # Pressure cleanup checks free space after each removal, so this delete
+    # must free the space now, not later in the background.
+    CRF_PURGE_INPLACE=1 remove_runner "$c" true "$id" github || return 1
     docker inspect "$id" >/dev/null 2>&1 && return 1
     docker inspect "$c" >/dev/null 2>&1 && return 1
     [ ! -e "$store" ] && [ ! -L "$store" ] || return 1

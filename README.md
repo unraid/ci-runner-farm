@@ -1058,7 +1058,10 @@ existing background reapers delete them at idle priority. The fleet lock is
 not held for a large delete. A folder that is a symlink, its own mount, or on
 another filesystem than its trash folder is deleted in place, as before. The
 lifecycle check restarts the reaper when moved-aside stores are left over,
-for example after a restart. Until a store is deleted, its space stays in use.
+for example after a restart, and reports a store that could not be deleted
+for six hours. Until a store is deleted, its space stays in use, and the
+storage start guard counts it as used. Pressure cleanup still deletes in place,
+because it checks the free space after each removal.
 
 A slot that the saved layout can no longer create leaves its storage behind:
 its pool was removed, or its index is above the pool maximum after the

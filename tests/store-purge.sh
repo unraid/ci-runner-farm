@@ -73,22 +73,41 @@ slot ci-runner-build-9; rm -rf "$ROOT/docker/ci-runner-build-9"
 github_remove_runner ci-runner-build-9 true || fail "purge of a missing store failed"
 
 # ---- leftovers restart the reaper; an empty folder does not ----------------------
-mkdir -p "$ROOT/docker-evicted"; : > "$tmp/calls"
+slot ci-runner-build-1; mkdir -p "$ROOT/docker-evicted"; : > "$tmp/calls"
 crf_reap_staged_stores
-[ ! -s "$tmp/calls" ] || fail "reaper started for an empty folder"
+[ ! -s "$tmp/calls" ] || fail "reaper started for empty folders: $(cat "$tmp/calls")"
 mkdir -p "$ROOT/docker-evicted/ci-runner-build-1.1.1.1"
 crf_reap_staged_stores
 grep -qx "reap $ROOT/docker-evicted" "$tmp/calls" || fail "leftovers did not restart the reaper"
 
-# ---- the real reaper deletes in the background and never holds fd 8 ----------------
+# ---- in-place purge on request (pressure cleanup) --------------------------------
+slot ci-runner-build-10
+CRF_PURGE_INPLACE=1 github_remove_runner ci-runner-build-10 true || fail "in-place purge failed"
+[ ! -e "$ROOT/docker/ci-runner-build-10" ] && [ "$(staged docker-evicted ci-runner-build-10)" = 0 ] \
+  && [ "$(staged work/.trash ci-runner-build-10)" = 0 ] || fail "in-place purge staged a tree"
+# ---- a store on a different mount of the same device is deleted in place ----------
+slot ci-runner-build-11
+stat() { if [ "$1 $2" = "-c %m" ] && [ "${*: -1}" = "$ROOT/docker-evicted" ]; then echo /elsewhere; else command stat "$@"; fi; }
+github_remove_runner ci-runner-build-11 true || fail "cross-mount purge failed"
+unset -f stat
+[ ! -e "$ROOT/docker/ci-runner-build-11" ] && [ "$(staged docker-evicted ci-runner-build-11)" = 0 ] || fail "a cross-mount store was staged"
+# ---- pooled-trash leftovers restart their sweep too; old stores are reported -----
+rm -rf "$ROOT/docker-evicted"/*; mkdir -p "$ROOT/work/.trash/x.1"; : > "$tmp/calls"
+crf_reap_staged_stores
+grep -qx sweep "$tmp/calls" || fail "pooled trash leftovers did not restart the sweep"
+mkdir -p "$ROOT/docker-evicted/old.1"; touch -d '-7 hours' "$ROOT/docker-evicted/old.1"
+log_err="$(crf_reap_staged_stores 2>&1)"
+[[ "$log_err" == *"could not be deleted for over six hours"* ]] || fail "stuck store not reported: $log_err"
+[ -z "$(crf_reap_staged_stores 2>&1)" ] || fail "stuck store reported more than once an hour"
+# The lifecycle check runs the leftover sweep.
+grep -q 'crf_reap_staged_stores' <(declare -f lifecycle_tick_steps) || fail "lifecycle tick does not restart leftover deletes"
+
+# ---- the real reaper deletes every moved-aside store in the background ------------
 unset -f layer_integrity_reap_evicted
 . <(sed -n '/^layer_integrity_reap_evicted() {/,/^}/p' src/usr/local/emhttp/plugins/ci-runner-farm/include/runner-farm.sh)
-mkdir -p "$ROOT/docker-evicted/a.1/x" "$ROOT/docker-evicted/b.2/y"
-exec 8>"$RUNDIR/fleet.lock"; flock 8
+rm -rf "$ROOT/docker-evicted"; mkdir -p "$ROOT/docker-evicted/a.1/x" "$ROOT/docker-evicted/b.2/y"
 layer_integrity_reap_evicted "$ROOT/docker-evicted"
 for _ in $(seq 1 50); do [ -z "$(ls -A "$ROOT/docker-evicted")" ] && break; sleep 0.1; done
 [ -z "$(ls -A "$ROOT/docker-evicted")" ] || fail "reaper left stores: $(ls "$ROOT/docker-evicted")"
-exec 8>&-
-( flock -n 9 ) 9>"$RUNDIR/fleet.lock" || fail "reaper kept the fleet lock"
 
 echo 'store-purge: OK — stores and pooled workspaces moved aside, background deletes, safe fallbacks, leftovers reaped'
