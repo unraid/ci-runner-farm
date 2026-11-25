@@ -1,0 +1,20 @@
+{
+  "disposition": "PATCH",
+  "expected_structural_delta": "One new module (phase-timing.sh), four thin wrappers whose bodies move unchanged into *_steps functions, marks inside existing functions. No new daemon, setting, dependency or lock.",
+  "minimum_design": "A small phase-timing module with a begin/mark/end accumulator using Bash dynamic scope; thin wrappers around cmd_recycle, github_start_one, autoscale_tick and lifecycle_tick that keep output and status; lock wait/hold in with_fleet_lock; batch timing in the exit-event dispatch; one capped file in RUNDIR.",
+  "outcome": "Each fleet operation records where its time goes (lock wait and hold, recycle and start steps, tick sections, exit batches) in a bounded runtime file, with no change to what any operation does or returns.",
+  "reuse_decisions": [
+    {
+      "decision": "not applicable",
+      "name": "log()/daemon logs",
+      "rationale": "Daemon logs are untimestamped and never trimmed; timing needs its own bounded file."
+    },
+    {
+      "decision": "extend",
+      "name": "with_fleet_lock",
+      "rationale": "Measure wait and hold at the one acquire helper, keeping its exit statuses."
+    }
+  ],
+  "schema": "limetech.ai-review-marker.v2",
+  "stage": "forecast"
+}
