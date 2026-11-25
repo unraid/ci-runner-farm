@@ -609,7 +609,7 @@ _(Autoscale: CPU ceiling (%))_:
 : <input type="number" name="GROWTH_CPU_CEILING" min="1" max="100" value="<?=crf_g($cfg,'GROWTH_CPU_CEILING','80')?>">
 
 :crf_growth_cpu_plug:
-> Host CPU busy percent, measured between autoscale checks, above which growth is withheld.
+> Host CPU busy percent, measured over about the last minute, above which growth is withheld.
 :end
 
 _(Autoscale: memory reserve)_:

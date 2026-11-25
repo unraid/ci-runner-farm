@@ -737,7 +737,8 @@ still hold the old shape count as load where their cpusets overlap a group.
 `GROWTH_BACKPRESSURE="true"` (off by default) makes autoscale growth depend on
 live host resources. Before the farm starts a runner in a slot above the
 minimum (`AUTOSCALE_MIN`, or a pool's `min`), it checks two thresholds: host CPU
-busy percent, from `/proc/stat` between autoscale checks, must not be above
+busy percent, from `/proc/stat` over about the last minute (each autoscale and
+lifecycle check keeps a sample), must not be above
 `GROWTH_CPU_CEILING` (default `80`), and `MemAvailable` must be at least the
 runner's memory limit plus `GROWTH_MEMORY_RESERVE` (default `8g`). With `CPU_PINNING="true"`, it also
 checks the CPU block the new runner would be placed on: when that block's
@@ -771,6 +772,51 @@ several hosts can grow for the same jobs, and the surplus idle runners are
 removed by the normal scale-down: `AUTOSCALE_STEP` idle runners per
 `AUTOSCALE_IDLE_GRACE` checks while more than `AUTOSCALE_MIN_IDLE +
 AUTOSCALE_STEP` sit idle.
+
+#### Demand-aware pool growth
+
+With growth backpressure on, GitHub pools (`RUNNER_MODE="pools"`) also follow
+demand. `GROWTH_QUEUE` (engine-only, default `"true"`) controls this; set it
+to `"false"` to keep the plain gate. Without it, pools shrink during a burst:
+the restart of a slot whose ephemeral runner just finished a job is checked
+like growth, the host is busy, and the slot stays exited while jobs wait.
+
+- **Replacements.** When a runner exited with code 0 in the last 2 minutes,
+  after running for at least 30 seconds, starting its slot again is a
+  replacement while jobs may be waiting for its pool. A replacement skips the
+  CPU checks (the host ceiling and the CPU block check) and the per-check
+  pacing. It keeps the pool's size and adds no load the host did not already
+  carry. Memory checks still apply, and host metrics must still be readable.
+  With a fresh queue reading (below), jobs are waiting while the reading's
+  queued jobs, minus the busy runners that started since the reading,
+  outnumber the pool's idle and starting runners. Without a reading, jobs may be waiting
+  while the pool on this host has no idle runner, because an idle runner takes
+  a matching queued job within seconds. Otherwise restarts are checked as
+  before. That is how a pool shrinks after a burst. Without a reading, a pool
+  whose last jobs end together can still come back at full size.
+- **Queued jobs.** While a pool has no idle runner, the autoscale check reads
+  the number of queued jobs for each pool in the background, at most once
+  every 90 seconds, whether or not the last attempt succeeded. The pool then
+  grows toward its busy runners plus the jobs still waiting: queued jobs in
+  the reading, minus the busy runners that started since it. Idle and
+  starting runners already hold slots, so they cover waiting jobs without new
+  starts. This replaces busy plus `idle` when it is larger, up to the pool's
+  `max`. Each new slot still needs the gate's CPU and memory headroom. The
+  reader only looks at repositories in `GH_REPOS` that have a job running on
+  this host, lists their queued and in-progress runs, and reads the job lists
+  of at most 8 runs. It counts a queued job for the one pool whose labels
+  cover the job's labels, choosing the pool with the fewest labels. It stops
+  while fewer than 2,000 API requests remain in the current hour. A reading
+  older than 3 minutes, a reading from the future, or no reading means the
+  pool grows to busy plus `idle`, as before. A partial reading undercounts,
+  which means less growth. Each host reads the same queue, so several hosts
+  can grow for the same jobs. Pool mode never removes an idle runner, so the
+  extra runners stay until they take jobs or their restart is withheld after
+  a job.
+
+A runner that is still starting (created, or running before its listener) is
+pending capacity: it keeps its slot and counts as neither busy nor unknown, so
+it no longer stops a pool from growing.
 
 Growth and CPU pinning work together, with one tradeoff. Once the farm's
 pinned runners, across all pools, outnumber the host's cpuset blocks (at most
