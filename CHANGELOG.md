@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.11.0](https://github.com/unraid/ci-runner-farm/compare/v3.10.1...v3.11.0) (2026-11-25)
+
+
+### Features
+
+* **timing:** record where fleet operations spend their time ([#269](https://github.com/unraid/ci-runner-farm/issues/269)) ([3c695e3](https://github.com/unraid/ci-runner-farm/commit/3c695e386929ff4b865177fe35f82c743c5cc8b1))
+
 ## [3.10.1](https://github.com/unraid/ci-runner-farm/compare/v3.10.0...v3.10.1) (2026-11-19)
 
 
