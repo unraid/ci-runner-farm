@@ -815,6 +815,24 @@ no pools. A daemon that dies stops updating the write time, so a reader can
 tell it apart from a steady pool. Writing the file never fails or delays a
 check, and it is never written to flash.
 
+#### Phase timing
+
+The farm writes one line per timed operation to `timing.log` in its runtime
+directory (`/var/local/emhttp/ci-runner-farm`). Timed operations are fleet
+lock uses, recycles, runner starts, autoscale and lifecycle checks, and
+batches of runner exits. Each line is `key=value` fields:
+
+```text
+ts=1767225600.123 op=recycle subject=ci-runner-build-3 rc=0 total_ms=9810 checks_ms=40 inventory_ms=1200 ...
+ts=1767225610.456 op=lock subject=autoscale_tick rc=0 wait_ms=0 hold_ms=4200
+```
+
+A `*_ms` field is the time since the previous step, so the steps of one line
+add up to its `total_ms`. `op=lock` lines give the wait for and the hold of
+the fleet lock, and `rc=busy` marks a check that skipped because the lock was
+taken. The file stays under 4 MiB: when it grows past that, its older half is
+dropped. Timing never changes what an operation does or returns.
+
 ![Fleet state and controls](docs/images/fleet.png)
 
 ## CLI

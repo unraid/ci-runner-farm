@@ -165,7 +165,7 @@ for action in credential-clear-github-token credential-clear-gitlab-runner crede
     || bad "credential engine action is not fleet-locked: $action"
   grep -qF " $action" "$EXEC" || bad "endpoint does not delegate to credential engine action: $action"
 done
-grep -Eq 'reload_locked_snapshot( \|\| exit 1)?; "\$@"' "$ENGINE" \
+grep -Eq 'reload_locked_snapshot( \|\| (exit 1|\{ [^}]*exit 1; \}))?; "\$@"' "$ENGINE" \
   || bad "fleet-lock wrapper does not reload config/secrets after acquiring the lock"
 grep -qF 'GITLAB_CA_FINGERPRINT' "$GITLAB_ADAPTER" \
   || bad "GitLab config fingerprint does not use the locked in-memory CA snapshot"

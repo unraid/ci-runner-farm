@@ -1110,6 +1110,7 @@ github_build_args() {
     ARGS+=( --mount "$share_mount" )
   done
   [ -n "$RUNNER_CPUS" ]   && ARGS+=( --cpus="$RUNNER_CPUS" )
+  crf_timing_mark args_base
   if [ "${CPU_PINNING:-false}" = true ]; then
     # Keep --cpus as the Docker CPU quota alongside the selected CPU set.
     # Placement failure is never fatal; the runner then starts unpinned.
@@ -1117,6 +1118,7 @@ github_build_args() {
     if cpuset="$(crf_cpu_pinning_cpuset "$RUNNER_CPUS" "$name")" && [ -n "$cpuset" ]; then
       ARGS+=( --cpuset-cpus="$cpuset" --label "net.unraid.ci-runner-farm.cpuset=${cpuset}" )
     fi
+    crf_timing_mark cpuset
   fi
   [ -n "$RUNNER_MEMORY" ] && ARGS+=( --memory="$RUNNER_MEMORY" )
   [ "$NETWORK_ISOLATION" != "off" ] && ARGS+=( --network "$RUNNER_NETWORK" )
@@ -1192,6 +1194,7 @@ github_build_args() {
   elif [ "$EPHEMERAL" = true ]; then
     local workdir
     workdir="$(github_fresh_work_dir "$name")" || return 1
+    crf_timing_mark workspace
     if [ "${PODMAN_POOL_STORAGE:-false}" = true ]; then
       # The fresh slot, not /_work, owns both stores. Workflow checkout cleanup
       # cannot erase engine state while a nested container is still using it.
@@ -1224,7 +1227,9 @@ github_build_args() {
     scope_target="repo:$repo"
   fi
   if [ -n "$ACCESS_TOKEN" ] && [ "${NO_REGISTER:-0}" != "1" ]; then
+    crf_timing_mark args_mounts
     reg="$(github_registration_token "$scope_target")"
+    crf_timing_mark token
     [ -z "$reg" ] && { err "could not mint a runner registration token for ${scope_target#*:} (check the PAT's scope/permissions)"; return 1; }
     # The image only accepts this token as RUNNER_TOKEN in its environment, so it
     # still lands in Config.Env — but a restricted --env-file keeps it out of
@@ -1246,9 +1251,20 @@ github_build_args() {
   ARGS+=( "$image" )
 }
 
+# Timed (phase-timing.sh): one "op=start" line per start.
 github_start_one() {
+  local _tm_start _tm_last _tm_parts rc
+  crf_timing_begin
+  github_start_one_steps "$@"
+  rc=$?
+  crf_timing_end start "$2" "$rc"
+  return "$rc"
+}
+
+github_start_one_steps() {
   local idx="$1" name="$2" rc image
   crf_storage_start_admit "$name" || return 1
+  crf_timing_mark admit
   image="$(effective_image)" || return 1
   # Prepare cold private images before minting runner credentials.
   if [ "$IMAGE_SOURCE" = remote ] && [ -n "$IMAGE" ] \
@@ -1256,11 +1272,15 @@ github_start_one() {
     github_prepare_remote_image "$image" >/dev/null \
       || { err "runner $name not started (remote image preparation failed)"; return 1; }
   fi
+  crf_timing_mark image
   github_build_args "$idx" "$name" || { err "runner $name not started (see the error above)"; return 1; }
+  crf_timing_mark args_rest
   log "starting $name (pool=${CRF_POOL_ID:-default} cpus=$RUNNER_CPUS mem=$RUNNER_MEMORY scope=$GH_SCOPE image=$(effective_image))"
   layer_integrity_precreate "$name"
+  crf_timing_mark layer_scan
   run_owned_github_container "$idx" >/dev/null
   rc=$?
+  crf_timing_mark run
   clear_args_tmpdir
   return "$rc"
 }
@@ -1274,7 +1294,9 @@ github_remove_runner() {
   local rname
   rname="$(github_runner_registration_name "$c")"
   provider_stop_remove_container "$c" || return 1
+  crf_timing_mark rm
   github_deregister_runner_api "$c" "$rname" || failed=1
+  crf_timing_mark deregister
   if [ "$purge" = true ]; then
     root="$(crf_safe_cache_root)" || { err "refusing GitHub runner cleanup under unsafe CACHE_ROOT '$CACHE_ROOT'"; return 1; }
     directory="$root/work/$c"
