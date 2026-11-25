@@ -377,9 +377,9 @@ layer_integrity_precreate "$slot" 2>/dev/null; heal_corrupt_layers 2>/dev/null
 DIND=true
 
 # The lifecycle tick runs the pass and survives its failure.
-grep -q 'heal_corrupt_layers' <(declare -f lifecycle_tick) || fail "lifecycle tick does not run the heal pass"
+grep -q 'heal_corrupt_layers' <(declare -f lifecycle_tick_steps) || fail "lifecycle tick does not run the heal pass"
 grep -q 'docker-evicted' <<< "$(declare -f cmd_prune_cache)" || fail "prune-cache leaves moved-aside stores behind"
-grep -q 'layer_integrity_precreate "\$name"' <(declare -f github_start_one) || fail "slot creation does not scan"
-grep -q 'layer_integrity_precreate "\$name"' <(declare -f cmd_recycle) || fail "recycle does not scan"
+grep -q 'layer_integrity_precreate "\$name"' <(declare -f github_start_one_steps) || fail "slot creation does not scan"
+grep -q 'layer_integrity_precreate "\$name"' <(declare -f cmd_recycle_steps) || fail "recycle does not scan"
 
 echo "layer-integrity: ok"

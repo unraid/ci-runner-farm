@@ -178,6 +178,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/cpu-pinning.sh"
 # shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/growth-backpressure.sh
 . "$SCRIPT_DIR/growth-backpressure.sh"
+# shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/phase-timing.sh
+. "$SCRIPT_DIR/phase-timing.sh"
 # shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/github-app.sh
 . "$SCRIPT_DIR/github-app.sh"
 # shellcheck source=src/usr/local/emhttp/plugins/ci-runner-farm/include/pnpm-recovery.sh
@@ -1335,22 +1337,39 @@ autoscale_queue_depth() {
 }
 
 # one autoscaling evaluation: keep AUTOSCALE_MIN_IDLE warm runners, within [MIN,MAX]
+# Timed (phase-timing.sh): one "op=autoscale-tick" line per tick.
 autoscale_tick() {
+  local _tm_start _tm_last _tm_parts rc
+  crf_timing_begin
+  autoscale_tick_steps "$@"
+  rc=$?
+  crf_timing_end autoscale-tick - "$rc"
+  return "$rc"
+}
+
+autoscale_tick_steps() {
   if pnpm_recovery_pending; then pnpm_recovery_tick; return $?; fi
   runner_starts_allowed || return 0
   [ "$AUTOSCALE" = "true" ] || return 0
   growth_gate_reset
   # Keep a recent CPU usage sample for load-aware placement.
   [ "${CPU_PINNING:-false}" != true ] || crf_cpu_usage_refresh >/dev/null 2>&1 || true
+  crf_timing_mark cpu_usage
   crf_storage_pressure_cleanup
+  crf_timing_mark pressure_cleanup
   if pool_mode_enabled; then
     validate_runner_mode || return 1
+    crf_timing_mark validate
     start_stopped_managed || return 1
+    crf_timing_mark start_stopped
     local reconciled=0 started=0
     reconcile_stale_runners || reconciled=$?
+    crf_timing_mark reconcile
     [ "$reconciled" = 0 ] || [ "$reconciled" = 2 ] || return 1
     start_configured_capacity || started=$?
+    crf_timing_mark capacity
     growth_state_publish
+    crf_timing_mark publish
     return "$started"
   fi
   reap_dead_runners || return 1  # drop dead containers first so idle accounting is real
@@ -1534,34 +1553,53 @@ autoscale_status() {
 
 # Run the provider lifecycle watchdog independently of autoscaling. A fixed-size
 # farm must receive the same cleanup and recycle protection as an autoscaled one.
+# Timed (phase-timing.sh): one "op=lifecycle-tick" line per tick.
 lifecycle_tick() {
+  local _tm_start _tm_last _tm_parts rc
+  crf_timing_begin
+  lifecycle_tick_steps "$@"
+  rc=$?
+  crf_timing_end lifecycle-tick - "$rc"
+  return "$rc"
+}
+
+lifecycle_tick_steps() {
   if pnpm_recovery_pending; then pnpm_recovery_tick; return $?; fi
   runner_starts_allowed || return 0
   growth_gate_reset
   # Keep a recent CPU usage sample for load-aware placement.
   [ "${CPU_PINNING:-false}" != true ] || crf_cpu_usage_refresh >/dev/null 2>&1 || true
+  crf_timing_mark cpu_usage
   crf_storage_pressure_cleanup
+  crf_timing_mark pressure_cleanup
   crf_retired_slot_cleanup
+  crf_timing_mark retired_cleanup
   crf_runner_image_prune
+  crf_timing_mark image_prune
   replenish_fixed_github_capacity || return 1
+  crf_timing_mark replenish
   local candidates candidate failed=0 yield=false
   candidates="$(provider_call lifecycle_candidates)" \
     || { err "lifecycle: provider could not inspect idle job scope"; failed=1; }
+  crf_timing_mark candidates
   # Replace the whole batch: a burst of short jobs must not wait one interval
   # per slot. A slot that fails or is not reached stays a candidate for the next
   # tick.
   for candidate in $candidates; do
-    if [ "$yield" = true ]; then lifecycle_yield || break; fi
+    if [ "$yield" = true ]; then lifecycle_yield || break; crf_timing_mark yield; fi
     yield=true
     lifecycle_replace "$candidate" || failed=1
+    crf_timing_mark replace
   done
   # Non-fatal: a failed eviction is logged and retried on a later tick.
   heal_corrupt_layers \
     || err "lifecycle: corrupt cached layers could not be evicted from one or more idle runners this tick"
+  crf_timing_mark heal_layers
   # Pool layouts have no reap pass, so stale GitHub registrations are cleaned
   # here for every layout. Non-fatal and rate-limited by the inventory cache.
   github_reap_stale_registrations \
     || err "lifecycle: stale GitHub runner registrations could not be cleaned this tick"
+  crf_timing_mark reap_registrations
   return "$failed"
 }
 
@@ -1570,9 +1608,11 @@ lifecycle_tick() {
 # paused, so one batch must not hold the lock for its whole length. Resume only
 # from the snapshot that exists after the lock is reacquired.
 lifecycle_yield() {
+  crf_lock_release_begin
   flock -u 8 2>/dev/null
   sleep "$LIFECYCLE_YIELD"
   flock -n 8 2>/dev/null || return 1
+  crf_lock_release_end
   reload_locked_snapshot || return 1
   runner_starts_allowed
 }
@@ -1735,9 +1775,11 @@ lifecycle_event_candidates() {
 # Hand fleet.lock to any waiter between replacements, as the tick does, then
 # wait for it again. Resume only from the snapshot after the lock returns.
 lifecycle_event_yield() {
+  crf_lock_release_begin
   flock -u 8 2>/dev/null
   sleep "$LIFECYCLE_YIELD"
   flock -w "$LIFECYCLE_EVENT_LOCK_WAIT" 8 2>/dev/null || return 1
+  crf_lock_release_end
   reload_locked_snapshot
 }
 
@@ -1750,20 +1792,31 @@ lifecycle_event_dispatch() {
   [ "$CI_PROVIDER" != gitlab ] || return 0
   candidates="$(lifecycle_event_candidates "$1")"
   [ -n "$candidates" ] || return 0
-  ( flock -w "$LIFECYCLE_EVENT_LOCK_WAIT" 8 \
-      || { log "lifecycle: fleet.lock stayed busy; the next tick replaces $(cut -d' ' -f2 <<< "$candidates" | tr '\n' ' ')"; exit 0; }
-    reload_locked_snapshot || exit 1
+  # Timed (phase-timing.sh): one "op=event-batch" line per batch, with the
+  # first lock wait, the waits after yields, and the time spent replacing.
+  ( local _tm_start _tm_last _tm_parts slots
+    slots="$(wc -l <<< "$candidates" | tr -d ' ')"
+    crf_timing_begin
+    flock -w "$LIFECYCLE_EVENT_LOCK_WAIT" 8 \
+      || { crf_timing_mark lock_wait; crf_timing_end event-batch "slots-$slots" busy
+           log "lifecycle: fleet.lock stayed busy; the next tick replaces $(cut -d' ' -f2 <<< "$candidates" | tr '\n' ' ')"; exit 0; }
+    crf_timing_mark lock_wait
+    reload_locked_snapshot || { crf_timing_end event-batch "slots-$slots" 1; exit 1; }
     growth_gate_reset
     [ "${CPU_PINNING:-false}" != true ] || crf_cpu_usage_refresh >/dev/null 2>&1 || true
+    crf_timing_mark setup
     failed=0
     while read -r id name; do
       if [ "$LIFECYCLE_EVENT_ACTED" = true ]; then
         lifecycle_event_yield \
-          || { log "lifecycle: fleet.lock stayed busy; the next tick replaces the rest of this batch"; break; }
+          || { crf_timing_mark yield_wait; log "lifecycle: fleet.lock stayed busy; the next tick replaces the rest of this batch"; break; }
+        crf_timing_mark yield_wait
         LIFECYCLE_EVENT_ACTED=false
       fi
       lifecycle_event_replace "$id" "$name" || failed=1
+      crf_timing_mark replace
     done <<< "$candidates"
+    crf_timing_end event-batch "slots-$slots" "$failed"
     exit "$failed" ) 8>"$RUNDIR/fleet.lock"
 }
 
@@ -1902,9 +1955,11 @@ drain_and_recreate() {
       log "image-update: $c still busy after ${limit}s — leaving on old image this cycle"
       return 1
     fi
+    crf_lock_release_begin
     flock -u 8 2>/dev/null                 # release the fleet lock while idle-waiting
     sleep 15; waited=$((waited+15))
     flock -w 20 8 2>/dev/null || { log "image-update: fleet busy elsewhere — deferring $c to next cycle"; return 1; }
+    crf_lock_release_end
     # Another action may have changed provider settings or removed a credential
     # while this drain deliberately released fleet.lock. Resume only from the
     # snapshot that exists after the lock was reacquired.
@@ -3060,13 +3115,45 @@ provision_preflight() {
 # commands block briefly. Mode "try": daemon ticks take it non-blocking and simply
 # skip a contended tick (retried next interval), so a stuck UI action can never
 # deadlock the daemons. Runs the command in a subshell that holds fd 8 for its duration.
+# Each use records its wait and hold time in timing.log (phase-timing.sh), and
+# a "try" that finds the lock busy records that it skipped.
 with_fleet_lock() {
   local mode="$1"; shift
   if [ "$mode" = try ]; then
-    ( flock -n 8 || exit 0; reload_locked_snapshot || exit 1; "$@" ) 8>"$RUNDIR/fleet.lock"
+    ( crf_fleet_lock_requested
+      flock -n 8 || { crf_fleet_lock_timing busy "$1"; exit 0; }
+      crf_fleet_lock_acquired
+      reload_locked_snapshot || { crf_fleet_lock_timing 1 "$1"; exit 1; }; "$@"; rc=$?
+      crf_fleet_lock_timing "$rc" "$1"; exit "$rc" ) 8>"$RUNDIR/fleet.lock"
   else
-    ( flock -w 20 8 || { err "fleet busy (another start/stop/scale/recycle or a daemon tick is running) — try again"; exit 1; }; reload_locked_snapshot || exit 1; "$@" ) 8>"$RUNDIR/fleet.lock"
+    ( crf_fleet_lock_requested
+      flock -w 20 8 || { crf_fleet_lock_timing busy "$1"; err "fleet busy (another start/stop/scale/recycle or a daemon tick is running) — try again"; exit 1; }
+      crf_fleet_lock_acquired
+      reload_locked_snapshot || { crf_fleet_lock_timing 1 "$1"; exit 1; }; "$@"; rc=$?
+      crf_fleet_lock_timing "$rc" "$1"; exit "$rc" ) 8>"$RUNDIR/fleet.lock"
   fi
+}
+
+crf_fleet_lock_requested() {
+  crf_timing_now; CRF_LOCK_REQUESTED="$CRF_NOW_US"; CRF_LOCK_ACQUIRED=""
+  CRF_LOCK_RELEASED_US=0; CRF_LOCK_RELEASE_AT=""
+}
+crf_fleet_lock_acquired() { crf_timing_now; CRF_LOCK_ACQUIRED="$CRF_NOW_US"; }
+# <rc or busy> <caller>: one "op=lock" line with wait_ms, hold_ms and
+# released_ms (time the command gave the lock back, for example in a yield;
+# not part of hold_ms).
+crf_fleet_lock_timing() {
+  local line released=0
+  # A yield that could not take the lock back stays released to the end.
+  [ -z "${CRF_LOCK_RELEASE_AT:-}" ] || crf_lock_release_end
+  crf_timing_now
+  [ -z "${CRF_LOCK_RELEASED_US:-}" ] || released=$(( CRF_LOCK_RELEASED_US / 1000 ))
+  if [ -n "$CRF_LOCK_ACQUIRED" ] && [ -n "$CRF_NOW_US" ]; then
+    line="wait_ms=$(crf_timing_ms "$CRF_LOCK_REQUESTED" "$CRF_LOCK_ACQUIRED") hold_ms=$(( (CRF_NOW_US - CRF_LOCK_ACQUIRED) / 1000 - released )) released_ms=$released"
+  else
+    line="wait_ms=$(crf_timing_ms "$CRF_LOCK_REQUESTED" "$CRF_NOW_US") hold_ms=0 released_ms=0"
+  fi
+  crf_timing_write "op=lock subject=${2:--} rc=$1 $line"
 }
 cmd_restart() { cmd_stop || return 1; reload_locked_snapshot || return 1; cmd_start; }
 
@@ -4394,7 +4481,18 @@ cmd_recommendations_json() {
     "$history_source" "$confidence" "$queue" "$queue_age" "$usage_age" "$history_keys" "$history_samples" "$history_last_completed" "$(printf '%s' "$summary" | json_escape)" "$recommendations" "$jobs"
 }
 
+# Timed (phase-timing.sh): one "op=recycle" line per recycle. The output and
+# the exit status are those of the steps.
 cmd_recycle() {
+  local _tm_start _tm_last _tm_parts rc
+  crf_timing_begin
+  cmd_recycle_steps "$@"
+  rc=$?
+  crf_timing_end recycle "$1" "$rc"
+  return "$rc"
+}
+
+cmd_recycle_steps() {
   runner_starts_allowed || return 1
   crf_storage_start_admit "$1" || { echo '{"ok":false,"error":"storage admission withheld; existing runner preserved"}'; return 1; }
   # Replace one slot without purging its Docker/cache roots. The old provider
@@ -4413,6 +4511,7 @@ cmd_recycle() {
     || { echo '{"ok":false,"error":"runner belongs to an unavailable pool"}'; return 1; }
   cur_gen="$(crf_confgen)"
   if [ "$old_provider" != "$CI_PROVIDER" ] || [ "$old_gen" != "$cur_gen" ]; then was_stale=true; fi
+  crf_timing_mark checks
 
   local other other_names other_snapshot stale_count
   other_names="$(managed_names)" \
@@ -4426,6 +4525,7 @@ cmd_recycle() {
       break
     }
   done
+  crf_timing_mark inventory
 
   provider_token_ready \
     || { echo "{\"ok\":false,\"error\":\"no valid $(provider_token_name | json_escape) configured\"}"; return 1; }
@@ -4437,6 +4537,7 @@ cmd_recycle() {
      && ! docker network inspect "$RUNNER_NETWORK" >/dev/null 2>&1; then
     echo '{"ok":false,"error":"runner network unavailable"}'; return 1
   fi
+  crf_timing_mark provision
 
   # Add the new GitLab/registry endpoint ahead of the private-range drops while
   # retaining old endpoint rules for busy stale managers.
@@ -4449,6 +4550,7 @@ cmd_recycle() {
   gitlab_cleanup_orphan_sidecars || {
     echo '{"ok":false,"error":"could not safely clean orphaned GitLab sidecars"}'; return 1
   }
+  crf_timing_mark firewall
 
   # Validate replacement images before touching the old manager. GitHub can
   # safely pre-mint its short registration token. GitLab must defer config.toml
@@ -4474,6 +4576,7 @@ cmd_recycle() {
       || { echo '{"ok":false,"error":"cannot verify GitHub replacement permission"}'; return 1; }
     image="$(effective_image)"
   fi
+  crf_timing_mark preflight
   if ! recycle_image_preflight "$image"; then
     if [ "$IMAGE_SOURCE" = remote ]; then
       echo '{"ok":false,"error":"cannot pull replacement image"}'
@@ -4482,6 +4585,7 @@ cmd_recycle() {
     fi
     return 1
   fi
+  crf_timing_mark image
 
   # Replacement preflight may take minutes. Re-resolve both directions without
   # trusting the mutable name before crossing the destructive boundary. Labels
@@ -4495,6 +4599,7 @@ cmd_recycle() {
 
   # Preparation may be slow; recheck before retiring the verified old owner.
   crf_storage_start_admit "$name" || { echo '{"ok":false,"error":"storage admission changed; existing runner preserved"}'; return 1; }
+  crf_timing_mark recheck
   if ! remove_runner "$name" false "$target_id" "$old_provider"; then
     echo '{"ok":false,"error":"remove or provider cleanup failed; replacement was not started"}'
     return 1
@@ -4509,6 +4614,7 @@ cmd_recycle() {
   if [ -n "$current_id" ]; then
     echo '{"ok":false,"error":"runner name was claimed during replacement; refusing to overwrite it"}'; return 1
   fi
+  crf_timing_mark remove
 
   log "recycling $name (provider $old_provider -> $CI_PROVIDER)"
   if [ "$CI_PROVIDER" = gitlab ]; then
@@ -4526,7 +4632,9 @@ cmd_recycle() {
     # replacement from being attempted at all. Docker diagnostics are untrusted,
     # so the detail is redacted on the way to the log.
     local rout
+    crf_timing_mark prepare
     layer_integrity_precreate "$name"
+    crf_timing_mark layer_scan
     if rout="$(run_owned_github_container "$idx" 2>&1 >/dev/null)"; then :; else
       err "recycle: docker run failed:"
       printf '%s\n' "$rout" | redact_log_stream >&2
@@ -4535,6 +4643,7 @@ cmd_recycle() {
     fi
     clear_args_tmpdir
   fi
+  crf_timing_mark run
 
   # Verify final state without converting a failed Docker inspect into zero.
   # A live fleet is finalized additively; obsolete tagged rules are retired only

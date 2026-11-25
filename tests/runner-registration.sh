@@ -300,5 +300,5 @@ JSON
 mapped="$(github_failed_local_jobs example/one 1 | tr '\n' ' ')"
 [ "$mapped" = "501|ci-runner-build-12 502|ci-runner-build-4 " ] || fail "job to slot mapping wrong: $mapped"
 
-grep -q 'github_reap_stale_registrations' <(declare -f lifecycle_tick) || fail 'lifecycle tick does not clean stale registrations'
+grep -q 'github_reap_stale_registrations' <(declare -f lifecycle_tick_steps) || fail 'lifecycle tick does not clean stale registrations'
 echo "runner-registration: ok"
