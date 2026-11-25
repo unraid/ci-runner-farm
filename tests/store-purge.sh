@@ -105,6 +105,12 @@ mkdir -p "$ROOT/docker-evicted/old.1"; touch -d '-7 hours' "$ROOT/docker-evicted
 log_err="$(crf_reap_staged_stores 2>&1)"
 [[ "$log_err" == *"could not be deleted for over six hours"* ]] || fail "stuck store not reported: $log_err"
 [ -z "$(crf_reap_staged_stores 2>&1)" ] || fail "stuck store reported more than once an hour"
+# A symlink anywhere in a trash path keeps the delete from starting.
+slot ci-runner-build-13; mkdir -p "$tmp/real-work/.trash/x.1"
+mv "$ROOT/work" "$ROOT/work.real"; ln -s "$tmp/real-work" "$ROOT/work"; : > "$tmp/calls"
+crf_reap_staged_stores
+! grep -qx sweep "$tmp/calls" || fail "a symlinked work folder started the trash sweep"
+[ -d "$tmp/real-work/.trash/x.1" ] || fail "the symlinked trash was touched"
 # The lifecycle check runs the leftover sweep.
 grep -q 'crf_reap_staged_stores' <(declare -f lifecycle_tick_steps) || fail "lifecycle tick does not restart leftover deletes"
 

@@ -1267,11 +1267,13 @@ layer_integrity_reap_evicted() {
 crf_reap_staged_stores() {
   local root stuck mark="$RUNDIR/staged-stuck.logged"
   root="$(crf_safe_cache_root 2>/dev/null)" || return 0
-  if [ -d "$root/work/.trash" ] && [ ! -L "$root/work/.trash" ] \
+  # A trash folder is used only when it resolves to itself, so no symlink in
+  # its path can point the delete somewhere else.
+  if [ "$(realpath -e -- "$root/work/.trash" 2>/dev/null)" = "$root/work/.trash" ] \
     && [ -n "$(ls -A "$root/work/.trash" 2>/dev/null)" ]; then
     github_work_trash_sweep_async
   fi
-  [ -d "$root/docker-evicted" ] && [ ! -L "$root/docker-evicted" ] \
+  [ "$(realpath -e -- "$root/docker-evicted" 2>/dev/null)" = "$root/docker-evicted" ] \
     && [ -n "$(ls -A "$root/docker-evicted" 2>/dev/null)" ] || return 0
   layer_integrity_reap_evicted "$root/docker-evicted"
   stuck="$(find "$root/docker-evicted" -mindepth 1 -maxdepth 1 -mmin +360 2>/dev/null | wc -l | tr -d ' ')"
